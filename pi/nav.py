@@ -532,6 +532,53 @@ PER_CELL_STOP = True
 # ══════════════════════════════════════════════════════════════
 #  Состояние
 # ══════════════════════════════════════════════════════════════
+# ── Хронометраж: на что уходит время в клетке ───────────────
+# Каждая обёрнутая функция копит СВОЁ время (вложенные вычитаются: доводка
+# внутри хода считается доводкой, ожидание лидара внутри доводки - лидаром).
+# flood_fill_run печатает разбивку после каждой клетки, main - итог заезда.
+# Только для главного потока: камеры в своих потоках сюда не пишут.
+_tacc = {}
+_tstack = []
+
+
+def _timed(cat):
+    def wrap(fn):
+        def inner(*a, **kw):
+            now = time.monotonic()
+            if _tstack:
+                _tacc[_tstack[-1][0]] = _tacc.get(_tstack[-1][0], 0.0) + now - _tstack[-1][1]
+            _tstack.append([cat, now])
+            try:
+                return fn(*a, **kw)
+            finally:
+                now = time.monotonic()
+                c, t0 = _tstack.pop()
+                _tacc[c] = _tacc.get(c, 0.0) + now - t0
+                if _tstack:
+                    _tstack[-1][1] = now
+        inner.__name__, inner.__doc__ = fn.__name__, fn.__doc__
+        return inner
+    return wrap
+
+
+_TIME_ORDER = ("ход", "поворот", "доводка", "лидар", "камеры", "жертва", "синяя")
+
+
+def time_report(since, wall_s, prefix="  ⏱"):
+    """Разбивка _tacc относительно снимка since за wall_s секунд."""
+    parts = []
+    used = 0.0
+    for c in _TIME_ORDER:
+        dt = _tacc.get(c, 0.0) - since.get(c, 0.0)
+        used += dt
+        if dt >= 0.05:
+            parts.append(f"{c} {dt:.1f}")
+    rest = wall_s - used
+    if rest >= 0.05:
+        parts.append(f"прочее {rest:.1f}")
+    return f"{prefix} {wall_s:.1f}с: " + ", ".join(parts)
+
+
 MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
 # ver yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm status flags crc
@@ -817,11 +864,12 @@ _last_ramp = None  # замер последней горки из drive_cells()
 # попадает КАЖДЫЙ непустой результат scan() - в том числе когнитивный
 # shneyne с кольцами, который иначе никуда не логируется.
 _victim_log = []
-# Стены (клетка, абсолютное направление), на которых метка уже найдена -
-# ОБЩИЕ для обеих камер. У каждого VictimDetector свой список scanned, и
+# Стены (клетка, абсолютное направление), которые уже сканировала хоть одна
+# камера - ОБЩИЕ для обеих. У каждого VictimDetector свой список scanned, и
 # после разворота ту же стену видела уже другая камера: метку выдавали и
-# индицировали второй раз (в логе: (0,-1007) стена N - правой, потом левой).
-_victim_walls = set()
+# индицировали второй раз (в логе: (0,-1007) стена N - правой, потом левой),
+# а пустую стену просто сканировали дважды.
+_scanned_walls = set()
 
 # Снимок карты/меток для веб-страницы. Пишется маленьким JSON-файлом в
 # редкие моменты (приезд в клетку, находка метки), а не каждый тик петли
@@ -1173,6 +1221,7 @@ def tile_color():
     return TILE_WHITE
 
 
+@_timed("синяя")
 def blue_stop(cell):
     """Стоянка на синей плитке - КАЖДЫЙ раз, когда робот на ней оказывается,
     а не только при первом распознавании: если клетка хоть раз была
@@ -2037,6 +2086,7 @@ def _walls_cached(n):
     return None
 
 
+@_timed("лидар")
 def measure_walls(n=WALL_VOTE_SCANS, fresh=False):
     """Медиана n сканов - одиночный промах лидара не решает за нас.
 
@@ -2106,6 +2156,7 @@ def turn(delta_deg):
     turn_to(snap_target(delta_deg), label=f"{delta_deg:+.0f}°")
 
 
+@_timed("поворот")
 def turn_to(target, label=None):
     """Поворот на АБСОЛЮТНЫЙ курс target (град), без привязки к сетке 90°.
 
@@ -2306,6 +2357,7 @@ def _ramp_measure(log, sign):
             "start_known": i_start > 0}
 
 
+@_timed("ход")
 def drive_cells(max_cells, expect_ramp=False):
     """Едет вперёд, пересекая границы клеток БЕЗ остановки, пока очередная
     клетка не потребует поворота (справа открылось или спереди стена), пока
@@ -3016,6 +3068,7 @@ def creep_mm(dist_mm, target_yaw, timeout_s=2.0):
     time.sleep(0.08)
 
 
+@_timed("доводка")
 def align_at_wall(target_yaw):
     """Доводка вдоль движения: встать в центр клетки по передней стене, а
     если её нет (например, после разворота) - по задней."""
@@ -3062,6 +3115,7 @@ def align_at_wall(target_yaw):
 KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
 
 
+@_timed("камеры")
 def scan_sides(cx, cy, hdg, walls_rel=None):
     """Проверяет ОБЕ боковые стены (лево и право по камерам) и, если стена
     есть, сканирует её YOLO на жертву - при находке буквенной метки сразу
@@ -3070,26 +3124,36 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
     walls_rel - словарь с уже готовыми 'right'/'left' (True=стена), если он
     уже посчитан вызывающим (не мерить лидар второй раз); иначе меряется
     здесь. Вызывать и после поворота на месте (камеры смотрят уже на другие
-    стены той же клетки), и после проезда в новую клетку - дедупликация по
-    (клетка, направление стены) внутри VictimDetector.scan() не даст
-    пересканировать одну и ту же стену дважды.
+    стены той же клетки), и после проезда в новую клетку: стена, которую
+    уже сканировала ЛЮБАЯ из камер (_scanned_walls), второй раз не
+    сканируется - после разворота на 180° правая и левая просто меняются
+    местами, и раньше каждая камера пересматривала стену соседки.
     """
     if _victim_r is None and _victim_l is None:
         return
     if get_esp_paused():
         return
-    if walls_rel is None:
-        w = measure_walls(2)
-        walls_rel = {"right": wall_present(w["right"], SIDE_THRESH),
-                     "left": wall_present(w["left"], SIDE_THRESH)}
-    jobs = []
+    sides = []
     for side, det in (("right", _victim_r), ("left", _victim_l)):
-        if det is None or not walls_rel.get(side):
-            continue
         wall_dir = (hdg + (1 if side == "right" else 3)) % 4
-        if (cx, cy, wall_dir) in _victim_walls:
-            continue    # метку здесь уже нашла другая камера
-        jobs.append((side, det, wall_dir))
+        if det is not None and (cx, cy, wall_dir) not in _scanned_walls:
+            sides.append((side, det, wall_dir))
+    if not sides:
+        return          # смотреть нечего - и лидар не ждём
+    if walls_rel is None:
+        known = _maze.get((cx, cy))
+        if (cx, cy) in _visited and known is not None:
+            # Клетка уже снята при приезде - стены берём из карты, а не
+            # ждём ещё два оборота лидара после каждого поворота.
+            walls_rel = {"right": known[(hdg + 1) % 4] is True,
+                         "left": known[(hdg + 3) % 4] is True}
+        else:
+            w = measure_walls(2)
+            walls_rel = {"right": wall_present(w["right"], SIDE_THRESH),
+                         "left": wall_present(w["left"], SIDE_THRESH)}
+    jobs = [j for j in sides if walls_rel.get(j[0])]
+    for _, _, wall_dir in jobs:
+        _scanned_walls.add((cx, cy, wall_dir))
 
     # Обе камеры - одновременно: у каждой свой детектор (своя модель, своя
     # камера), делить им нечего. Съёмка кадра - это ожидание камеры, а YOLO
@@ -3117,7 +3181,6 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
         result = results.get(side)
         if result is None:
             continue
-        _victim_walls.add((cx, cy, wall_dir))
         if get_esp_paused():
             # Усыпили посреди скана: находку в лог, но ни мигать, ни
             # разворачиваться - робот должен замереть сразу.
@@ -3134,6 +3197,7 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
             report_victim(result, side)
 
 
+@_timed("жертва")
 def report_victim(result, side="right"):
     """Сначала мигает лентой (робот и так в пределах 15см от стены сбоку -
     SIDE_CENTER_MM=140мм, разворот для этого не нужен). Дальше - только если
@@ -3274,6 +3338,7 @@ def flood_fill_run(max_cells):
         _write_state(cx, cy, hdg, checkpoint, "exploring")
 
     arrive(True)     # стартовая клетка
+    t_step = t_snap = None   # хронометраж шага, см. time_report()
 
     while total < max_cells:
         # Подъём - раньше паузы: пока робот в руках, тормозить и мерить
@@ -3312,6 +3377,10 @@ def flood_fill_run(max_cells):
             return cx, cy, hdg, checkpoint, "explored"
 
         d = path[0]
+        now = time.monotonic()
+        if t_step is not None:
+            print(time_report(t_snap, now - t_step))   # прошлый шаг целиком
+        t_step, t_snap = now, dict(_tacc)
         print(f"─── ({cx},{cy}) {_DIR_NAME[hdg]} → {_DIR_NAME[d]}  {total}/{max_cells} ───")
 
         delta = DIR_DELTA[(d - hdg) % 4]
@@ -3323,15 +3392,18 @@ def flood_fill_run(max_cells):
             # На середине она оказывается сбоку.
             steps = (90, 90) if abs(delta) == 180 else (delta,)
             paused = False
-            for step in steps:
+            for i, step in enumerate(steps):
                 turn(step)
                 if get_esp_paused():
                     paused = True
                     break
                 # После поворота стены поменялись местами - встаём в центр
                 # клетки по тому, что видно. Мерить после поворота точнее, чем
-                # предсказывать до него.
-                align_at_wall(snap_target())
+                # предсказывать до него. Посередине разворота на 180° - не
+                # надо: робот никуда не ехал, а через секунду ось опять
+                # сменится, и доводка была чистым простоем.
+                if i == len(steps) - 1:
+                    align_at_wall(snap_target())
                 hdg = (hdg + step // 90) % 4
                 _write_state(cx, cy, hdg, checkpoint, "exploring")
                 # Камеры смотрят теперь на другие стены той же клетки -
@@ -3763,8 +3835,10 @@ def main():
     _lifted.clear()
 
     cx, cy, hdg = 0, 0, 0
+    t_run = time.monotonic()
     try:
         cx, cy, hdg, checkpoint, status = flood_fill_run(cells)
+        print(time_report({}, time.monotonic() - t_run, prefix="⏱ разведка"))
         print(f"  статус разведки: {status}  позиция ({cx},{cy}) курс={_DIR_NAME[hdg]}")
         if status != "fatal":
             cx, cy, hdg = return_to_start(cx, cy, hdg, checkpoint)
@@ -3775,6 +3849,7 @@ def main():
     except KeyboardInterrupt:
         print("\nОстановлено.")
     finally:
+        print(time_report({}, time.monotonic() - t_run, prefix="⏱ весь заезд"))
         brake()
         time.sleep(0.1)
         stop()
