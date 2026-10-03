@@ -3173,18 +3173,22 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
     уже сканировала ЛЮБАЯ из камер (_scanned_walls), второй раз не
     сканируется - после разворота на 180° правая и левая просто меняются
     местами, и раньше каждая камера пересматривала стену соседки.
+
+    Возвращает курс, на котором робот остался: после выдачи аптечек он
+    стоит спиной к метке и обратно не поворачивается (см. report_victim) -
+    вызывающий обязан взять этот курс себе.
     """
     if _victim_r is None and _victim_l is None:
-        return
+        return hdg
     if get_esp_paused():
-        return
+        return hdg
     sides = []
     for side, det in (("right", _victim_r), ("left", _victim_l)):
         wall_dir = (hdg + (1 if side == "right" else 3)) % 4
         if det is not None and (cx, cy, wall_dir) not in _scanned_walls:
             sides.append((side, det, wall_dir))
     if not sides:
-        return          # смотреть нечего - и лидар не ждём
+        return hdg      # смотреть нечего - и лидар не ждём
     if walls_rel is None:
         known = _maze.get((cx, cy))
         if (cx, cy) in _visited and known is not None:
@@ -3239,20 +3243,39 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
         _victim_log.append({**result, "side": side,
                              "wall_dir": wall_dir, "ts": time.strftime("%H:%M:%S")})
         if result.get("blink"):
-            report_victim(result, side)
+            hdg = report_victim(result, side, wall_dir, hdg)
+    return hdg
+
+
+def scan_cell(cx, cy, hdg, walls_rel=None):
+    """scan_sides(), пока курс не перестанет меняться: развернувшись спиной
+    к метке для выдачи, робот смотрит камерами на две другие стены той же
+    клетки - их тоже надо проверить. Каждая стена сканируется один раз
+    (_scanned_walls), поэтому цикл конечен. Возвращает итоговый курс."""
+    h = scan_sides(cx, cy, hdg, walls_rel)
+    while h != hdg and not get_esp_paused():
+        hdg = h
+        h = scan_sides(cx, cy, hdg)
+    return h
 
 
 @_timed("жертва")
-def report_victim(result, side="right"):
+def report_victim(result, side, wall_dir, hdg):
     """Сначала мигает лентой (робот и так в пределах 15см от стены сбоку -
     SIDE_CENTER_MM=140мм, разворот для этого не нужен). Дальше - только если
     реально есть что высыпать: разворачивается спиной к стене с меткой (та
     стена, что была сбоку по ходу - справа или слева, см. side - после
     поворота на ∓90° оказывается сзади), встаёт к ней по правилам (см.
-    BACK_CENTER_MM) и высыпает нужное число аптечек, потом возвращается на
-    исходный курс. Для unharmed (0 аптечек) разворот и подъезд не нужны
+    BACK_CENTER_MM) и высыпает нужное число аптечек. Обратно НЕ
+    поворачивается: раньше робот возвращался на исходный курс, а следующим
+    шагом маршрута нередко снова поворачивал туда же - два лишних поворота
+    на каждую жертву. Теперь маршрут строится от того курса, на котором
+    робот остался. Для unharmed (0 аптечек) разворот и подъезд не нужны
     вовсе - только мигание. Вызывать сразу после scan(), пока робот ещё
     стоит в той же клетке.
+
+    wall_dir - абсолютное направление стены с меткой, hdg - текущий курс.
+    Возвращает курс после выдачи.
     """
     n_kits = KITS_BY_TYPE.get(result["type"], 0)
     print(f"    ▓ {result['label']} ({result['type']}, {side}): индикация "
@@ -3260,28 +3283,28 @@ def report_victim(result, side="right"):
     if _leds is not None:
         hold_while(blink_pink, _leds, stop=get_esp_paused)
     if get_esp_paused():
-        return
+        return hdg
 
     if n_kits == 0:
-        return
+        return hdg
 
-    # Правая стена становится задней после поворота -90°, левая - после +90°.
-    turn_deg = -90 if side == "right" else 90
-    turn(turn_deg)
-    if get_esp_paused():
-        return
-    align_at_wall(snap_target())     # теперь "перед" не по чему, "зад" - к метке
+    # Спиной к метке: курс, противоположный стене. Считаем от ТЕКУЩЕГО
+    # курса, а не от стороны камеры - если в клетке две жертвы, после
+    # выдачи первой робот уже развёрнут, и вторая может оказаться спереди.
+    back_hdg = (wall_dir + 2) % 4
+    delta = DIR_DELTA[(back_hdg - hdg) % 4]
+    if delta != 0:
+        turn(delta)
+        if get_esp_paused():
+            return hdg
+        hdg = back_hdg
+        align_at_wall(snap_target())     # "зад" - к метке, по правилам
 
     for _ in range(n_kits):
         if get_esp_paused():
-            return
+            return hdg
         dispense_kit()
-
-    # Поворот на месте (без хода) не должен сдвигать центр робота, а курс,
-    # на который мы возвращаемся, уже был выровнен ДО скана. Повторное
-    # выравнивание здесь для того же курса - то самое "аналогичное
-    # действие", которое просили убрать.
-    turn(-turn_deg)
+    return hdg
 
 
 DIR_DELTA = {0: 0, 1: 90, 2: 180, 3: -90}   # (d - hdg) % 4 -> градусы для turn()
@@ -3350,8 +3373,10 @@ def flood_fill_run(max_cells):
 
     def arrive(new_cell):
         """Стоим в центре (cx,cy). Если клетка новая - снимаем стены и
-        сканируем обе боковые камеры; в любом случае проверяем плитку."""
-        nonlocal checkpoint
+        сканируем обе боковые камеры; в любом случае проверяем плитку.
+        Курс может измениться: после выдачи аптечек робот остаётся спиной
+        к метке (см. report_victim)."""
+        nonlocal checkpoint, hdg
         # Позицию - на веб сразу по приезде, не дожидаясь замера стен, синей
         # стоянки и камер: иначе робот на карте отставал на всё это время.
         _write_state(cx, cy, hdg, checkpoint, "exploring")
@@ -3378,7 +3403,7 @@ def flood_fill_run(max_cells):
             print(f"  ✓ ЧЕКПОИНТ ({cx},{cy}) курс={_DIR_NAME[hdg]}")
 
         if new_cell:
-            scan_sides(cx, cy, hdg, walls_rel)
+            hdg = scan_cell(cx, cy, hdg, walls_rel)
 
         _write_state(cx, cy, hdg, checkpoint, "exploring")
 
@@ -3436,11 +3461,11 @@ def flood_fill_run(max_cells):
             # непросканированной: до разворота она спереди, после - сзади.
             # На середине она оказывается сбоку.
             steps = (90, 90) if abs(delta) == 180 else (delta,)
-            paused = False
+            replan = False
             for i, step in enumerate(steps):
                 turn(step)
                 if get_esp_paused():
-                    paused = True
+                    replan = True
                     break
                 # После поворота стены поменялись местами - встаём в центр
                 # клетки по тому, что видно. Мерить после поворота точнее, чем
@@ -3453,11 +3478,18 @@ def flood_fill_run(max_cells):
                 _write_state(cx, cy, hdg, checkpoint, "exploring")
                 # Камеры смотрят теперь на другие стены той же клетки -
                 # сканируем их, не дожидаясь проезда вперёд.
-                scan_sides(cx, cy, hdg)
+                h = scan_cell(cx, cy, hdg)
                 if get_esp_paused():
-                    paused = True
+                    replan = True
                     break
-            if paused:
+                if h != hdg:
+                    # Выдали аптечку и остались спиной к метке - остаток
+                    # поворота посчитан от старого курса, строим шаг заново.
+                    hdg = h
+                    _write_state(cx, cy, hdg, checkpoint, "exploring")
+                    replan = True
+                    break
+            if replan:
                 continue
 
         n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps)
