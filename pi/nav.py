@@ -39,7 +39,9 @@ BFS не находит больше ни одной непройденной к
 Робот всегда останавливается в центре клетки (см. PER_CELL_STOP) - там же,
 стоя, он одним замером лидара (он видит все четыре стороны сразу, вне
 зависимости от курса) узнаёт стены клетки сразу по всем четырём абсолютным
-направлениям и записывает их в карту лабиринта (_maze). На каждом шаге
+направлениям и голосует ими за стены карты лабиринта (_maze) - и при
+первом приезде, и при каждом повторном, так что ошибка одного замера
+исправляется следующими (см. vote_wall). На каждом шаге
 flood_fill_run() ищет по уже известным открытым рёбрам этой карты
 кратчайший путь до ближайшей ещё не посещённой клетки (BFS) и едет туда;
 когда такой клетки не остаётся - разведка окончена.
@@ -492,6 +494,17 @@ TURN_SIGN = +1
 
 WALL_VOTE_SCANS = 3
 
+# Пороги стены для КАРТЫ - замер стоя в центре клетки. Своя стена ребра
+# тогда спереди на ~FRONT_CENTER_MM (145), сзади на ~BACK_CENTER_MM (135),
+# а всё, что дальше 200мм, - уже внутри соседней клетки: кирпич посреди
+# неё, а не стена между клетками. С WALL_THRESH=260 такой кирпич шёл в
+# карту стеной, и клетка за ним могла остаться неразведанной. Для езды
+# (остановка, доводка, аварийный стоп) пороги прежние - кирпич там видеть
+# надо. Если стену всё же не досчитали, робот поедет, упрётся (front_obstacle
+# / wall_close) и закроет ребро по факту.
+FRONT_MAP_WALL_MM = 200.0
+BACK_MAP_WALL_MM = 200.0
+
 # Отсчёт перед стартом - робот трогается сам, это только чтобы успеть
 # отойти. 0 = ехать сразу.
 START_DELAY_S = 0
@@ -773,6 +786,23 @@ _visited = set()   # клетки, где уже стояли и сняли вс
 _blocked = set()   # клетки за рёбрами, которые оказались непроезжими на
                     # деле (чёрная плитка, неподнятое препятствие, бампер) -
                     # BFS обходит их так же, как настоящую стену.
+# Стены по голосам. Раньше стена писалась в карту один раз, при первом
+# приезде в клетку, и BFS верил ей навсегда: одна ошибка лидара - и робот
+# либо не видел прохода (часть лабиринта не разведана), либо ехал в стену.
+# Теперь каждый замер стоя (первый приезд, каждый повторный проезд, замер из
+# соседней клетки - одна и та же стена видна с двух сторон) добавляет голос
+# ребру, а в _maze лежит текущий итог.
+#   _wall_votes[ребро] - сумма голосов, +1 "стена" / -1 "открыто", в пределах
+#                        ±WALL_VOTE_CAP, чтобы давняя серия не перевешивала
+#                        свежие замеры вечно;
+#   _edge_fixed[ребро] - то, что известно не по лидару, а по факту, и
+#                        голосами не перебивается: True - упёрлись (бампер,
+#                        стена вплотную, препятствие, чёрная плитка), False -
+#                        проехали по нему или это горка.
+# Ребро - frozenset двух концов (клетка, направление), см. _edge_key().
+WALL_VOTE_CAP = 3
+_wall_votes = {}
+_edge_fixed = {}
 # Горки: (cx, cy, d) -> (bx, by, плиток, +1 вверх/-1 вниз). Ребро из клетки
 # у подножия (или гребня) по направлению d ведёт не в соседа, а сразу в
 # клетку на другом конце горки, на другом этаже (см. LEVEL_STRIDE). Сами
@@ -1611,8 +1641,7 @@ def record_ramp(cx, cy, d, info, measure=None):
     n = info["tiles"]
     _ramps[(cx, cy, d)] = (bx, by, n, sign)
     _ramps[(bx, by, _OPP[d])] = (cx, cy, n, -sign)
-    _maze_cell(cx, cy)[d] = False
-    _maze_cell(bx, by)[_OPP[d]] = False
+    open_edge(cx, cy, d)      # по _next_cell это уже ребро до (bx, by)
     print(f"  ⛰ ГОРКА {'вверх' if sign > 0 else 'вниз'}: ~{n} плит., "
           f"({cx},{cy}) → ({bx},{by}), этаж {z}"
           f"{' (знакомый)' if floor_known else ''}, высота {info['rise_cm']:+.0f}см")
@@ -1632,13 +1661,55 @@ def _set_wall(cx, cy, d, present):
     _maze_cell(nx, ny)[_OPP[d]] = present
 
 
+def _edge_key(cx, cy, d):
+    nx, ny = _next_cell(cx, cy, d)
+    return frozenset(((cx, cy, d), (nx, ny, _OPP[d])))
+
+
+def vote_wall(cx, cy, d, present):
+    """Голос лидара за стену (present=True) или проход на ребре (cx,cy)->d.
+    Итог - знак суммы голосов; при равенстве остаётся прежнее значение.
+    Рёбра из _edge_fixed голосами не меняются. Смену уже известного
+    значения печатает - по логу видно, где лидар ошибался."""
+    key = _edge_key(cx, cy, d)
+    if key in _edge_fixed:
+        return
+    v = _wall_votes.get(key, 0) + (1 if present else -1)
+    v = max(-WALL_VOTE_CAP, min(WALL_VOTE_CAP, v))
+    _wall_votes[key] = v
+    old = _maze_cell(cx, cy)[d]
+    new = True if v > 0 else False if v < 0 else (present if old is None else old)
+    if old is not None and new != old:
+        print(f"    ⟳ ({cx},{cy}) {_DIR_NAME[d]}: "
+              f"{'стена' if old else 'проход'} → {'стена' if new else 'проход'} "
+              f"(голоса {v:+d})")
+    _set_wall(cx, cy, d, new)
+
+
+def close_edge(cx, cy, d):
+    """Ребро непроезжее по факту (упёрлись) - навсегда, голоса не в счёт."""
+    _edge_fixed[_edge_key(cx, cy, d)] = True
+    _set_wall(cx, cy, d, True)
+
+
+def open_edge(cx, cy, d):
+    """Ребро проезжее по факту (проехали) - голоса больше не в счёт. Если
+    оно уже было закрыто по факту, это сильнее: туда упирались."""
+    key = _edge_key(cx, cy, d)
+    if _edge_fixed.get(key) is True:
+        return
+    _edge_fixed[key] = False
+    _set_wall(cx, cy, d, False)
+
+
 def set_cell_walls(cx, cy, hdg, walls_rel):
     """walls_rel: {'front','right','left','back': bool} - относительно
-    текущего курса hdg. Переводит в абсолютные направления и пишет в карту."""
+    текущего курса hdg. Переводит в абсолютные направления и голосует ими
+    за стены карты (см. vote_wall)."""
     rel_to_abs = {'front': hdg, 'right': (hdg + 1) % 4,
                   'back': (hdg + 2) % 4, 'left': (hdg + 3) % 4}
     for rel, present in walls_rel.items():
-        _set_wall(cx, cy, rel_to_abs[rel], present)
+        vote_wall(cx, cy, rel_to_abs[rel], present)
 
 
 def block_direction(cx, cy, d):
@@ -1646,7 +1717,7 @@ def block_direction(cx, cy, d):
     открытое - для случаев, которые лидар не предсказывает (чёрная плитка,
     непреодолённое препятствие, бампер вплотную). BFS будет обходить его
     так же, как настоящую стену."""
-    _set_wall(cx, cy, d, True)
+    close_edge(cx, cy, d)
     _blocked.add(_next_cell(cx, cy, d))
 
 
@@ -1863,11 +1934,8 @@ def detect_heading(cx, cy):
     skew = off - 90.0 * k
 
     wait_scan(2)
-    w = measure_walls(WALL_VOTE_SCANS, fresh=True)
-    rel = [wall_present(w["front"], WALL_THRESH) or get_bumper(),
-           wall_present(w["right"], SIDE_THRESH),
-           wall_present(w["back"], BACK_THRESH),
-           wall_present(w["left"], SIDE_THRESH)]
+    wr = _walls_rel_map(measure_walls(WALL_VOTE_SCANS, fresh=True))
+    rel = [wr["front"], wr["right"], wr["back"], wr["left"]]
     known = _maze.get((cx, cy))
 
     def mismatches(h):
@@ -2266,6 +2334,9 @@ def drive_cells(max_cells, expect_ramp=False):
       'black'          - въехали на чёрную плитку
       'wall_close'     - лидар видит стену ближе FRONT_EMERGENCY_MM; при n=0 -
                          стена прямо перед текущей клеткой
+      'front_obstacle' - впереди внезапно что-то близко (не на границе
+                         клетки), остановились, не доехав до середины;
+                         робот уже вернулся в центр исходной клетки
       'bumper_*'       - концевики
     """
     zero_odo()
@@ -2344,6 +2415,7 @@ def drive_cells(max_cells, expect_ramp=False):
     f_anchor_cm = 0.0      # одометрия в момент этого показания
     last_seq = _scan_cnt
     wall_forced = False    # цель уже перенесена к внезапно близкой стене
+    forced_from_cm = 0.0   # центр клетки, из которой ехали, когда это случилось
 
     print(f"    движение  курс={target_yaw:.0f}°")
 
@@ -2597,6 +2669,7 @@ def drive_cells(max_cells, expect_ramp=False):
             to_stop_cm = (f_est - FRONT_CENTER_MM) / 10.0
             if to_stop_cm <= need_cm * 1.3 and (not stopping or to_stop_cm < rem - 1.0):
                 wall_forced = True
+                forced_from_cm = boundary_cm - cell_cm
                 stopping, pending = True, False
                 boundary_cm = traveled_cm + to_stop_cm
                 rem = to_stop_cm
@@ -2649,6 +2722,18 @@ def drive_cells(max_cells, expect_ramp=False):
         rem_eff = rem - fwd * STOP_LEAD_S
 
         if stopping and rem_eff <= 0.0 and ramp_state != 'cand':
+            if wall_forced and traveled_cm < forced_from_cm + cell_cm * 0.5:
+                # Встали перед тем, что внезапно оказалось близко, не доехав
+                # и до середины пути: это не стена следующей клетки (она
+                # была бы на границе, и по ней остановка шла бы штатно), а
+                # препятствие - например, кирпич у входа в неё. Клетку НЕ
+                # засчитываем: раньше она засчитывалась, и робот считал, что
+                # стоит в следующей клетке, недоехав до неё 10-25см.
+                reason = "front_obstacle"
+                f_txt = "—" if f_est is None else f"{f_est:.0f}"
+                print(f"\n    препятствие впереди: f={f_txt}мм, "
+                      f"проехали {(traveled_cm - forced_from_cm)*10:.0f}мм")
+                break
             cells += 1
             if at_wall:
                 print(f"\n    у стены: f={f_est:.0f}мм")
@@ -2866,6 +2951,13 @@ def drive_cells(max_cells, expect_ramp=False):
         if traveled_cm > 0.2:
             creep_mm(-traveled_cm * 10.0, target_yaw,
                      timeout_s=2.0 + 1.5 * traveled_cm / ALIGN_SPEED_CMS)
+    elif reason == "front_obstacle":
+        # Назад в центр клетки, из которой выехали: по передней "стене" тут
+        # не выровняться - это препятствие, а не граница клетки.
+        back_cm = traveled_cm - forced_from_cm
+        if back_cm > 0.2:
+            creep_mm(-back_cm * 10.0, target_yaw,
+                     timeout_s=2.0 + 1.5 * back_cm / ALIGN_SPEED_CMS)
     elif reason in ("lifted", "link_lost", "obstacle_stall"):
         # Выравниваться нечем и незачем: робота либо держат в руках, либо
         # связи нет, либо он упёрся в препятствие и решение принимает
@@ -3100,12 +3192,17 @@ def _measure_cell(hdg):
     на CPU, а верить "открыто" здесь - ехать в стену. Прижатый концевик
     авторитетнее лидара: стена вплотную ближе собственного габарита робота
     и из замера отфильтрована."""
-    w = measure_front_confirmed()
+    return _walls_rel_map(measure_front_confirmed())
+
+
+def _walls_rel_map(w):
+    """Замер стоя -> {'front','right','left','back': bool} по порогам карты
+    (FRONT_MAP_WALL_MM / BACK_MAP_WALL_MM)."""
     return {
-        "front": wall_present(w["front"], WALL_THRESH) or get_bumper(),
+        "front": wall_present(w["front"], FRONT_MAP_WALL_MM) or get_bumper(),
         "right": wall_present(w["right"], SIDE_THRESH),
         "left":  wall_present(w["left"], SIDE_THRESH),
-        "back":  wall_present(w["back"], BACK_THRESH),
+        "back":  wall_present(w["back"], BACK_MAP_WALL_MM),
     }
 
 
@@ -3149,12 +3246,13 @@ def flood_fill_run(max_cells):
         # Позицию - на веб сразу по приезде, не дожидаясь замера стен, синей
         # стоянки и камер: иначе робот на карте отставал на всё это время.
         _write_state(cx, cy, hdg, checkpoint, "exploring")
-        walls_rel = None
+        # Стены мерим и на повторном проезде: каждый замер - лишний голос
+        # (см. vote_wall), и ошибка первого приезда исправляется сама.
+        walls_rel = _measure_cell(hdg)
+        set_cell_walls(cx, cy, hdg, walls_rel)
         if new_cell:
-            walls_rel = _measure_cell(hdg)
-            set_cell_walls(cx, cy, hdg, walls_rel)
             _visited.add((cx, cy))
-            _write_state(cx, cy, hdg, checkpoint, "exploring")   # стены
+        _write_state(cx, cy, hdg, checkpoint, "exploring")   # стены
 
         if get_esp_paused():
             return      # спим - ни синей стоянки, ни сканов; разберётся цикл
@@ -3247,6 +3345,8 @@ def flood_fill_run(max_cells):
 
         n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps)
         if n > 0:
+            if reason != "ramp":
+                open_edge(cx, cy, hdg)   # проехали - значит, проход (горку пишет record_ramp)
             cx, cy = _arrived_cell(cx, cy, hdg, reason)
             total += 1
             arrive((cx, cy) not in _visited)
@@ -3282,12 +3382,21 @@ def flood_fill_run(max_cells):
             continue
         obstacle_fails = 0
 
+        if reason == "front_obstacle":
+            # Кирпич или что-то ещё у входа в следующую клетку - проехать
+            # прямо нельзя. Ребро закрыто только с этой стороны (а не вся
+            # клетка, как у чёрной): в неё можно попасть с другой стороны.
+            print("    препятствие у входа в клетку - ребро закрыто")
+            close_edge(cx, cy, hdg)
+            stalls = 0
+            continue
+
         if reason == "wall_close" and n == 0:
             # Стена прямо перед нами, а карта считала проход открытым (например,
             # боковой замер соврал после переезда центра). Без записи в карту
             # BFS выбирал тот же путь снова и снова - робот "застревал" стоя.
             print("    стена вплотную перед клеткой - записываю её в карту")
-            _set_wall(cx, cy, hdg, True)
+            close_edge(cx, cy, hdg)
             stalls = 0
             continue
 
@@ -3402,9 +3511,15 @@ def return_to_start(cx, cy, hdg, checkpoint):
 
         n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps)
         if n > 0:
+            if reason != "ramp":
+                open_edge(cx, cy, hdg)
             cx, cy = _arrived_cell(cx, cy, hdg, reason)
             # Позицию - до синей стоянки (она 6с), а не после.
             _write_state(cx, cy, hdg, checkpoint, "returning")
+            # Голос и на обратном пути: если карта ошиблась, BFS сразу
+            # перестроит маршрут до старта.
+            if not get_esp_paused():
+                set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
             # Синяя клетка требует стоянки на КАЖДОМ визите, включая обратный
             # путь - см. blue_stop()/_blue_cells.
             if tile_color() == TILE_BLUE or (cx, cy) in _blue_cells:
@@ -3428,8 +3543,11 @@ def return_to_start(cx, cy, hdg, checkpoint):
         if reason == "black":
             block_direction(cx, cy, hdg)
             continue
+        if reason == "front_obstacle":
+            close_edge(cx, cy, hdg)          # см. то же место в flood_fill_run
+            continue
         if reason == "wall_close" and n == 0:
-            _set_wall(cx, cy, hdg, True)     # см. то же место в flood_fill_run
+            close_edge(cx, cy, hdg)          # см. то же место в flood_fill_run
             continue
         if reason == "bumper_both":
             creep_mm(-BUMPER_BACKOFF_MM, snap_target())
