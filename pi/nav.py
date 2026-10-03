@@ -1617,14 +1617,28 @@ def dispense(side):
 # Сколько комплектов выдано из каждого столбика за этот запуск (столбики
 # заряжаются полными перед каждым заездом, поэтому счёт с нуля).
 _kits_used = {"L": 0, "R": 0}
+# Сколько комплектов влезает в столбик - всего на робота 8. Когда столбик
+# пуст, серва им больше не машет: раньше робот после восьмого комплекта
+# продолжал разворачиваться к жертвам и "выдавать" из пустых отсеков.
+KITS_PER_COLUMN = 4
+
+
+def kits_left():
+    return sum(KITS_PER_COLUMN - n for n in _kits_used.values())
 
 
 def dispense_kit():
-    """Один комплект из того столбика, из которого выдано меньше, при
+    """Один комплект из того столбика, где их осталось больше, при
     равенстве - из левого. Так столбики чередуются и расходуются поровну.
     Раньше один комплект всегда шёл из левого, а два - из обоих, и левый
-    пустел быстрее на каждую жертву с одним комплектом."""
+    пустел быстрее на каждую жертву с одним комплектом. Пустые столбики
+    не трогаются; вызывающий проверяет kits_left() заранее."""
     side = "L" if _kits_used["L"] <= _kits_used["R"] else "R"
+    if _kits_used[side] >= KITS_PER_COLUMN:
+        side = "R" if side == "L" else "L"
+    if _kits_used[side] >= KITS_PER_COLUMN:
+        print("    комплекты кончились - выдавать нечего")
+        return
     dispense(side)
     _kits_used[side] += 1
     print(f"    комплект из {'левого' if side == 'L' else 'правого'} столбика "
@@ -3277,9 +3291,13 @@ def report_victim(result, side, wall_dir, hdg):
     wall_dir - абсолютное направление стены с меткой, hdg - текущий курс.
     Возвращает курс после выдачи.
     """
-    n_kits = KITS_BY_TYPE.get(result["type"], 0)
+    need = KITS_BY_TYPE.get(result["type"], 0)
+    # Сколько есть, столько и выдаём; нечего выдать - ни разворота, ни
+    # подъезда к стене: только индикация, она засчитывается и без комплектов.
+    n_kits = min(need, kits_left())
+    short = f" (нужно {need}, в запасе {kits_left()})" if n_kits < need else ""
     print(f"    ▓ {result['label']} ({result['type']}, {side}): индикация "
-          f"{VICTIM_STOP_S + MARGIN_S:.1f}с, аптечек={n_kits}")
+          f"{VICTIM_STOP_S + MARGIN_S:.1f}с, аптечек={n_kits}{short}")
     if _leds is not None:
         hold_while(blink_pink, _leds, stop=get_esp_paused)
     if get_esp_paused():
