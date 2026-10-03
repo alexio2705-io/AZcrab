@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Камеры MAZE2027</title>
+<style>
+  body { background:#111; color:#eee; font-family: sans-serif; text-align:center; margin:0; padding:24px; }
+  h1 { margin-bottom: 24px; }
+  .cams { display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }
+  .cam img { width:640px; max-width:95vw; border:2px solid #444; border-radius:8px; display:block; }
+  .cam h3 { margin: 8px 0; }
+</style>
+</head>
+<body>
+  <h1>Трансляция с камер</h1>
+  <div class="cams">
+    <div class="cam">
+      <h3>Камера 0</h3>
+      <img src="/stream/0.mjpg">
+    </div>
+    <div class="cam">
+      <h3>Камера 1</h3>
+      <img src="/stream/1.mjpg">
+    </div>
+  </div>
+</body>
+</html>

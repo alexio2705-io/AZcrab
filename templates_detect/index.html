@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Детектор жертв</title>
+<style>
+  body { background:#111; color:#eee; font-family: sans-serif; text-align:center; margin:0; padding:24px; }
+  h1 { margin-bottom: 24px; font-size: 22px; }
+  .row { display:flex; justify-content:center; gap:24px; flex-wrap:wrap; }
+  .col img { width:480px; max-width:95vw; border:2px solid #444; border-radius:8px; display:block; background:#000; }
+  .col h3 { margin: 8px 0; }
+  #status { margin-top:16px; padding:16px; border-radius:8px; background:#1c1c1c; display:inline-block; min-width:280px; }
+  #status .type { font-size:26px; font-weight:bold; }
+  #status .meta { color:#aaa; margin-top:6px; font-size:13px; }
+  .damaged  { color:#ff5555; }
+  .stable   { color:#ffd23f; }
+  .unharmed { color:#5cff6b; }
+  .unknown  { color:#888; }
+</style>
+</head>
+<body>
+  <h1>Детекция жертв — RoboCup Rescue Maze</h1>
+  <div class="row">
+    <div class="col">
+      <h3>Камера (сырое видео)</h3>
+      <img src="/stream/raw.mjpg">
+    </div>
+    <div class="col">
+      <h3>Обнаружение</h3>
+      <img src="/stream/detected.mjpg">
+      <div id="status">
+        <div class="type unknown" id="type">—</div>
+        <div class="meta" id="meta">нет данных</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+async function poll() {
+  try {
+    const r = await fetch('/status.json');
+    const s = await r.json();
+    const typeEl = document.getElementById('type');
+    const metaEl = document.getElementById('meta');
+    const names = {damaged: 'ПОВРЕЖДЁН (Φ)', stable: 'СТАБИЛЕН (Ψ)', unharmed: 'НЕ ПОВРЕЖДЁН (Ω)'};
+    if (s.type) {
+      typeEl.textContent = names[s.type] || s.label || s.type;
+      typeEl.className = 'type ' + (names[s.type] ? s.type : 'unknown');
+    } else {
+      typeEl.textContent = '—';
+      typeEl.className = 'type unknown';
+    }
+    metaEl.textContent = (s.visible ? 'в кадре' : 'вне кадра')
+      + (s.class ? `, класс: ${s.class}` : '')
+      + (s.conf != null ? `, conf: ${s.conf}` : '')
+      + (s.ts ? `, ${s.ts}` : '');
+  } catch (e) {}
+  setTimeout(poll, 500);
+}
+poll();
+</script>
+</body>
+</html>
