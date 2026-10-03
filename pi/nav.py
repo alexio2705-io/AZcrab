@@ -387,6 +387,26 @@ TURN_DONE_RATE_DPS = 20.0   # "доехал" - только если и вращ
 TURN_SETTLE = 3
 TURN_DT = 0.015
 TURN_TIMEOUT_S = 6.0        # на сам поворот; время манёвров выхода сюда не входит
+
+# ── Поворот, стоя на препятствии ────────────────────────────
+# Корпус перекошен (одна сторона на препятствии) - колёса то цепляют, то
+# проскальзывают, а гироскоп ловит раскачку корпуса. На ровном полу это не
+# так, и обычные настройки поворота там давали тряску:
+#  - TURN_DONE_RATE_DPS=20 на раскачке почти не выполняется, "доехал" не
+#    засчитывался, и робот подёргивал колёсами до TURN_TIMEOUT_S;
+#  - подстройка TURN_FF по проскальзывающим колёсам улетала к TURN_FF_MAX,
+#    и следующие повороты (уже на полу) шли с перелётом и качанием у цели;
+#  - после поворота ESP держит колёса на 0 dps ещё 3с (BRAKE_HOLD_US), а
+#    на перекошенном корпусе вес давит на колёса, и регуляторы моторов
+#    раскачиваются на люфте редуктора - тряска на месте все эти 3с.
+# Поэтому на перекосе: допуски шире, подстройка TURN_FF заморожена, а после
+# остановки удержание снимается, как только робот замер (см. settle_brake).
+TILT_PITCH_DEG = OBSTACLE_PITCH_DEG   # |pitch - ровный пол| - "на препятствии"
+TILT_ROLL_DEG = 4.0
+TILT_RELEASE_MAX_DEG = 20.0   # круче - это уже горка/обрыв, держим тормоз
+TURN_TILT_TOL_DEG = 3.0
+TURN_TILT_DONE_RATE_DPS = 45.0
+TILT_BRAKE_S = 0.25           # тормоз до полной остановки, потом отпускаем
 # Застревание на повороте (колесо зацепилось за угол стены, корпус упёрся):
 # цель ещё не достигнута, а корпус почти не вращается дольше TURN_STUCK_S.
 # Порог скорости ниже TURN_DONE_RATE_DPS: у самой цели робот законно
@@ -1531,6 +1551,30 @@ def zero_odo():   _drive_cmd_now("Z")
 def brake():      _drive_cmd_now("B")
 
 
+def tilt_deg():
+    """Наибольший перекос корпуса относительно ровного пола, градусы."""
+    return max(abs(get_pitch() - _pitch_level), abs(get_roll()))
+
+
+def is_tilted():
+    """Стоим перекошенно - на препятствии, а не на полу."""
+    return (abs(get_pitch() - _pitch_level) >= TILT_PITCH_DEG
+            or abs(get_roll()) >= TILT_ROLL_DEG)
+
+
+def settle_brake(pause_s=0.10):
+    """Тормоз после манёвра. На ровном полу - как раньше: "B", и ESP держит
+    0 dps ещё BRAKE_HOLD_US. На препятствии это удержание трясёт робота на
+    люфте редукторов (см. TILT_*), поэтому там тормоз только до остановки,
+    а потом моторы отпускаются - на небольшом перекосе робот и так стоит."""
+    brake()
+    time.sleep(pause_s)
+    if is_tilted() and tilt_deg() < TILT_RELEASE_MAX_DEG:
+        time.sleep(max(0.0, TILT_BRAKE_S - pause_s))
+        stop()
+        print(f"    на препятствии (перекос {tilt_deg():.0f}°) - удержание колёс снято")
+
+
 def hold_while(fn, *args, period=1.0, **kwargs):
     """Держит активный тормоз фоновым потоком, пока выполняется fn(*args).
 
@@ -2198,7 +2242,10 @@ def turn_to(target, label=None):
         rem = -angle_err(get_yaw(), target)
         rem_eff = rem - rate * TURN_LEAD_S
 
-        if abs(rem) <= TURN_TOL_DEG and abs(rate) <= TURN_DONE_RATE_DPS:
+        tilted = is_tilted()
+        tol = TURN_TILT_TOL_DEG if tilted else TURN_TOL_DEG
+        done_rate = TURN_TILT_DONE_RATE_DPS if tilted else TURN_DONE_RATE_DPS
+        if abs(rem) <= tol and abs(rate) <= done_rate:
             settled += 1
             if settled >= TURN_SETTLE:
                 break
@@ -2256,8 +2303,8 @@ def turn_to(target, label=None):
         spd = max(-TURN_MAX_CMS, min(TURN_MAX_CMS, spd))
         # Страховка от залипания: профиль у самой цели просит почти ноль, и
         # если трение успело остановить робота раньше - дожимаем минимумом.
-        if (abs(rem) > TURN_TOL_DEG and abs(spd) < TURN_MIN_CMS
-                and abs(rate) < TURN_DONE_RATE_DPS):
+        if (abs(rem) > tol and abs(spd) < TURN_MIN_CMS
+                and abs(rate) < done_rate):
             spd = math.copysign(TURN_MIN_CMS, rem)
         # Ступень 1: пока корпус стоит - не меньше TURN_STUCK_BOOST_CMS. Как
         # только закрутился, профиль снова ведёт сам (иначе перелёт у цели).
@@ -2275,7 +2322,7 @@ def turn_to(target, label=None):
         while len(hist) > 1 and now - hist[1][0] >= TURN_LEAD_S:
             hist.popleft()
         spd_then = hist[0][1]
-        if (abs(rate) > 60.0 and abs(spd_then) > TURN_MIN_CMS * 2
+        if (not tilted and abs(rate) > 60.0 and abs(spd_then) > TURN_MIN_CMS * 2
                 and (rate > 0) == (spd_then > 0)):
             k = abs(spd_then) / abs(rate)
             k = max(TURN_FF_MIN, min(TURN_FF_MAX, k))
@@ -2285,8 +2332,7 @@ def turn_to(target, label=None):
         # контур поворота собственное запаздывание; теперь шаг задаёт пакет.
         telem_seq = wait_telem(telem_seq, TURN_DT)
 
-    brake()
-    time.sleep(0.10)
+    settle_brake(0.10)
     print(f"    итог yaw={get_yaw():.1f}°  ошибка={angle_err(get_yaw(), target):+.1f}°  "
           f"за {time.monotonic() - t0:.2f}с  TURN_FF={_turn_ff:.3f}"
           + (f"  застреваний={stuck_stage}" if stuck_stage else ""))
@@ -2994,8 +3040,7 @@ def drive_cells(max_cells, expect_ramp=False):
     if _lifted.is_set():
         stop()
     else:
-        brake()
-        time.sleep(0.06)
+        settle_brake(0.06)
 
     if reason == "ramp_stall":
         # Скатываемся задом ровно на пройденное - обратно в центр клетки, из
