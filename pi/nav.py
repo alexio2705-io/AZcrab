@@ -77,8 +77,8 @@ from collections import deque
 import serial
 import RPi.GPIO as GPIO
 
-from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD, LD19
-from walls import measure, WALL_THRESH, SIDE_THRESH, BACK_THRESH
+from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
+from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH
 import tile_classify
 from victim_detect import VictimDetector
 from leds import NeoPixels, blink_pink, blink_return, RED, SLEEP, VICTIM_STOP_S, MARGIN_S
@@ -929,43 +929,73 @@ def _telem_thread():
 _WALL_DEBUG_LOG = os.path.expanduser("~/maze/wall_debug.log")
 
 
-def _lidar_thread():
-    global _scan_cnt
-    prev_wr = prev_wl = False
-    with LD19(LIDAR_PORT, LIDAR_BAUD) as lidar, \
-            open(_WALL_DEBUG_LOG, "a") as dbg:
-        for rev in lidar.revolutions():
-            w = measure(rev)
-            with _lock:
-                _state["wall"] = {"front": w["front"],
-                                  "right": w["right"],
-                                  "left": w["left"],
-                                  "back": w["back"]}
-                # Бока симметричным окном - для замеров СТОЯ. Передняя и
-                # задняя оси от окна бортов не зависят, поэтому те же.
-                _state["wall_still"] = {"front": w["front"],
-                                        "right": w["right_still"],
-                                        "left": w["left_still"],
-                                        "back": w["back"]}
-                _state["wall_n"] = {"front": w["front_n"],
-                                    "right": w["right_still_n"],
-                                    "left": w["left_still_n"],
-                                    "back": w["back_n"]}
-            _scan_cnt += 1
+# Сколько оборотов лидарный процесс выкинул как неполные (см. lidar_proc.py)
+# и сколько раз его пришлось поднимать заново - для диагностики в логе.
+_lidar_dropped = 0
+_lidar_restarts = 0
+_lidar_proc = None
+_lidar_stop = threading.Event()   # выход из nav.py - не перезапускать
+LIDAR_RESTART_S = 1.0
 
-            wr_now = wall_present(w["right"], SIDE_THRESH)
-            wl_now = wall_present(w["left"], SIDE_THRESH)
-            if (wr_now and not prev_wr) or (wl_now and not prev_wl):
-                side, center = ("RIGHT", 90.0) if (wr_now and not prev_wr) else ("LEFT", 270.0)
-                pts = sorted((round(a), d, i) for a, d, i in rev
-                             if min(abs(a - center), 360 - abs(a - center)) <= 40)
-                dbg.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} "
-                          f"{side} rise  right={w['right']}(n={w['right_n']})  "
-                          f"left={w['left']}(n={w['left_n']})  "
-                          f"pitch={get_pitch():.1f} roll={get_roll():.1f}  "
-                          f"pts=" + " ".join(f"{a}:{d}" for a, d, _ in pts) + "\n")
-                dbg.flush()
-            prev_wr, prev_wl = wr_now, wl_now
+
+def _lidar_spawn():
+    """lidar_proc.py отдельным процессом: свой GIL, порт читается без
+    пропусков, пока здесь работает YOLO. Ctrl+C он получает вместе со всей
+    группой, а если nav.py упадёт - умрёт сам на закрытом pipe."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lidar_proc.py")
+    return subprocess.Popen([sys.executable, "-u", script, LIDAR_PORT, str(LIDAR_BAUD)],
+                            stdout=subprocess.PIPE, text=True, bufsize=1)
+
+
+def _lidar_thread():
+    """Принимает готовые замеры от lidar_proc.py и кладёт их в _state. Сам
+    лидар здесь больше не читается - только ~10 строк JSON в секунду."""
+    global _scan_cnt, _lidar_dropped, _lidar_restarts, _lidar_proc
+    with open(_WALL_DEBUG_LOG, "a") as dbg:
+        while True:
+            proc = _lidar_proc = _lidar_spawn()
+            for line in proc.stdout:
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                w = msg["w"]
+                with _lock:
+                    _state["wall"] = {"front": w["front"],
+                                      "right": w["right"],
+                                      "left": w["left"],
+                                      "back": w["back"]}
+                    # Бока симметричным окном - для замеров СТОЯ. Передняя и
+                    # задняя оси от окна бортов не зависят, поэтому те же.
+                    _state["wall_still"] = {"front": w["front"],
+                                            "right": w["right_still"],
+                                            "left": w["left_still"],
+                                            "back": w["back"]}
+                    _state["wall_n"] = {"front": w["front_n"],
+                                        "right": w["right_still_n"],
+                                        "left": w["left_still_n"],
+                                        "back": w["back_n"]}
+                _lidar_dropped = msg.get("dropped", 0)
+                _scan_cnt += 1
+
+                d = msg.get("dbg")
+                if d:
+                    dbg.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} "
+                              f"{d['side']} rise  right={w['right']}(n={w['right_n']})  "
+                              f"left={w['left']}(n={w['left_n']})  "
+                              f"pitch={get_pitch():.1f} roll={get_roll():.1f}  "
+                              f"pts=" + " ".join(f"{a}:{dd}" for a, dd in d["pts"]) + "\n")
+                    dbg.flush()
+            # stdout закрылся - процесс умер (порт отвалился, исключение).
+            # Заезд без лидара невозможен, поэтому поднимаем заново; старые
+            # замеры тем временем стареют, и wait_scan() это увидит.
+            code = proc.wait()
+            if _lidar_stop.is_set():
+                return
+            _lidar_restarts += 1
+            print(f"\n  [WARN] лидарный процесс завершился (код {code}) - "
+                  f"перезапуск #{_lidar_restarts}")
+            time.sleep(LIDAR_RESTART_S)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3596,7 +3626,8 @@ def main():
     w0 = get_walls()
 
     def _f(v): return f"{v:.0f}" if v is not None else "—"
-    print(f"  OK  F={_f(w0['front'])} R={_f(w0['right'])} L={_f(w0['left'])}")
+    print(f"  OK  F={_f(w0['front'])} R={_f(w0['right'])} L={_f(w0['left'])}"
+          f"  (отдельный процесс, неполных оборотов: {_lidar_dropped})")
 
     # Отсчёт после нажатия - чтобы успеть убрать руки / отойти от робота.
     # BTN_1 на ESP во время заезда - перезапуск с чекпоинта (restart_from_checkpoint).
@@ -3630,6 +3661,11 @@ def main():
         time.sleep(0.1)
         stop()
         _link.close()
+        _lidar_stop.set()
+        if _lidar_proc is not None and _lidar_proc.poll() is None:
+            _lidar_proc.terminate()
+        print(f"  лидар: неполных оборотов отброшено {_lidar_dropped}, "
+              f"перезапусков процесса {_lidar_restarts}")
         # Карта не критична для самого заезда, поэтому без долгого ожидания:
         # если процесс не отвечает на SIGTERM за секунду, просто оставляем
         # его - следующий запуск лишь получит [WARN] про занятый порт.
