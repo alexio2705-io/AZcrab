@@ -68,6 +68,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -2459,6 +2460,9 @@ def _ramp_measure(log, sign):
             "start_known": i_start > 0}
 
 
+STATUS_PERIOD_S = 0.1     # строка статуса в drive_cells не чаще
+
+
 @_timed("ход")
 def drive_cells(max_cells, expect_ramp=False):
     """Едет вперёд, пересекая границы клеток БЕЗ остановки, пока очередная
@@ -2508,6 +2512,7 @@ def drive_cells(max_cells, expect_ramp=False):
     fwd = 0.0
     last_progress_cm = 0.0
     last_progress_t = time.monotonic()
+    last_status_t = 0.0
 
     # Состояние ассиста. assist_mode: None | 'kick' | 'ramp'.
     #   assist_t0        - начало ТЕКУЩЕЙ фазы
@@ -3071,10 +3076,13 @@ def drive_cells(max_cells, expect_ramp=False):
         else:
             motors(fwd + steer * TURN_SIGN, fwd - steer * TURN_SIGN)
 
-        sys.stdout.write(f"\r    кл.{cells + 1} ост.{rem*10:4.0f}мм  "
-                         f"yaw={get_yaw():.1f}°(e={axis_e:+.1f})  "
-                         f"we={wall_e:+.0f}→{head_off:+.1f}°  spd={fwd:.0f}   ")
-        sys.stdout.flush()
+        # Статус ≤10 Гц: на 200 Гц забитый pipe SSH тормозил бы сам цикл.
+        if time.monotonic() - last_status_t >= STATUS_PERIOD_S:
+            last_status_t = time.monotonic()
+            sys.stdout.write(f"\r    кл.{cells + 1} ост.{rem*10:4.0f}мм  "
+                             f"yaw={get_yaw():.1f}°(e={axis_e:+.1f})  "
+                             f"we={wall_e:+.0f}→{head_off:+.1f}°  spd={fwd:.0f}   ")
+            sys.stdout.flush()
         # Такт по приходу пакета, а не sleep(0.010): два независимых периода
         # по 10мс давали биение до целого периода сверху - самый дешёвый
         # источник запаздывания в контуре (см. STOP_LEAD_S). Таймаут только
@@ -3831,8 +3839,21 @@ def start_map_web():
 
 
 # ══════════════════════════════════════════════════════════════
+HUP_LOG = os.path.expanduser("~/maze/nav_hup.log")
+
+
+def _on_hangup(_signum, _frame):
+    """Оборвался SSH: терминала больше нет, и любой print упал бы, а то и сам
+    SIGHUP убил бы заезд. Дальше едем, а вывод уходит в файл."""
+    fd = os.open(HUP_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+
+
 def main():
     global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds
+    signal.signal(signal.SIGHUP, _on_hangup)
 
     global PER_CELL_STOP, CHECKPOINT_TILE
 
