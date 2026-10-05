@@ -24,7 +24,7 @@ import serial
 LINK_PORT = "/dev/serial0"
 LINK_BAUD = 921600
 MAGIC = b"\xAA\x55"     # начало пакета телеметрии ESP (robot_link.c)
-DISPENSE_MOVE_S = 1.3   # как в nav.py: ход сервы туда-обратно с запасом
+DISPENSE_MOVE_S = 1.4   # как в nav.py: ход сервы туда-обратно с запасом
 
 
 def nav_running() -> bool:
