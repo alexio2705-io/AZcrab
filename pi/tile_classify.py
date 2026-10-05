@@ -88,6 +88,22 @@ def save(samples, path=None):
     os.replace(tmp, path)
 
 
+_FEAT_CACHE = {}    # id(образца) -> ((r, g, b, c), признаки)
+
+
+def _sample_features(s):
+    """features() образца, посчитанный один раз: classify() зовётся каждый
+    тик, а образцы за заезд не меняются. Ключ сверяется по значениям, так что
+    правка образца на месте или повторное использование id кеш не собьют."""
+    key = (s["r"], s["g"], s["b"], s["c"])
+    hit = _FEAT_CACHE.get(id(s))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    f = features(*key)
+    _FEAT_CACHE[id(s)] = (key, f)
+    return f
+
+
 def classify(samples, r, g, b, c):
     """-> (цвет | None, расстояние до ближайшего образца, второй по близости
     цвет, расстояние до него). None - датчик ничего не видит, образцов нет,
@@ -97,8 +113,7 @@ def classify(samples, r, g, b, c):
     f = features(r, g, b, c)
     best = {}
     for color, lst in samples.items():
-        best[color] = min(distance(f, features(s["r"], s["g"], s["b"], s["c"]))
-                          for s in lst)
+        best[color] = min(distance(f, _sample_features(s)) for s in lst)
     ranked = sorted(best.items(), key=lambda kv: kv[1])
     color, d = ranked[0]
     second, d2 = ranked[1] if len(ranked) > 1 else (None, None)
