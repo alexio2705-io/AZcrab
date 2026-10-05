@@ -25,10 +25,9 @@ static const char *TAG = "LINK";
 #define LINK_BAUD   921600
 #define UART_BUF    512
 
-// 200 Hz, matched to ENC_POLL_HZ in motor.c - the RPi's braking profile
-// closes on this odometry, so a packet is worth no more than the encoder
-// sample inside it. See robot_link.h on why the packet size is irrelevant to
-// this choice (9% of the link at 200 Hz).
+// 200 Hz. The encoders are polled at half that (ENC_POLL_HZ = 100 in motor.c),
+// so odometry repeats in every other packet. See robot_link.h on why the
+// packet size is irrelevant to this choice (9% of the link at 200 Hz).
 #define TELEM_HZ        200
 #define COLOR_POLL_HZ   30
 #define CMD_TIMEOUT_US  500000   // no "M:" for this long while moving -> brake
