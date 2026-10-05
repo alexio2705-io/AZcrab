@@ -112,18 +112,26 @@ def _reader():
             if have_prev and len(_magic_gaps) < 64:
                 _magic_gaps[since] = _magic_gaps.get(since, 0) + 1
             have_prev = True
-            since = PKT_SIZE
-            pkt = bytes(buf[:PKT_SIZE])
-            del buf[:PKT_SIZE]
-            body = pkt[2:]
+            since = 0
+            body = bytes(buf[2:PKT_SIZE])
+            # Случайный маркер в мусоре: при ошибке съедаем 1 байт, а не весь
+            # кадр. Чужая версия - кадр, за которым сразу следующий маркер.
             if body[0] != TELEM_VER:
-                _bad_ver += 1
+                if (len(buf) >= PKT_SIZE + 2 and buf[PKT_SIZE] == MAGIC[0]
+                        and buf[PKT_SIZE + 1] == MAGIC[1]):
+                    _bad_ver += 1
+                del buf[0]
+                since = 1
                 continue
             crc = 0
             for b in body[:-1]:
                 crc ^= b
             if crc != body[-1]:
+                del buf[0]
+                since = 1
                 continue
+            since = PKT_SIZE
+            del buf[:PKT_SIZE]
             vals = struct.unpack(FMT, body)
             # ver + семь float'ов -> color на индексе 8, каналы 9..12
             color, cr, cg, cb, cc = vals[8], vals[9], vals[10], vals[11], vals[12]

@@ -988,20 +988,30 @@ def _telem_thread():
             if have_prev and len(_magic_gaps) < 64:
                 _magic_gaps[since] = _magic_gaps.get(since, 0) + 1
             have_prev = True
-            since = PKT_SIZE          # столько сейчас будет съедено
-            pkt = bytes(buf[:PKT_SIZE])
-            del buf[:PKT_SIZE]
-            body = pkt[2:]
+            since = 0
+            body = bytes(buf[2:PKT_SIZE])
             # Версия - раньше CRC: она отсекает чужую раскладку сразу и
-            # называет причину, а CRC только молча выбросит кадр.
+            # называет причину, а CRC только молча выбросит кадр. Маркер мог
+            # быть случайным (внутри мусора) - тогда настоящий пакет лежит
+            # внутри этих 51 байт, поэтому при любой ошибке съедаем 1 байт,
+            # а не весь кадр. "Чужой версией" считаем кадр, за которым сразу
+            # идёт следующий маркер: у случайного такого нет.
             if body[0] != TELEM_VER:
-                _bad_ver += 1
+                if (len(buf) >= PKT_SIZE + 2 and buf[PKT_SIZE] == MAGIC[0]
+                        and buf[PKT_SIZE + 1] == MAGIC[1]):
+                    _bad_ver += 1
+                del buf[0]
+                since = 1
                 continue
             crc = 0
             for b in body[:-1]:
                 crc ^= b
             if crc != body[-1]:
+                del buf[0]
+                since = 1
                 continue
+            since = PKT_SIZE          # столько сейчас будет съедено
+            del buf[:PKT_SIZE]
             (_ver, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
              cr, cg, cb, cc, lcm, rcm, status, flags, _crc) = struct.unpack(FMT, body)
             with _lock:

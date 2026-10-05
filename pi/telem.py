@@ -62,16 +62,22 @@ def main():
                     del buf[0]
                     continue
                 body = bytes(buf[2:PKT_SIZE])
-                del buf[:PKT_SIZE]
+                # Случайный маркер в мусоре: при ошибке съедаем 1 байт, а не
+                # весь кадр. Чужая версия - кадр, за которым сразу маркер.
                 if body[0] != TELEM_VER:
-                    bad_ver[body[0]] = bad_ver.get(body[0], 0) + 1
+                    if (len(buf) >= PKT_SIZE + 2 and buf[PKT_SIZE] == MAGIC[0]
+                            and buf[PKT_SIZE + 1] == MAGIC[1]):
+                        bad_ver[body[0]] = bad_ver.get(body[0], 0) + 1
+                    del buf[0]
                     continue
                 crc = 0
                 for b in body[:-1]:
                     crc ^= b
                 if crc != body[-1]:
                     bad_crc += 1
+                    del buf[0]
                     continue
+                del buf[:PKT_SIZE]
                 (_v, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
                  cr, cg, cb, cc, lcm, rcm, status, fl, _c) = struct.unpack(FMT, body)
                 good += 1
