@@ -153,18 +153,24 @@ class LD19:
                 return None
             self._buf += chunk
 
-    def packets(self):
+    def packets(self, silence_s: float | None = None):
+        """silence_s - если пакетов нет дольше этого, бросить TimeoutError
+        (иначе на молчащем порту крутится вечно)."""
+        last = time.monotonic()
         while True:
             pkt = self.read_packet()
             if pkt is None:
+                if silence_s is not None and time.monotonic() - last > silence_s:
+                    raise TimeoutError(f"лидар молчит > {silence_s:.1f} с")
                 continue
+            last = time.monotonic()
             yield pkt
 
     def points(self):
         for pkt in self.packets():
             yield from pkt.points
 
-    def revolutions(self):
+    def revolutions(self, silence_s: float | None = None):
         """Полные обороты как списки Point, без огрубления в сектора.
 
         Оборот считается завершённым, когда угол перескочил через 0.
@@ -172,7 +178,7 @@ class LD19:
         pts = []
         prev_angle = 0.0
         partial = True  # подключились в середине оборота - первый неполный
-        for pkt in self.packets():
+        for pkt in self.packets(silence_s):
             for p in pkt.points:
                 # при MIRROR углы убывают, поэтому ловим скачок в любую сторону
                 if abs(p.angle - prev_angle) > 180.0:  # прошли через ноль

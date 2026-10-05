@@ -38,6 +38,8 @@ MAX_GAP_DEG = 5.0
 # после подключения или разрыв на стыке оборотов, который дырой не виден).
 MIN_PTS_FRAC = 0.8
 DBG_HALF_DEG = 40.0
+# Нет пакетов дольше - процесс падает, nav.py его перезапускает.
+SILENCE_S = 2.0
 
 
 def _max_gap(rev) -> float:
@@ -68,7 +70,7 @@ def main() -> None:
     typical = None          # обычное число точек в обороте (скользящее)
     prev_wr = prev_wl = False
     with LD19(port, baud) as lidar:
-        for rev in lidar.revolutions():
+        for rev in lidar.revolutions(SILENCE_S):
             n = len(rev)
             if n == 0:
                 continue

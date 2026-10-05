@@ -1055,9 +1055,12 @@ def _lidar_thread():
             for line in proc.stdout:
                 try:
                     msg = json.loads(line)
-                except ValueError:
+                    w = msg["w"]
+                    _ = (w["front"], w["right"], w["left"], w["back"], w["right_still"],
+                         w["left_still"], w["front_n"], w["right_still_n"],
+                         w["left_still_n"], w["back_n"])
+                except (ValueError, KeyError, TypeError):
                     continue
-                w = msg["w"]
                 with _lock:
                     _state["wall"] = {"front": w["front"],
                                       "right": w["right"],
@@ -2113,12 +2116,15 @@ def restart_from_checkpoint(checkpoint):
 
 
 def wait_scan(n=2, timeout=3.0):
+    """False - свежих сканов нет (лидар молчит): get_walls*() отдаст старое."""
     start = _scan_cnt
     t0 = time.time()
     while _scan_cnt - start < n:
         if time.time() - t0 > timeout:
-            return
+            print(f"\n  [WARN] лидар молчит {timeout:.0f}с - стены могут быть устаревшими")
+            return False
         time.sleep(0.04)
+    return True
 
 
 # Последний замер стоя - для повторного использования, пока робот не сдвинулся.
@@ -2164,8 +2170,9 @@ def measure_walls(n=WALL_VOTE_SCANS, fresh=False):
     FAR = 9999.0
     odo0, yaw0 = get_odo(), get_yaw()
     samples = {"front": [], "right": [], "left": [], "back": []}
+    fresh_ok = True
     for _ in range(max(1, n)):
-        wait_scan(1)
+        fresh_ok &= wait_scan(1)
         w = get_walls_still()
         for k in samples:
             samples[k].append(w[k] if w[k] is not None else FAR)
@@ -2175,7 +2182,8 @@ def measure_walls(n=WALL_VOTE_SCANS, fresh=False):
         out[k] = None if m >= FAR else m
     # Положение - на НАЧАЛО замера: если робот сдвинулся во время него, то
     # следующая проверка это увидит и замер не переиспользует.
-    _walls_cache = (time.monotonic(), max(1, n), odo0, yaw0, dict(out))
+    if fresh_ok:     # устаревший замер не кладём в кеш
+        _walls_cache = (time.monotonic(), max(1, n), odo0, yaw0, dict(out))
     return out
 
 
