@@ -2507,7 +2507,7 @@ def drive_cells(max_cells, expect_ramp=False):
     lead_cm = DECIDE_LEAD_MM / 10.0
     fwd = 0.0
     last_progress_cm = 0.0
-    last_progress_t = time.time()
+    last_progress_t = time.monotonic()
 
     # Состояние ассиста. assist_mode: None | 'kick' | 'ramp'.
     #   assist_t0        - начало ТЕКУЩЕЙ фазы
@@ -2573,8 +2573,8 @@ def drive_cells(max_cells, expect_ramp=False):
 
     print(f"    движение  курс={target_yaw:.0f}°")
 
-    t0 = time.time()
-    t_cell = time.time()    # таймаут считаем на клетку, а не на весь прогон
+    t0 = time.monotonic()
+    t_cell = time.monotonic()    # таймаут считаем на клетку, а не на весь прогон
     while True:
         if _lifted.is_set():
             return cells, "lifted"
@@ -2589,7 +2589,7 @@ def drive_cells(max_cells, expect_ramp=False):
         # Бюджет времени клетки продлевается ровно на длительность ассиста:
         # подъём по горке законно занимает секунды, и раньше он упирался в
         # этот таймаут, а клетка при этом молча терялась (cells не рос).
-        if time.time() - t_cell > CELL_TIMEOUT_S + assist_extra_s:
+        if time.monotonic() - t_cell > CELL_TIMEOUT_S + assist_extra_s:
             reason = "timeout"
             print("    ТАЙМАУТ!")
             break
@@ -2637,8 +2637,8 @@ def drive_cells(max_cells, expect_ramp=False):
         stall_limit = ASSIST_STALL_S if on_obstacle else ODO_STALL_S
         if traveled_cm >= last_progress_cm + ODO_PROGRESS_CM:
             last_progress_cm = traveled_cm
-            last_progress_t = time.time()
-        elif fwd >= MOVE_MIN_CMS and time.time() - last_progress_t > stall_limit:
+            last_progress_t = time.monotonic()
+        elif fwd >= MOVE_MIN_CMS and time.monotonic() - last_progress_t > stall_limit:
             if ramp_state in ('cand', 'on'):
                 reason = "ramp_stall"
                 print(f"\n    ГОРКА НЕ ВЗЯТА на {traveled_cm*10:.0f}мм "
@@ -2862,7 +2862,7 @@ def drive_cells(max_cells, expect_ramp=False):
                 boundary_cm += cell_cm
                 rem += cell_cm
                 pending = True
-                t_cell = time.time()
+                t_cell = time.monotonic()
                 sys.stdout.write(f"\r    клетка {cells} пройдена с ходу      \n")
 
             if stopping:
@@ -2896,7 +2896,7 @@ def drive_cells(max_cells, expect_ramp=False):
         # ── Профиль скорости ──────────────────────────────────
         # Разгон - по времени (RAMP_UP_S). Торможение включается только когда
         # решено остановиться, и начинается ровно с текущей скорости.
-        ss = min(1.0, (time.time() - t0) / RAMP_UP_S)
+        ss = min(1.0, (time.monotonic() - t0) / RAMP_UP_S)
         ss = ss * ss * (3.0 - 2.0 * ss)         # smoothstep, без ступеньки
         ramp_up = v_max * ss                     # от 0, не от MOVE_MIN_CMS -
                                                   # иначе на t=0 снова ступенька
