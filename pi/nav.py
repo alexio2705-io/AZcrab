@@ -1612,7 +1612,10 @@ def hold_while(fn, *args, period=1.0, **kwargs):
 
     def _keepalive():
         while not stop_evt.wait(period):
-            brake()
+            try:
+                brake()
+            except (serial.SerialException, OSError) as e:
+                print(f"  [WARN] keepalive тормоза: {e}")
 
     brake()
     t = threading.Thread(target=_keepalive, daemon=True)
@@ -3973,10 +3976,14 @@ def main():
         print("\nОстановлено.")
     finally:
         print(time_report({}, time.monotonic() - t_run, prefix="⏱ весь заезд"))
-        brake()
-        time.sleep(0.1)
-        stop()
-        _link.close()
+        # Ошибка порта не должна обрывать остальную уборку ниже.
+        try:
+            brake()
+            time.sleep(0.1)
+            stop()
+            _link.close()
+        except (serial.SerialException, OSError) as e:
+            print(f"  [WARN] порт ESP при выходе: {e}")
         _lidar_stop.set()
         if _lidar_proc is not None and _lidar_proc.poll() is None:
             _lidar_proc.terminate()
