@@ -40,6 +40,8 @@ MIN_PTS_FRAC = 0.8
 DBG_HALF_DEG = 40.0
 # Нет пакетов дольше - процесс падает, nav.py его перезапускает.
 SILENCE_S = 2.0
+# Столько коротких оборотов подряд (~2с) - "обычное" число точек пересчитывается.
+SHORT_RESET = 20
 
 
 def _max_gap(rev) -> float:
@@ -68,6 +70,7 @@ def main() -> None:
     out = sys.stdout
     dropped = 0
     typical = None          # обычное число точек в обороте (скользящее)
+    short_run = 0           # коротких оборотов подряд
     prev_wr = prev_wl = False
     with LD19(port, baud) as lidar:
         for rev in lidar.revolutions(SILENCE_S):
@@ -77,7 +80,15 @@ def main() -> None:
             if typical is None:
                 typical = float(n)
             short = n < MIN_PTS_FRAC * typical
-            if not short:
+            if short:
+                # Много коротких подряд - это уже не потери пакетов, а
+                # завышенное "обычное" (разовый всплеск числа точек): без
+                # сброса оно не падало бы, и отбрасывались бы все обороты.
+                short_run += 1
+                if short_run >= SHORT_RESET:
+                    typical, short_run, short = float(n), 0, False
+            else:
+                short_run = 0
                 # Только по полным оборотам, иначе серия битых тянула бы
                 # "обычное" вниз и переставала бы считаться битой.
                 typical += 0.1 * (n - typical)
