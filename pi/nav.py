@@ -1107,6 +1107,7 @@ def _lidar_thread():
                                         "left": w["left_still_n"],
                                         "back": w["back_n"]}
                 _lidar_dropped = msg.get("dropped", 0)
+                _state["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
                 _scan_cnt += 1
 
                 d = msg.get("dbg")

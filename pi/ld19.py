@@ -43,6 +43,7 @@ BAUDRATE = 230400
 DEFAULT_PORT = "/dev/ttyAMA3"
 # ориентация лидара на роботе: robot_angle = (90 + raw) % 360
 ZERO_DIR = 90.0    # угол в системе робота, куда смотрит нулевой угол лидара
+SEAM_DEG = 180.0   # где режем поток на обороты (в системе робота; 180 = сзади)
 MIRROR = False     # True: углы лидара растут против часовой в системе робота
 
 
@@ -173,20 +174,23 @@ class LD19:
     def revolutions(self, silence_s: float | None = None):
         """Полные обороты как списки Point, без огрубления в сектора.
 
-        Оборот считается завершённым, когда угол перескочил через 0.
+        Оборот считается завершённым, когда угол перескочил через SEAM_DEG
+        (сзади). Шов на переде резал бы переднюю ось пополам: её точки были
+        бы на ~100 мс старше конца оборота. Углы точек не сдвигаются.
         """
         pts = []
         prev_angle = 0.0
         partial = True  # подключились в середине оборота - первый неполный
         for pkt in self.packets(silence_s):
             for p in pkt.points:
+                a = (p.angle - SEAM_DEG) % 360.0
                 # при MIRROR углы убывают, поэтому ловим скачок в любую сторону
-                if abs(p.angle - prev_angle) > 180.0:  # прошли через ноль
+                if abs(a - prev_angle) > 180.0:  # прошли через шов
                     if not partial:
                         yield pts
                     partial = False
                     pts = []
-                prev_angle = p.angle
+                prev_angle = a
                 pts.append(p)
 
     def scans(self, bins: int = 360, min_intensity: int = 0):

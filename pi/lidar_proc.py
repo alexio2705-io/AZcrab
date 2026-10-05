@@ -16,7 +16,9 @@ Python, и делил GIL с YOLO, телеметрией и петлёй мот
 выглядит как "стены нет". Сколько таких было - в поле "dropped".
 
 Строка на оборот:
-    {"w": <словарь walls.measure()>, "npts": N, "dropped": K, "dbg": ...}
+    {"w": <словарь walls.measure()>, "npts": N, "dropped": K, "t": T, "dbg": ...}
+"t" - time.monotonic() на момент конца оборота (шов сзади, см. ld19.SEAM_DEG):
+перед робота отсканирован ~50 мс назад, зад - в самом конце.
 "dbg" - только когда борт перешёл из "нет стены" в "есть стену": сторона и
 сырые точки ±40° вокруг неё, для wall_debug.log в nav.py.
 
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 from ld19 import DEFAULT_PORT, BAUDRATE, LD19
 from walls import measure, SIDE_THRESH
@@ -97,7 +100,7 @@ def main() -> None:
                 continue
 
             w = measure(rev)
-            msg = {"w": w, "npts": n, "dropped": dropped}
+            msg = {"w": w, "npts": n, "dropped": dropped, "t": time.monotonic()}
 
             wr = w["right"] is not None and w["right"] < SIDE_THRESH
             wl = w["left"] is not None and w["left"] < SIDE_THRESH
