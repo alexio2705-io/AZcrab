@@ -87,6 +87,19 @@ def _reader():
         try:
             chunk = _link.read(max(1, min(_link.in_waiting, 4096)))
         except (serial.SerialException, OSError, TypeError):
+            if _link is not None and _link.is_open:
+                print("\n  [WARN] ошибка порта ESP - переподключаюсь")
+                while True:
+                    time.sleep(0.5)
+                    try:
+                        _link.close()
+                        _link.open()
+                        break
+                    except (serial.SerialException, OSError):
+                        pass
+                buf.clear()
+                have_prev = False
+                continue
             return
         if not chunk:
             continue

@@ -944,6 +944,22 @@ _leds = None
 # ══════════════════════════════════════════════════════════════
 #  Потоки
 # ══════════════════════════════════════════════════════════════
+def _link_reopen():
+    """Ошибка порта на ходу (не закрытие на выходе): переоткрываем, пока не
+    получится. False - порт закрыт нарочно, поток должен выйти."""
+    if not _link.is_open:
+        return False
+    print("\n  [WARN] ошибка порта ESP - переподключаюсь")
+    while True:
+        time.sleep(0.5)
+        try:
+            _link.close()
+            _link.open()
+            return True
+        except (serial.SerialException, OSError):
+            pass
+
+
 def _telem_thread():
     global _telem_seq, _telem_t, _bad_ver
     buf = bytearray()
@@ -956,6 +972,10 @@ def _telem_thread():
             # (YOLO, лидар - тот же GIL), разбор начинал отставать пачками.
             chunk = _link.read(max(1, min(_link.in_waiting, 4096)))
         except (serial.SerialException, OSError, TypeError):
+            if _link is not None and _link_reopen():
+                buf.clear()
+                have_prev = False
+                continue
             return          # порт закрыт на выходе из main()
         if not chunk:
             continue
