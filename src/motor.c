@@ -32,6 +32,38 @@ static void send_frame(uint32_t can_id, const uint8_t data[8])
     else                                                 g_tx_fail++;
 }
 
+// Восстановление после BUS_OFF. Драйвер сам из BUS_OFF не выходит: моторы и
+// энкодеры молчали бы до ребута ESP. twai_initiate_recovery() не блокирует -
+// она только запускает аппаратный выход (128 x 11 рецессивных бит, ~1.4мс на
+// 1 Мбит/с), по его окончании драйвер стоит в STOPPED и шлёт BUS_RECOVERED,
+// после чего нужен twai_start(). Отдельная задача, а не cmd_task: пока шина
+// лежит, twai_transmit() возвращает ошибку сразу (состояние не RUNNING), так
+// что командный цикл не ждёт ничего. Опрос состояния раз в секунду -
+// страховка на случай, если алерт пропал (например, BUS_OFF ещё до старта
+// задачи).
+static uint32_t g_can_recoveries = 0;
+
+static void can_recover_task(void *arg)
+{
+    for (;;) {
+        uint32_t alerts = 0;
+        twai_read_alerts(&alerts, pdMS_TO_TICKS(1000));
+
+        twai_status_info_t st;
+        if (twai_get_status_info(&st) != ESP_OK) continue;
+
+        if (st.state == TWAI_STATE_BUS_OFF) {
+            if (twai_initiate_recovery() == ESP_OK)
+                ESP_LOGW(TAG_CAN, "BUS_OFF (TEC=%lu) - recovery started",
+                         (unsigned long)st.tx_error_counter);
+        } else if (st.state == TWAI_STATE_STOPPED) {
+            if (twai_start() == ESP_OK)
+                ESP_LOGW(TAG_CAN, "bus recovered, TWAI restarted (#%lu)",
+                         (unsigned long)++g_can_recoveries);
+        }
+    }
+}
+
 void motor_can_init(void)
 {
     twai_general_config_t g_config =
@@ -43,6 +75,8 @@ void motor_can_init(void)
     // 32 кадра стоят ~400 байт RAM и снимают вопрос целиком.
     g_config.tx_queue_len = 32;
     g_config.rx_queue_len = 32;
+    // Для can_recover_task. Без TWAI_ALERT_AND_LOG: печать из ISR не нужна.
+    g_config.alerts_enabled = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_1MBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -58,6 +92,7 @@ void motor_can_init(void)
         return;
     }
     ESP_LOGI(TAG_CAN, "TWAI up @ 1Mbps, TX=%d RX=%d", CAN_TX_GPIO, CAN_RX_GPIO);
+    xTaskCreate(can_recover_task, "can_recov", 2560, NULL, 9, NULL);
 }
 
 // One-line bus health dump: state, error counters, and how many of our own
