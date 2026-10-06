@@ -7,6 +7,7 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/uart.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -67,6 +68,16 @@ static volatile uint8_t     g_color     = APDS9960_COLOR_BLACK;
 // пороги классификации подбираются по ним, а на глаз по одному номеру
 // понять, почему плитка определилась не так, невозможно.
 static volatile uint16_t    g_cr, g_cg, g_cb, g_cc;
+
+// Моторами командуют две задачи - cmd_task и btn_task (пауза). Без общего
+// замка cmd_task мог проверить g_run_state == RUNNING, тут же BTN_1 ставил
+// паузу и тормозил, а cmd_task следом всё равно отправлял скорость; и
+// g_motors_stopped в motor.c правился из обеих задач вперемешку. Под этим
+// замком - g_run_state и любой вызов robot_*() после старта задач.
+static SemaphoreHandle_t g_motor_lock;
+
+static void motor_lock(void)   { xSemaphoreTake(g_motor_lock, portMAX_DELAY); }
+static void motor_unlock(void) { xSemaphoreGive(g_motor_lock); }
 
 typedef struct __attribute__((packed)) {
     uint8_t magic[2];
@@ -189,6 +200,10 @@ static void cmd_task(void *arg)
             if (byte == '\n' || byte == '\r') {
                 line[len] = '\0';
                 float l = 0.0f, r = 0.0f, cap = 0.0f;
+                // "K:" держит задачу ~1.3с на ходу серво - не под замком,
+                // иначе BTN_1 всё это время не смог бы поставить паузу.
+                bool motor_cmd = strncmp(line, "K:", 2) != 0;
+                if (motor_cmd) motor_lock();
 
                 if (sscanf(line, "M:%f,%f", &l, &r) == 2) {
                     last_cmd_us = esp_timer_get_time();
@@ -241,6 +256,7 @@ static void cmd_task(void *arg)
                     if (line[2] == 'L') servo_dispense_left();
                     else if (line[2] == 'R') servo_dispense_right();
                 }
+                if (motor_cmd) motor_unlock();
                 len = 0;
             } else if (len < (int)sizeof(line) - 1) {
                 line[len++] = (char)byte;
@@ -249,6 +265,7 @@ static void cmd_task(void *arg)
             }
         }
 
+        motor_lock();
         int64_t now = esp_timer_get_time();
 
         // A closed-loop speed command has to keep arriving or the motor falls
@@ -274,6 +291,7 @@ static void cmd_task(void *arg)
             ESP_LOGW(TAG, "failsafe: no command for %d ms, braking",
                      (int)(CMD_TIMEOUT_US / 1000));
         }
+        motor_unlock();
     }
 }
 
@@ -285,12 +303,21 @@ static void cmd_task(void *arg)
 static void btn_task(void *arg)
 {
     for (;;) {
-        if (button_clicked(BTN_1) && g_run_state == RUN_RUNNING) {
-            g_run_state = RUN_PAUSED;
-            robot_brake();
-            vTaskDelay(pdMS_TO_TICKS(150));
-            robot_stop_all();
-            ESP_LOGI(TAG, "button: PAUSE (restart from checkpoint)");
+        if (button_clicked(BTN_1)) {
+            motor_lock();
+            bool pause = g_run_state == RUN_RUNNING;
+            if (pause) {
+                g_run_state = RUN_PAUSED;
+                robot_brake();
+            }
+            motor_unlock();
+            if (pause) {
+                vTaskDelay(pdMS_TO_TICKS(150));
+                motor_lock();
+                if (g_run_state == RUN_PAUSED) robot_stop_all();  // "R" мог успеть снять
+                motor_unlock();
+                ESP_LOGI(TAG, "button: PAUSE (restart from checkpoint)");
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -335,6 +362,8 @@ void robot_link_run(void)
 {
     uart_init_port();
     servo_init();
+    g_motor_lock = xSemaphoreCreateMutex();
+    configASSERT(g_motor_lock);
 
     robot_wake_all();
     robot_set_accel(MOTOR_ACCEL_DPS_S);
