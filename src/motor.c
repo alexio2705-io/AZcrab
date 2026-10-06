@@ -6,6 +6,7 @@
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 
 static const char *TAG_CAN = "MOTOR_CAN";
 
@@ -420,7 +421,9 @@ static void enc_poll_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(1000 / ENC_POLL_HZ);
     TickType_t last = xTaskGetTickCount();
     uint8_t data[8] = {MF_CMD_GET_POS, 0, 0, 0, 0, 0, 0, 0};
+    esp_task_wdt_add(NULL);   // см. robot_link_run() про TWDT
     for (;;) {
+        esp_task_wdt_reset();
         for (int i = 0; i < n; i++) send_frame(MOTOR_BASE_ID + ENC_IDS[i], data);
         vTaskDelayUntil(&last, period);
     }

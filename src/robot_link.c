@@ -11,6 +11,7 @@
 #include "driver/uart.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 
 #include "buttons.h"
 #include "apds9960.h"
@@ -141,8 +142,10 @@ static void telem_task(void *arg)
 {
     telem_t pkt = {.magic = {0xAA, 0x55}, .ver = TELEM_VER};
     TickType_t last = xTaskGetTickCount();
+    esp_task_wdt_add(NULL);   // см. robot_link_run() про TWDT
 
     for (;;) {
+        esp_task_wdt_reset();
         float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
         gyro_get_angles(&yaw, &pitch, &roll);
 
@@ -193,8 +196,10 @@ static void cmd_task(void *arg)
     int64_t hold_until_us = 0;   // keep re-asserting the 0 dps hold until then
     int64_t last_hold_us  = 0;
     bool    moving = false;
+    esp_task_wdt_add(NULL);   // см. robot_link_run() про TWDT
 
     for (;;) {
+        esp_task_wdt_reset();
         uint8_t byte;
         if (uart_read_bytes(LINK_PORT, &byte, 1, pdMS_TO_TICKS(20)) > 0) {
             if (byte == '\n' || byte == '\r') {
@@ -384,6 +389,11 @@ void robot_link_run(void)
     motor_zero_encoders();
     robot_stop_all();   // silent until the RPi's first drive command
 
+    // telem, cmd (здесь) и enc_poll (motor.c) подписаны на task watchdog:
+    // failsafe живёт в самой cmd_task, и её зависания иначе не заметил бы
+    // никто. CONFIG_ESP_TASK_WDT_PANIC выключен - через 5с без сброса будет
+    // только "Task watchdog got triggered" с именем задачи в консоли, без
+    // перезагрузки. Самый долгий законный простой - "K:" (~1.3с).
     xTaskCreate(telem_task, "telem", 3072, NULL, 6,  NULL);
     xTaskCreate(cmd_task,   "cmd",   3072, NULL, 11, NULL);
     xTaskCreate(color_task, "color", 3072, NULL, 5,  NULL);
