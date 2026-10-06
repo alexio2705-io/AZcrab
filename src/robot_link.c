@@ -233,10 +233,16 @@ static void cmd_task(void *arg)
                     }
                 } else if (line[0] == 'B') {
                     last_cmd_us = esp_timer_get_time();
-                    robot_brake();
                     moving = false;
-                    hold_until_us = last_cmd_us + BRAKE_HOLD_US;
-                    last_hold_us  = last_cmd_us;
+                    if (g_run_state == RUN_RUNNING) {
+                        robot_brake();
+                        hold_until_us = last_cmd_us + BRAKE_HOLD_US;
+                        last_hold_us  = last_cmd_us;
+                    } else {
+                        // Пауза BTN_1: робот в руках. Тормоз будит моторы и
+                        // держит 0 dps - молчим, как на "M:" в паузе.
+                        robot_stop_all();
+                    }
                 } else if (line[0] == 'Z') {
                     last_cmd_us = esp_timer_get_time();
                     motor_zero_encoders();
@@ -267,6 +273,14 @@ static void cmd_task(void *arg)
 
         motor_lock();
         int64_t now = esp_timer_get_time();
+
+        // На паузе моторы заглушил btn_task. Ни удержание тормоза, ни
+        // failsafe не должны их снова будить - иначе робот в руках держит
+        // 0 dps до BRAKE_HOLD_US.
+        if (g_run_state == RUN_PAUSED) {
+            hold_until_us = 0;
+            moving = false;
+        }
 
         // A closed-loop speed command has to keep arriving or the motor falls
         // out of closed loop (see motor.h) - a single 0 dps frame is a brake
