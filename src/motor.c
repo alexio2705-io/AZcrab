@@ -356,6 +356,10 @@ typedef struct {
 static enc_state_t   g_enc[MF_MAX_ID + 1];
 static portMUX_TYPE  g_enc_mux = portMUX_INITIALIZER_UNLOCKED;
 static float         g_enc_zero[MF_MAX_ID + 1];
+// Мотор был оффлайн в момент "Z": старый ноль ему оставлять нельзя (после
+// возврата - скачок одометрии), поэтому ноль берётся с его первого ответа,
+// а до тех пор он в одометрии не участвует. Всё под g_enc_mux.
+static bool          g_enc_zero_pending[MF_MAX_ID + 1];
 static const uint8_t ENC_IDS[] = {ENC_LEFT_ID_1, ENC_LEFT_ID_2, ENC_RIGHT_ID_1, ENC_RIGHT_ID_2};
 
 static bool enc_online(uint8_t id)
@@ -399,6 +403,10 @@ static void enc_rx_task(void *arg)
         g_enc[id].seen       = true;
         g_enc[id].angle_deg  = angle;
         g_enc[id].last_rx_us = now;
+        if (g_enc_zero_pending[id]) {
+            g_enc_zero[id] = angle;
+            g_enc_zero_pending[id] = false;
+        }
         portEXIT_CRITICAL(&g_enc_mux);
     }
 }
@@ -444,24 +452,35 @@ float motor_get_speed_dps(uint8_t id)
     return online ? v : NAN;
 }
 
+// Все четыре id - одним куском под g_enc_mux: иначе между ними мог вклиниться
+// ответ энкодера, и стороны обнулились бы по разным моментам.
 void motor_zero_encoders(void)
 {
     const int n = sizeof(ENC_IDS) / sizeof(ENC_IDS[0]);
+    portENTER_CRITICAL(&g_enc_mux);
     for (int i = 0; i < n; i++) {
-        float a = motor_get_angle_deg(ENC_IDS[i]);
-        if (!isnan(a)) g_enc_zero[ENC_IDS[i]] = a;
+        uint8_t id = ENC_IDS[i];
+        if (enc_online(id)) {
+            g_enc_zero[id] = g_enc[id].angle_deg;
+            g_enc_zero_pending[id] = false;
+        } else {
+            g_enc_zero_pending[id] = true;
+        }
     }
+    portEXIT_CRITICAL(&g_enc_mux);
 }
 
 // avg() of whichever ids in {a,b} are online, with each optionally sign-flipped
-// (flip_a/flip_b = -1 to invert); NAN only if both are offline.
+// (flip_a/flip_b = -1 to invert); NAN only if both are offline. Угол и ноль
+// читаются вместе под g_enc_mux - не вперемешку с motor_zero_encoders().
 static float enc_pair_deg(uint8_t a, int8_t sign_a, uint8_t b, int8_t sign_b)
 {
-    float va = motor_get_angle_deg(a);
-    float vb = motor_get_angle_deg(b);
-    bool oa = !isnan(va), ob = !isnan(vb);
-    if (oa) va = (va - g_enc_zero[a]) * sign_a;
-    if (ob) vb = (vb - g_enc_zero[b]) * sign_b;
+    portENTER_CRITICAL(&g_enc_mux);
+    bool oa = enc_online(a) && !g_enc_zero_pending[a];
+    bool ob = enc_online(b) && !g_enc_zero_pending[b];
+    float va = (g_enc[a].angle_deg - g_enc_zero[a]) * sign_a;
+    float vb = (g_enc[b].angle_deg - g_enc_zero[b]) * sign_b;
+    portEXIT_CRITICAL(&g_enc_mux);
     if (oa && ob) return (va + vb) * 0.5f;
     if (oa) return va;
     if (ob) return vb;
