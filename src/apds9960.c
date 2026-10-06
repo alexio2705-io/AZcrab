@@ -5,7 +5,11 @@
 
 // APDS9960 I2C address
 #define APDS9960_I2C_ADDR           0x39
-#define APDS9960_I2C_TIMEOUT_MS     1000
+// Одна транзакция на 400 кГц - доли миллисекунды. Было 1000мс: залипшая
+// шина держала color_task до 5с на цикл (статус + 4 канала), и цвет в
+// телеметрии всё это время оставался старым. 20мс - с запасом на растяжку
+// SCL, и чтение каналов бросается на первой же ошибке.
+#define APDS9960_I2C_TIMEOUT_MS     20
 
 // APDS9960 Sensor registers
 #define APDS9960_REG_ENABLE         0x80
@@ -101,12 +105,11 @@ bool apds9960_is_data_ready(i2c_port_t i2c_port) {
 }
 
 esp_err_t apds9960_read_color_data(i2c_port_t i2c_port, uint16_t *r, uint16_t *g, uint16_t *b, uint16_t *c) {
-    esp_err_t err = ESP_OK;
-    err |= apds9960_read16(i2c_port, APDS9960_REG_RDATAL, r);
-    err |= apds9960_read16(i2c_port, APDS9960_REG_GDATAL, g);
-    err |= apds9960_read16(i2c_port, APDS9960_REG_BDATAL, b);
-    err |= apds9960_read16(i2c_port, APDS9960_REG_CDATAL, c);
-    return err;
+    esp_err_t err;
+    if ((err = apds9960_read16(i2c_port, APDS9960_REG_RDATAL, r)) != ESP_OK) return err;
+    if ((err = apds9960_read16(i2c_port, APDS9960_REG_GDATAL, g)) != ESP_OK) return err;
+    if ((err = apds9960_read16(i2c_port, APDS9960_REG_BDATAL, b)) != ESP_OK) return err;
+    return apds9960_read16(i2c_port, APDS9960_REG_CDATAL, c);
 }
 
 // Colour byte for the telemetry and the ESP console ONLY - nav.py does not use
