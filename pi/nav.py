@@ -1142,6 +1142,11 @@ def get_yaw_rate():
     with _lock: return _state["yaw_rate"]
 
 
+def get_yaw_and_rate():
+    """Курс и угловая скорость из одного пакета (одним захватом _lock)."""
+    with _lock: return _state["yaw"], _state["yaw_rate"]
+
+
 def get_pitch():
     with _lock: return _state["pitch"]
 
@@ -2763,7 +2768,8 @@ def drive_cells(max_cells, expect_ramp=False):
         # (валидное f_now >= FRONT_TRACK_MM) или когда экстраполяция от него
         # зашла дальше ANCHOR_STALE_CM - тогда старой точке верить рискованно.
         seq = _scan_cnt
-        f_now = get_walls()["front"]
+        walls = get_walls()      # один снимок стен на весь тик
+        f_now = walls["front"]
         if on_slope_now or p_abs >= RAMP_MAP_DEG:
             # Перед лидара на склоне - это пол или небо. Стоя у подножия, он
             # вообще видит саму горку как стену в ~40см (130мм/tg25..30° + 15см),
@@ -2785,7 +2791,7 @@ def drive_cells(max_cells, expect_ramp=False):
         # Не глушится и на склоне: при лидаре на 130мм пол носом вниз ближе
         # FRONT_EMERGENCY_MM - это уклон больше 40°, а стена вплотную - всегда
         # стена. Поэтому берём сырое показание, а не обнулённое выше.
-        f_raw = get_walls()["front"]
+        f_raw = walls["front"]
         if f_raw is not None and f_raw <= FRONT_EMERGENCY_MM:
             print(f"\n    СТЕНА ВПЛОТНУЮ: f={f_raw:.0f}мм  d={traveled_cm*10:.0f}мм")
             # Раньше причина оставалась "stop"/"done" и клетка не засчитывалась
@@ -2841,8 +2847,7 @@ def drive_cells(max_cells, expect_ramp=False):
         # клетку), позже нельзя (не успеем затормозить).
         if pending and rem <= lead_cm:
             pending = False
-            w = get_walls()
-            br = wall_present(w["right"], SIDE_THRESH)
+            br = wall_present(walls["right"], SIDE_THRESH)
 
             # Переднюю стену сравниваем не с сырым показанием, а с тем, каким
             # оно станет В ЦЕНТРЕ клетки: решение принимается за DECIDE_LEAD_MM
@@ -2852,7 +2857,7 @@ def drive_cells(max_cells, expect_ramp=False):
             # стеной, считая её открытой. Прижатый концевик тут авторитетнее
             # лидара: вплотную к стене лидар её уже не видит (она ближе
             # собственного габарита робота).
-            f_ref = f_est if f_est is not None else w["front"]
+            f_ref = f_est if f_est is not None else walls["front"]
             f_center = None if f_ref is None else f_ref - rem * 10.0
             bf = wall_present(f_center, WALL_THRESH) or get_bumper()
 
@@ -2933,7 +2938,6 @@ def drive_cells(max_cells, expect_ramp=False):
             fwd = ramp_up
 
         # ── Центровка: сдвигает цель курса, а не руль ─────────
-        walls = get_walls()
         wl, wr = walls["left"], walls["right"]
         wall_l = wl is not None and wl < WALL_CENTER_MM
         wall_r = wr is not None and wr < WALL_CENTER_MM
@@ -2949,7 +2953,8 @@ def drive_cells(max_cells, expect_ramp=False):
         if abs(wall_e) < WALL_DEADBAND_MM:
             wall_e = 0.0
 
-        axis_e = angle_err(get_yaw(), target_yaw)
+        yaw, yaw_rate = get_yaw_and_rate()   # один снимок на тик
+        axis_e = angle_err(yaw, target_yaw)
         on_ramp = abs(pitch_delta) >= RAMP_PITCH_DEG
         wall_kp = RAMP_WALL_KP_DEG if on_ramp else WALL_KP_DEG
         wall_max = RAMP_WALL_MAX_DEG if on_ramp else WALL_MAX_DEG
@@ -2963,8 +2968,8 @@ def drive_cells(max_cells, expect_ramp=False):
         # P по ошибке курса, D по ИЗМЕРЕННОЙ угловой скорости (не по разности
         # углов) - см. GYRO_KD_RATE. Фильтр производной больше не нужен:
         # фильтровать было нечего, кроме шума собственного дифференцирования.
-        yaw_e = angle_err(get_yaw(), heading)
-        steer = -(yaw_e * GYRO_KP + get_yaw_rate() * GYRO_KD_RATE)
+        yaw_e = angle_err(yaw, heading)
+        steer = -(yaw_e * GYRO_KP + yaw_rate * GYRO_KD_RATE)
         steer = max(-MAX_STEER_CMS, min(MAX_STEER_CMS, steer))
         # Та же кривая, что и у fwd: без этого при fwd≈0 и заметной ошибке
         # курса (например, сразу после поворота) команда получалась вида
@@ -3080,7 +3085,7 @@ def drive_cells(max_cells, expect_ramp=False):
         if time.monotonic() - last_status_t >= STATUS_PERIOD_S:
             last_status_t = time.monotonic()
             sys.stdout.write(f"\r    кл.{cells + 1} ост.{rem*10:4.0f}мм  "
-                             f"yaw={get_yaw():.1f}°(e={axis_e:+.1f})  "
+                             f"yaw={yaw:.1f}°(e={axis_e:+.1f})  "
                              f"we={wall_e:+.0f}→{head_off:+.1f}°  spd={fwd:.0f}   ")
             sys.stdout.flush()
         # Такт по приходу пакета, а не sleep(0.010): два независимых периода
