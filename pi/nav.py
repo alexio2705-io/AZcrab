@@ -11,7 +11,7 @@ robot_link.h на ESP.
     /dev/serial0  - ESP: телеметрия сюда, команды туда (921600)
     /dev/ttyAMA3  - лидар LD19                          (dtoverlay=uart3-pi5)
 
-Запуск:  ~/maze/venv/bin/python ~/maze/nav.py [N] [--no-vision] [--no-web]
+Запуск:  ~/maze/venv/bin/python ~/maze/nav.py [N] [--no-vision] [--no-web] [--no-color]
 
 N - потолок на общее число разведанных клеток, страховка от зацикливания
 (по умолчанию см. main()). Нормальная разведка останавливается сама, когда
@@ -4292,7 +4292,7 @@ def main():
     global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds, _watcher
     signal.signal(signal.SIGHUP, _on_hangup)
 
-    global PER_CELL_STOP, CHECKPOINT_TILE
+    global PER_CELL_STOP, CHECKPOINT_TILE, USE_COLOR_SENSOR
 
     args = [a for a in sys.argv[1:]]
     # Робот всегда останавливается в центре каждой клетки.
@@ -4301,6 +4301,11 @@ def main():
     PER_CELL_STOP = True
     use_vision = "--no-vision" not in args
     use_web = "--no-web" not in args
+    if "--no-color" in args:
+        # Без датчика цвета: ни чёрных, ни синих, ни чекпоинтов - для заездов,
+        # где проверяется что-то другое (например, наблюдатель меток).
+        USE_COLOR_SENSOR = False
+        print("Датчик цвета отключён (--no-color): чёрные/синие/чекпоинты не видны")
     if "--red-checkpoint" in args:
         CHECKPOINT_TILE = TILE_RED
     print(f"Чекпоинт: {'КРАСНАЯ (--red-checkpoint, тренировка)' if CHECKPOINT_TILE == TILE_RED else 'зеркальная'} плитка")
