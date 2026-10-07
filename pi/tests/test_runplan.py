@@ -66,5 +66,18 @@ class TestGoStraight(unittest.TestCase):
         self.assertFalse(rp.go_straight((0, 1), N, maze(), nxt, self.frontier, RIGHT_HAND))
 
 
+class TestBlackRetreat(unittest.TestCase):
+    def test_single_cell_drive_backs_to_start(self):
+        self.assertEqual(rp.black_retreat(17.0, 30.0, 0, 30.0), (0, 17.0))
+
+    def test_black_after_straight_decision_backs_to_cell_before_it(self):
+        # решили "прямо" через клетку 1 (цель уже центр клетки 2 = 60см),
+        # чёрная - над клеткой 1: назад в центр клетки 0, пройдено 0
+        self.assertEqual(rp.black_retreat(22.0, 60.0, 1, 30.0), (0, 22.0))
+
+    def test_black_in_next_cell_before_decision(self):
+        self.assertEqual(rp.black_retreat(48.0, 60.0, 1, 30.0), (1, 18.0))
+
+
 if __name__ == "__main__":
     unittest.main()

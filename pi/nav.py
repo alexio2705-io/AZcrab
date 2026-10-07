@@ -2866,9 +2866,10 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
         tile = tile_color()
         if tile == TILE_BLACK:
             reason = "black"
-            # Центр клетки, С КОТОРОЙ заехали: boundary_cm всегда указывает на
-            # ближайший центр впереди, предыдущий - на клетку назад.
-            black_back_cm = traveled_cm - (boundary_cm - cell_cm)
+            # Назад - в центр клетки перед чёрной. Без остановок чёрная бывает
+            # и над клеткой, которую план уже засчитал пройденной.
+            cells, black_back_cm = runplan.black_retreat(traveled_cm, boundary_cm,
+                                                         cells, cell_cm)
             print(f"\n    ЧЁРНАЯ (C={get_rgbc()[3]}) на {traveled_cm*10:.0f}мм - "
                   f"откат {black_back_cm*10:.0f}мм")
             break
@@ -3013,8 +3014,10 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                                         [(kN, cN), (kN + 1, cN + corridor.CELL_MM)])
                     cell_sides.prune(x_robot - corridor.CELL_MM)
                     to_n = (boundary_cm - traveled_cm) * 10.0
-                    if 0.0 < to_n <= corridor.CELL_MM:
-                        f_c = None if walls["front"] is None else walls["front"] - to_n
+                    # Нет переднего замера (мало точек в окне) - не голос
+                    # "прохода": это не то же, что "впереди пусто".
+                    if 0.0 < to_n <= corridor.CELL_MM and walls["front"] is not None:
+                        f_c = walls["front"] - to_n
                         front_votes[0 if wall_present(f_c, WALL_THRESH) else 1] += 1
                     border = cN - corridor.HALF_CELL_MM
                     if kN not in posts_done:
@@ -3216,6 +3219,9 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                 odo_hist.clear()
                 f_anchor = None                         # перед - заново со свежего оборота
                 last_seq = _scan_cnt
+                # Обороты за время стоянки сняты с подъезда и поворотов к
+                # аптечкам - для стен впереди они не годятся.
+                scan_mark = _scan_cnt
                 side_hold.reset()
                 left_cm = boundary_cm - traveled_cm
                 print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
@@ -3948,12 +3954,12 @@ class _DrivePlan:
 
     goal_test - цель маршрута: фронтир разведки или старт. home=True -
     возврат: цель в самой N значит встать в ней (при разведке N сама
-    становится посещённой, цель ищется дальше). on_pass(N) - клетку N
-    проехали без остановки, on_checkpoint(N) - под ней серебряная плитка."""
+    становится посещённой, цель ищется дальше). on_checkpoint(N) - под
+    клеткой N серебряная плитка."""
 
-    def __init__(self, cell, hdg, goal_test, home=False, on_pass=None, on_checkpoint=None):
+    def __init__(self, cell, hdg, goal_test, home=False, on_checkpoint=None):
         self.cell0, self.hdg, self.goal_test, self.home = cell, hdg, goal_test, home
-        self.on_pass, self.on_checkpoint = on_pass, on_checkpoint
+        self.on_checkpoint = on_checkpoint
         self._measured = {}     # k -> {сторона: замер лидара или None}
 
     def cell(self, k):
@@ -4018,8 +4024,6 @@ class _DrivePlan:
             v = self._measured.get(k, {}).get(s)
             if v is not None:
                 vote_wall(N[0], N[1], watch_logic.wall_of(self.hdg, s), v)
-        if self.on_pass is not None:
-            self.on_pass(N)
 
     def checkpoint(self, k):
         if self.on_checkpoint is not None:
@@ -4188,9 +4192,8 @@ def flood_fill_run(max_cells):
 
         # Прямые - без остановок: drive_cells встанет сам там, где нужен
         # поворот, где не уверен в стенах или на синей (см. _DrivePlan).
-        def on_pass(N, h=hdg):
-            _write_state(N[0], N[1], h, checkpoint, "exploring")
-
+        # Веб-карта обновится по приезде (arrive): файл состояния из петли
+        # управления не пишем.
         def on_checkpoint(N, h=hdg):
             nonlocal checkpoint
             if checkpoint[:2] != N:
@@ -4198,7 +4201,7 @@ def flood_fill_run(max_cells):
                 print(f"\n  ✓ ЧЕКПОИНТ ({N[0]},{N[1]}) курс={_DIR_NAME[h]} (на ходу)")
 
         plan = _DrivePlan((cx, cy), hdg, lambda c: c not in _visited,
-                          on_pass=on_pass, on_checkpoint=on_checkpoint)
+                          on_checkpoint=on_checkpoint)
         n, reason = drive_cells(max(1, max_cells - total), expect_ramp=(cx, cy, hdg) in _ramps,
                                 cell=(cx, cy), hdg=hdg, plan=plan)
         if n > 0:
@@ -4373,9 +4376,7 @@ def return_to_start(cx, cy, hdg, checkpoint):
             hdg = d
             _write_state(cx, cy, hdg, checkpoint, "returning")
 
-        plan = _DrivePlan((cx, cy), hdg, lambda c: c == (0, 0), home=True,
-                          on_pass=lambda N, h=hdg: _write_state(N[0], N[1], h, checkpoint,
-                                                                "returning"))
+        plan = _DrivePlan((cx, cy), hdg, lambda c: c == (0, 0), home=True)
         n, reason = drive_cells(300, expect_ramp=(cx, cy, hdg) in _ramps,
                                 cell=(cx, cy), hdg=hdg, plan=plan)
         if n > 0:
