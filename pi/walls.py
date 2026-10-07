@@ -323,16 +323,10 @@ def wall_dist(filt: dict, axis: str, side_back_limit: float = SIDE_BACK_LIMIT):
     return _median(vals), len(vals)
 
 
-def measure(rev) -> dict:
-    """Оборот точек -> дистанции до стен в мм (None = нет стены).
-
-    Ключи 'front'/'right'/'left'/'back' - замер ДЛЯ ДВИЖЕНИЯ (асимметричное
-    боковое окно, см. SIDE_BACK_LIMIT). Ключи 'right_still'/'left_still' - тот
-    же оборот, но симметричным окном: он корректен только когда робот стоит в
-    центре клетки, зато там, где стена близко, даёт в полтора раза больше
-    точек. Ключи '*_n' - сколько точек вошло в каждую медиану.
-    """
-    # два набора: со всеми масками (как в nav.py) и без задней - для 'back'
+def filtered(rev):
+    """Оборот -> (все маски, без задней маски) - {угол: дистанция} после
+    фильтров корпуса, масок и лески. Общее для measure() и точек коридора,
+    которые lidar_proc.py отдаёт nav.py (corridor.corridor_points)."""
     full, no_rear = {}, {}
     rear_only = [m for m in MASKS if m is not REAR_MASK]
     for angle, dist, _ in rev:
@@ -344,8 +338,21 @@ def measure(rev) -> dict:
             full[key] = dist
         if not is_masked(angle, rear_only):
             no_rear[key] = dist
-    full = without_unsupported_rope_edges(full)
-    no_rear = without_unsupported_rope_edges(no_rear)
+    return without_unsupported_rope_edges(full), without_unsupported_rope_edges(no_rear)
+
+
+def measure(rev, filt=None) -> dict:
+    """Оборот точек -> дистанции до стен в мм (None = нет стены).
+
+    Ключи 'front'/'right'/'left'/'back' - замер ДЛЯ ДВИЖЕНИЯ (асимметричное
+    боковое окно, см. SIDE_BACK_LIMIT). Ключи 'right_still'/'left_still' - тот
+    же оборот, но симметричным окном: он корректен только когда робот стоит в
+    центре клетки, зато там, где стена близко, даёт в полтора раза больше
+    точек. Ключи '*_n' - сколько точек вошло в каждую медиану.
+
+    filt - уже готовый filtered(rev), если вызывающему он нужен и сам.
+    """
+    full, no_rear = filt if filt is not None else filtered(rev)
 
     front, front_n = wall_dist(full, 'front')
     right, right_n = wall_dist(full, 'right')

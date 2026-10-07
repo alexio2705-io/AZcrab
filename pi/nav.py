@@ -88,7 +88,7 @@ import serial
 import RPi.GPIO as GPIO
 
 from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
-from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH
+from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH, MASKS as _WALLS_MASKS
 import tile_classify
 import runplan
 import watch_logic
@@ -1152,6 +1152,18 @@ _lidar_restarts = 0
 _lidar_proc = None
 _lidar_stop = threading.Event()   # выход из nav.py - не перезапускать
 LIDAR_RESTART_S = 1.0
+# Последние обороты с точками боковых коридоров (lidar_proc.py, "pts"):
+# (номер оборота, конец оборота monotonic, длительность, точки). Из них
+# drive_cells с планом собирает стены клеток впереди (corridor.py).
+_scan_pts = deque(maxlen=8)
+# Маски лидара в виде (центр, полуширина) - что corridor.visible_steps
+# считает невидимым (стойки, ручки, леска, зад).
+_LIDAR_MASKS = tuple((m["center"], m["hw"]) for m in _WALLS_MASKS)
+
+
+def _new_scans(after_cnt):
+    """Обороты с точками коридора новее after_cnt, по порядку."""
+    return [s for s in list(_scan_pts) if s[0] > after_cnt]
 
 
 def _lidar_spawn():
@@ -1197,6 +1209,9 @@ def _lidar_thread():
                 _lidar_dropped = msg.get("dropped", 0)
                 _state["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
                 _scan_cnt += 1
+                pts = msg.get("pts")
+                if pts is not None:
+                    _scan_pts.append((_scan_cnt, msg.get("t"), msg.get("trev", 0.1), pts))
 
                 d = msg.get("dbg")
                 if d:

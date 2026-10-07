@@ -32,7 +32,8 @@ import sys
 import time
 
 from ld19 import DEFAULT_PORT, BAUDRATE, LD19
-from walls import measure, SIDE_THRESH
+from corridor import corridor_points
+from walls import filtered, measure, SIDE_THRESH
 
 # Шаг между соседними точками ~0.8°, пакет из 12 точек - ~10°. Дыра больше
 # этого - потерян хотя бы один пакет.
@@ -75,6 +76,7 @@ def main() -> None:
     typical = None          # обычное число точек в обороте (скользящее)
     short_run = 0           # коротких оборотов подряд
     prev_wr = prev_wl = False
+    prev_t = None           # конец прошлого оборота - отсюда длительность оборота
     with LD19(port, baud) as lidar:
         for rev in lidar.revolutions(SILENCE_S):
             n = len(rev)
@@ -99,8 +101,15 @@ def main() -> None:
                 dropped += 1
                 continue
 
-            w = measure(rev)
-            msg = {"w": w, "npts": n, "dropped": dropped, "t": time.monotonic()}
+            filt = filtered(rev)
+            w = measure(rev, filt)
+            now = time.monotonic()
+            # Длительность оборота - чтобы nav.py знал время каждой точки
+            # (corridor.point_time): за оборот робот проезжает до 55мм.
+            trev = now - prev_t if prev_t is not None and now - prev_t < 0.2 else 0.1
+            prev_t = now
+            msg = {"w": w, "npts": n, "dropped": dropped, "t": now,
+                   "trev": round(trev, 4), "pts": corridor_points(filt[0])}
 
             wr = w["right"] is not None and w["right"] < SIDE_THRESH
             wl = w["left"] is not None and w["left"] < SIDE_THRESH
