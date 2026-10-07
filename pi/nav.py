@@ -90,6 +90,7 @@ import RPi.GPIO as GPIO
 from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
 from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH
 import tile_classify
+import runplan
 import watch_logic
 from victim_watch import VictimWatcher
 from victim_detect import VictimDetector, CONF_FAST, MIN_BOX_PX, YOLO_MODEL_PATH, SAVE_DIR
@@ -2002,34 +2003,8 @@ def find_path_bfs(start, goal_test, hdg=0):
     Возвращает список направлений (0..3, по одному на клетку пути; первый
     шаг - первый элемент) или None, если ни одна подходящая клетка не
     достижима по разведанной части лабиринта."""
-    if goal_test(start):
-        return []
-    order = SIDE_ORDER[_side_pref]
-    seen = {start}
-    prev = {}
-    q = deque([(start, hdg)])
-    while q:
-        cell, h = q.popleft()
-        cx, cy = cell
-        dirs = open_dirs(cx, cy)
-        for d in ((h + k) % 4 for k in order):
-            if d not in dirs:
-                continue
-            nxt = _next_cell(cx, cy, d)
-            if nxt in seen:
-                continue
-            seen.add(nxt)
-            prev[nxt] = (cell, d)
-            if goal_test(nxt):
-                path = [d]
-                back = cell
-                while back != start:
-                    back, dd = prev[back]
-                    path.append(dd)
-                path.reverse()
-                return path
-            q.append((nxt, d))
-    return None
+    return runplan.bfs_path(start, hdg, open_dirs, _next_cell, goal_test,
+                            SIDE_ORDER[_side_pref])
 
 
 def find_frontier_path(cx, cy, hdg=0):
