@@ -55,6 +55,18 @@ static const char *TAG = "LINK";
 // поля (см. robot_link.h). Порядка скорости переезда препятствия в nav.py.
 #define ASSIST_CAP_CMS 35.0f
 
+// Предел скорости колеса в "M:" и потолка в "T:", см/с на ободе (~2000 dps).
+// nav.py шлёт не больше 83 (MOVE_MAX_CMS 55 + MAX_STEER_CMS 28) - это
+// страховка от мусора, а не рабочее ограничение. NaN/inf в "M:"/"T:" (sscanf
+// их принимает) отбрасывают строку целиком: lroundf(NaN) дал бы мотору
+// неопределённую скорость.
+#define LINK_MAX_CMS 150.0f
+
+static float clamp_abs(float v, float lim)
+{
+    return v > lim ? lim : (v < -lim ? -lim : v);
+}
+
 typedef enum {
     RUN_RUNNING = 0,
     RUN_PAUSED  = 1,
@@ -210,7 +222,10 @@ static void cmd_task(void *arg)
                 bool motor_cmd = strncmp(line, "K:", 2) != 0;
                 if (motor_cmd) motor_lock();
 
-                if (sscanf(line, "M:%f,%f", &l, &r) == 2) {
+                if (sscanf(line, "M:%f,%f", &l, &r) == 2
+                    && isfinite(l) && isfinite(r)) {
+                    l = clamp_abs(l, LINK_MAX_CMS);
+                    r = clamp_abs(r, LINK_MAX_CMS);
                     last_cmd_us = esp_timer_get_time();
                     hold_until_us = 0;              // driving again, drop the hold
                     if (g_run_state == RUN_RUNNING && (l != 0.0f || r != 0.0f)) {
@@ -223,10 +238,13 @@ static void cmd_task(void *arg)
                         moving = false;
                     }
                 } else if (strncmp(line, "T:", 2) == 0
-                           && sscanf(line, "T:%f,%f,%f", &l, &r, &cap) >= 2) {
+                           && sscanf(line, "T:%f,%f,%f", &l, &r, &cap) >= 2
+                           && isfinite(l) && isfinite(r)) {
                     // Третье поле (потолок скорости) необязательно: старый
                     // nav.py его не шлёт, и тогда действует ASSIST_CAP_CMS.
+                    // Ток ограничивает motor.c (MOTOR_TORQUE_CMD_MAX_A).
                     if (!(cap > 0.0f)) cap = ASSIST_CAP_CMS;
+                    if (cap > LINK_MAX_CMS) cap = LINK_MAX_CMS;
                     last_cmd_us = esp_timer_get_time();
                     hold_until_us = 0;
                     if (g_run_state == RUN_RUNNING && (l != 0.0f || r != 0.0f)) {

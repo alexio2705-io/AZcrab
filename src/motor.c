@@ -152,8 +152,15 @@ void motor_set_accel(uint8_t id, int32_t dps_per_s)
     send_frame(MOTOR_BASE_ID + id, data);
 }
 
+// Предохранитель на случай мусора сверху: LINK_MAX_CMS в robot_link.c
+// (150 см/с) - это ~2000 dps, здесь с запасом над ним.
+#define MOTOR_SPEED_CMD_MAX_DPS 2500.0f
+
 void set_motor_speed(uint8_t id, float dps)
 {
+    if (!isfinite(dps)) dps = 0.0f;   // lroundf(NaN) не определён
+    if (dps >  MOTOR_SPEED_CMD_MAX_DPS) dps =  MOTOR_SPEED_CMD_MAX_DPS;
+    if (dps < -MOTOR_SPEED_CMD_MAX_DPS) dps = -MOTOR_SPEED_CMD_MAX_DPS;
     int32_t raw = (int32_t)lroundf(dps * 100.0f); // 0.01 dps/LSB
     uint8_t data[8] = {
         0xA2,
@@ -176,6 +183,7 @@ void set_motor_speed(uint8_t id, float dps)
 
 void set_motor_torque_amps(uint8_t id, float amps)
 {
+    if (!isfinite(amps)) amps = 0.0f;   // NaN проходит мимо сравнений ниже
     if (amps >  MOTOR_TORQUE_CMD_MAX_A) amps =  MOTOR_TORQUE_CMD_MAX_A;
     if (amps < -MOTOR_TORQUE_CMD_MAX_A) amps = -MOTOR_TORQUE_CMD_MAX_A;
     int16_t raw = (int16_t)lroundf(amps * (2000.0f / 32.0f));
