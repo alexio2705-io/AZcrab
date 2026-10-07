@@ -95,10 +95,9 @@ class TestGeometry(unittest.TestCase):
         self.assertNotEqual(k0, k1)
         self.assertAlmostEqual(a0, a1)
 
-    def test_attribute_boundary_150mm(self):
-        self.assertEqual(wl.attribute((0, 0), (0, 1), 0, "right", 149.9), ((0, 0), 1))
-        self.assertEqual(wl.attribute((0, 0), (0, 1), 0, "right", 150.0), ((0, 1), 1))
-        self.assertEqual(wl.attribute((0, 0), (0, 1), 0, "left", 10.0), ((0, 0), 3))
+    def test_cell_index_along_multi_cell_drive(self):
+        for mm, k in ((0, 0), (149.9, 0), (150, 1), (449.9, 1), (450, 2), (-10, 0)):
+            self.assertEqual(wl.cell_index(mm), k)
 
 
 class TestRegistry(unittest.TestCase):

@@ -34,8 +34,8 @@ CAM_CALIB_Y_MM = (
 )
 _CALIB_Y = [y for y, _ in CAM_CALIB_Y_MM]
 
-# Метка на ходу - клетке, над которой робот: пройдено меньше этого от
-# центра исходной клетки - она, иначе следующая.
+# Метка на ходу - клетке, над которой робот: ближе этого к центру клетки -
+# она, иначе следующая (см. cell_index).
 ATTRIB_MM = 150.0
 
 
@@ -93,10 +93,12 @@ def world_along(cell, hdg, wall_dir, pos_mm, stride):
     return key, center + sgn * pos_mm
 
 
-def attribute(cell, next_cell, hdg, side, traveled_mm):
-    """Метка, прочитанная на ходу: (клетка, стена). Клетка - по одометрии
-    робота (см. ATTRIB_MM), стена - сбоку, со стороны камеры."""
-    return (cell if traveled_mm < ATTRIB_MM else next_cell), wall_of(hdg, side)
+def cell_index(traveled_mm):
+    """Над какой по счёту клеткой поездки робот (0 - исходная): меньше
+    ATTRIB_MM от центра клетки - она, дальше - следующая. Поездка без
+    остановок проходит много клеток, поэтому - номер, а не "эта или
+    следующая"."""
+    return max(0, math.floor((traveled_mm + ATTRIB_MM) / CELL_MM))
 
 
 DEDUP_MM = 150.0       # повтор ближе этого на той же стене - та же метка

@@ -1819,6 +1819,14 @@ def _maze_cell(cx, cy):
     return _maze.setdefault((cx, cy), [None, None, None, None])
 
 
+def _cell_at(cell, hdg, k):
+    """k-я клетка по курсу hdg от cell (0 - сама cell), через известные горки."""
+    cx, cy = cell
+    for _ in range(k):
+        cx, cy = _next_cell(cx, cy, hdg)
+    return cx, cy
+
+
 def _next_cell(cx, cy, d):
     """Куда ведёт ребро (cx,cy)->d: обычно в соседа, а если это известная
     горка - в клетку на другом её конце (другой этаж, см. _ramps)."""
@@ -3541,8 +3549,8 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
                           f"(watch_logic.CAM_CALIB_Y_MM)")
     # 3. Чтение - та же логика, что стоя в центре, без дедупа по стене
     trav = trav_mm()
-    tcell, wall_dir = watch_logic.attribute(cell, _next_cell(cell[0], cell[1], hdg),
-                                            hdg, side, trav)
+    tcell = _cell_at(cell, hdg, watch_logic.cell_index(trav))
+    wall_dir = watch_logic.wall_of(hdg, side)
     try:
         result = det.read_wall(tcell[0], tcell[1], wall_dir)
     except Exception as e:
