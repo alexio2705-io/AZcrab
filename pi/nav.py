@@ -3573,7 +3573,12 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
                         "ts": time.strftime("%H:%M:%S")})
     print(f"    метка на ходу: {result['label']} → клетка {tcell}, стена "
           f"{_DIR_NAME[wall_dir]} (проехали {trav:.0f}мм)")
-    return _interrupt_reason()
+    r = _interrupt_reason()
+    if r:
+        return r
+    if result.get("blink"):
+        return _report_on_move(result, side, wall_dir, hdg, target_yaw)
+    return None
 
 
 # Число комплектов на тип жертвы - см. шапку victim_detect.py и правила
@@ -3698,6 +3703,20 @@ def scan_cell(cx, cy, hdg, walls_rel=None):
     return h
 
 
+def _blink_victim(result, side):
+    """Индикация лентой (как требуют правила - 5+с неподвижно). Возвращает,
+    сколько комплектов выдавать: сколько нужно, но не больше, чем осталось -
+    нечего выдать, значит только индикация, она засчитывается и без них."""
+    need = KITS_BY_TYPE.get(result["type"], 0)
+    n_kits = min(need, kits_left())
+    short = f" (нужно {need}, в запасе {kits_left()})" if n_kits < need else ""
+    print(f"    ▓ {result['label']} ({result['type']}, {side}): индикация "
+          f"{VICTIM_STOP_S + MARGIN_S:.1f}с, аптечек={n_kits}{short}")
+    if _leds is not None:
+        hold_while(blink_pink, _leds, stop=get_esp_paused)
+    return n_kits
+
+
 @_timed("жертва")
 def report_victim(result, side, wall_dir, hdg):
     """Сначала мигает лентой (робот и так в пределах 15см от стены сбоку -
@@ -3716,15 +3735,7 @@ def report_victim(result, side, wall_dir, hdg):
     wall_dir - абсолютное направление стены с меткой, hdg - текущий курс.
     Возвращает курс после выдачи.
     """
-    need = KITS_BY_TYPE.get(result["type"], 0)
-    # Сколько есть, столько и выдаём; нечего выдать - ни разворота, ни
-    # подъезда к стене: только индикация, она засчитывается и без комплектов.
-    n_kits = min(need, kits_left())
-    short = f" (нужно {need}, в запасе {kits_left()})" if n_kits < need else ""
-    print(f"    ▓ {result['label']} ({result['type']}, {side}): индикация "
-          f"{VICTIM_STOP_S + MARGIN_S:.1f}с, аптечек={n_kits}{short}")
-    if _leds is not None:
-        hold_while(blink_pink, _leds, stop=get_esp_paused)
+    n_kits = _blink_victim(result, side)
     if get_esp_paused():
         return hdg
 
@@ -3751,6 +3762,38 @@ def report_victim(result, side, wall_dir, hdg):
             return hdg
         dispense_kit()
     return hdg
+
+
+@_timed("жертва")
+def _report_on_move(result, side, wall_dir, hdg, target_yaw):
+    """Жертва, найденная посреди клетки (см. _mark_stop): мигание; если есть
+    что выдавать - спиной к стене, выдача и поворот ровно обратно на
+    target_yaw, потому что поездка продолжается. align_at_wall не нужен:
+    робот и так в ~14см от стены. Возвращает причину бросить поездку или None."""
+    n_kits = _blink_victim(result, side)
+    r = _interrupt_reason()
+    if r or n_kits == 0:
+        return r
+    ok = turn(DIR_DELTA[((wall_dir + 2) % 4 - hdg) % 4])
+    r = _interrupt_reason()
+    if r:
+        return r
+    if ok:
+        for _ in range(n_kits):
+            r = _interrupt_reason()
+            if r:
+                return r
+            dispense_kit()
+    else:
+        print("    не развернулся спиной к метке - комплекты не выдаю")
+    for _ in range(2):
+        if turn_to(target_yaw):
+            return None
+        r = _interrupt_reason()
+        if r:
+            return r
+    print("    [WARN] не вернулся на курс - доведёт руль drive_cells")
+    return None
 
 
 DIR_DELTA = {0: 0, 1: 90, 2: 180, 3: -90}   # (d - hdg) % 4 -> градусы для turn()
