@@ -77,6 +77,7 @@ import sys
 import threading
 import time
 from collections import deque
+from typing import TYPE_CHECKING
 
 import serial
 import RPi.GPIO as GPIO
@@ -87,6 +88,9 @@ import tile_classify
 import watch_logic
 from victim_detect import VictimDetector, CONF_FAST, MIN_BOX_PX, YOLO_MODEL_PATH, SAVE_DIR
 from leds import NeoPixels, blink_pink, blink_return, RED, SLEEP, VICTIM_STOP_S, MARGIN_S
+
+if TYPE_CHECKING:
+    from victim_watch import VictimWatcher
 
 LINK_PORT = "/dev/serial0"
 LINK_BAUD = 921600
@@ -933,7 +937,7 @@ _scanned_walls = set()
 # поднялся или умер. _marks - где на стенах уже прочитаны (или отбракованы)
 # метки: повтор ближе 15см не останавливает робота и не репортится ни на
 # ходу, ни при скане стоя (см. watch_logic.MarkRegistry).
-_watcher = None
+_watcher: VictimWatcher | None = None
 _marks = watch_logic.MarkRegistry()
 # Интервал между тактами drive_cells, мс - с наблюдателем и без: им видно,
 # мешает ли инференс петле управления (итог - в конце заезда).
@@ -2715,6 +2719,16 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
     wall_forced = False    # цель уже перенесена к внезапно близкой стене
     forced_from_cm = 0.0   # центр клетки, из которой ехали, когда это случилось
 
+    # Наблюдатель меток на ходу (victim_watch.py): только на ровном и с той
+    # стороны, где лидар видит стену. vmark - метка, ради которой тормозим
+    # ({"side", "pos_mm", "stop_cm"}); пока она есть, наблюдатель выключен.
+    # watcher = None - в этой поездке наблюдателя нет (или он умер).
+    watcher = (_watcher if cell is not None and hdg is not None and not expect_ramp
+               else None)
+    side_hold = watch_logic.SideHold()
+    odo_t = watch_logic.OdoHistory()
+    vmark = None
+
     print(f"    движение  курс={target_yaw:.0f}°")
 
     watch_armed = False
@@ -2755,6 +2769,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         loop_dt = min(0.05, now_m - last_loop_t)
         last_loop_t = now_m
         odo_hist.append((now_m, traveled_cm))
+        odo_t.add(now_m, traveled_cm)
         while len(odo_hist) > 2 and now_m - odo_hist[1][0] >= SPEED_WIN_S:
             odo_hist.popleft()
         t_a, d_a = odo_hist[0]
@@ -2934,6 +2949,31 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         f_est = None if f_anchor is None else \
             f_anchor - (traveled_cm - f_anchor_cm) * 10.0
 
+        # ── Наблюдатель меток ─────────────────────────────────
+        # Только на ровном (не горка, не всплеск, не ассист) и только к
+        # стене. Заметил - тормозим тем же профилем к stop_point (ниже, см.
+        # mark_first), а наблюдатель гасим сразу: камера вернётся к обычной
+        # выдержке, пока робот ещё тормозит.
+        if watcher is not None:
+            if watcher.dead:
+                watcher, watch_armed = None, False
+            else:
+                sides = side_hold.update(now_m, {
+                    "right": wall_present(walls["right"], SIDE_THRESH),
+                    "left": wall_present(walls["left"], SIDE_THRESH)})
+                flat = watch_logic.watch_allowed(ramp_state, bump_on, assist_mode,
+                                                 pitch_delta, OBSTACLE_REARM_DEG, wall_forced)
+                watch_armed = watcher.arm(sides if flat and vmark is None else set())
+                for b in watcher.poll():
+                    m = _watch_decide(b, cell, hdg, odo_t, vmark is not None)
+                    if m is not None:
+                        m["stop_cm"] = watch_logic.stop_point_cm(traveled_cm, fwd,
+                                                                 BRAKE_DECEL_CMS2)
+                        vmark = m
+                        watch_armed = watcher.arm(set())
+                        print(f"    метка на ходу: торможу, встану через "
+                              f"{(m['stop_cm'] - traveled_cm) * 10:.0f}мм")
+
         # Не глушится и на склоне: при лидаре на 130мм пол носом вниз ближе
         # FRONT_EMERGENCY_MM - это уклон больше 40°, а стена вплотную - всегда
         # стена. Поэтому берём сырое показание, а не обнулённое выше.
@@ -3031,7 +3071,54 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         # скорости, поэтому у самой цели она сама сходит на нет.
         rem_eff = rem - fwd * STOP_LEAD_S
 
-        if stopping and rem_eff <= 0.0 and ramp_state != 'cand':
+        # Точка остановки у метки ближе цели - тормозим к ней. Иначе робот
+        # штатно встанет в центре (или у стены), и метку читаем там же.
+        mark_first = vmark is not None and vmark["stop_cm"] - traveled_cm < rem
+        if mark_first:
+            rem = vmark["stop_cm"] - traveled_cm
+            rem_eff = rem - fwd * STOP_LEAD_S
+
+        if (stopping or mark_first) and rem_eff <= 0.0 and ramp_state != 'cand':
+            if vmark is not None and not (wall_forced
+                                          and traveled_cm < forced_from_cm + cell_cm * 0.5):
+                # Стоим у метки (или в центре, если он был ближе): читаем её
+                # здесь, потом - та же поездка дальше, без Z и без новой цели.
+                t_stop = time.monotonic()
+                out = _mark_stop(vmark, cell, hdg, target_yaw, traveled_cm)
+                vmark = None
+                if out in ("lifted", "paused"):
+                    return cells, out
+                if out == "link_lost":
+                    reason = out
+                    break
+                pause_s = time.monotonic() - t_stop
+                # Таймер клетки и сторожа застревания - на длительность паузы,
+                # иначе после неё сразу timeout/odo_fault.
+                (t_cell, last_progress_t, assist_gap_until, assist_t0, assist_total_t0,
+                 assist_progress_t) = watch_logic.shift_timers(
+                    (t_cell, last_progress_t, assist_gap_until, assist_t0, assist_total_t0,
+                     assist_progress_t), pause_s)
+                # Подъезд и развороты уже в энкодерах - добираем их в путь сразу.
+                cl, cr = get_odo()
+                traveled_cm += ((cl - last_l) + (cr - last_r)) / 2.0
+                last_l, last_r = cl, cr
+                last_progress_cm = traveled_cm
+                t0 = last_loop_t = time.monotonic()     # новый плавный разгон с места
+                fwd = last_steer = 0.0
+                odo_hist.clear()
+                f_anchor = None                         # перед - заново со свежего оборота
+                last_seq = _scan_cnt
+                side_hold.reset()
+                left_cm = boundary_cm - traveled_cm
+                print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
+                if stopping and left_cm * 10.0 < ALIGN_TOL_MM:
+                    # Уже в центре или подъезд увёл за него - остаток доводкой.
+                    if abs(left_cm) > 0.2:
+                        creep_mm(left_cm * 10.0, target_yaw)
+                    cells += 1
+                    break
+                telem_seq = wait_telem(telem_seq)
+                continue
             if wall_forced and traveled_cm < forced_from_cm + cell_cm * 0.5:
                 # Встали перед тем, что внезапно оказалось близко, не доехав
                 # и до середины пути: это не стена следующей клетки (она
@@ -3071,7 +3158,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         ramp_up = min(ramp_up, tilt_lim)
 
         braking = False
-        if stopping and ramp_state != 'cand':
+        if (stopping or mark_first) and ramp_state != 'cand':
             # Постоянное замедление: пока запас пути велик, sqrt даёт больше
             # крейсерской и ничего не ограничивает - робот едет полным ходом.
             # Тормозить начинает сам, ровно когда пути остаётся в обрез.
@@ -3240,6 +3327,9 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         # страхует от зависания петли при обрыве линка.
         telem_seq = wait_telem(telem_seq)
 
+    if watcher is not None:
+        watcher.arm(set())      # доводке и скану стоя камера нужна в обычном режиме
+
     # Гребень уже позади - что бы ни остановило робота дальше (стена
     # вплотную, бампер, таймаут), он на другом этаже, и вызывающий обязан
     # занести горку в карту, а не шагнуть на соседа по одометрии.
@@ -3368,6 +3458,122 @@ def align_at_wall(target_yaw):
         print(f"    [выр {it+1}] {src}мм  "
               f"{'вперёд' if need > 0 else 'назад'} {abs(need):.0f}мм")
         creep_mm(need, target_yaw)
+
+
+def _interrupt_reason():
+    """Причина бросить поездку посреди остановки у метки - те же, что
+    проверяет такт drive_cells."""
+    if _lifted.is_set():
+        return "lifted"
+    if get_esp_paused():
+        return "paused"
+    if not telem_fresh():
+        return "link_lost"
+    return None
+
+
+def _watch_decide(b, cell, hdg, odo_t, busy):
+    """Рамка наблюдателя -> метка, ради которой тормозить ({"side", "pos_mm"}),
+    или None. Каждое срабатывание - строка [W] с картинкой: по ним подбирают
+    порог, лишняя остановка стоит ~2с."""
+    x1, y1, x2, y2 = b.xyxy
+    side_px = max(x2 - x1, y2 - y1)
+    t_cm = odo_t.at(b.t_frame) or 0.0
+    off = watch_logic.px_to_mm((y1 + y2) / 2.0 / watch_logic.FRAME_PX)
+    pos = watch_logic.mark_pos_mm(t_cm * 10.0, off)
+    key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, b.side),
+                                         pos, LEVEL_STRIDE)
+    stop, why = watch_logic.decide_stop(b.conf, side_px, key, along, _marks, busy,
+                                        CONF_FAST, MIN_BOX_PX)
+    print(f"\n    [W] {b.side} {b.cls} {b.conf:.2f} {side_px:.0f}px  путь {t_cm * 10:.0f}мм  "
+          f"метка {pos:+.0f}мм (стена {key} {along:.0f}мм) → {why}  {b.image or ''}")
+    return {"side": b.side, "pos_mm": pos} if stop else None
+
+
+def _reject_mark(cell, hdg, side, pos_mm):
+    """Наблюдатель сработал, а стоя не подтвердилось - больше здесь не стоим."""
+    key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, side),
+                                         pos_mm, LEVEL_STRIDE)
+    _marks.add(key, along, "rejected")
+
+
+@_timed("камеры")
+def _mark_stop(m, cell, hdg, target_yaw, base_cm):
+    """Остановка на метку, замеченную на ходу (см. drive_cells): найти её стоя,
+    подъехать так, чтобы была целиком в кадре, прочитать read_wall() и
+    приписать клетке. Робот уже затормозил профилем; одометрия не обнулялась,
+    base_cm - пройдено от центра исходной клетки. Возвращает причину бросить
+    поездку ('paused'/'lifted'/'link_lost') или None - ехать дальше."""
+    side = m["side"]
+    det = _victim_r if side == "right" else _victim_l
+    l0, r0 = get_odo()
+
+    def trav_mm():
+        cl, cr = get_odo()
+        return (base_cm + ((cl - l0) + (cr - r0)) / 2.0) * 10.0
+
+    settle_brake(0.06)
+    if _watcher is not None:
+        _watcher.wait_idle()
+    r = _interrupt_reason()
+    if r or det is None:
+        return r
+
+    def look():
+        try:
+            return det.best_fast()
+        except Exception as e:
+            print(f"    [WARN] кадр стоя ({side}): {e}")
+            return None
+
+    # 1. Где метка сейчас. Обычно робот проехал её на тормозном пути и в
+    # кадре её уже нет - тогда подъезд по координате, запомненной на ходу.
+    found = look()
+    est = m["pos_mm"] - watch_logic.mark_pos_mm(trav_mm(), 0.0)
+    creep, src = watch_logic.creep_to_mark(None if found is None else found[2], est,
+                                           ALIGN_TOL_MM)
+    if creep is None:
+        print(f"    метка: нужен подъезд {est:+.0f}мм ({src}) - не верю, отбраковываю")
+        _reject_mark(cell, hdg, side, m["pos_mm"])
+        return None
+    # 2. Подъезд
+    if creep:
+        print(f"    метка: подъезд {creep:+.0f}мм по {src}")
+        creep_mm(creep, target_yaw)
+        r = _interrupt_reason()
+        if r:
+            return r
+        if found is not None:
+            again = look()
+            if again is not None:
+                before = abs(watch_logic.px_to_mm(sum(found[2]) / 2.0))
+                after = abs(watch_logic.px_to_mm(sum(again[2]) / 2.0))
+                if after > before:
+                    print(f"    [WARN] после подъезда метка дальше от центра кадра "
+                          f"({before:.0f} -> {after:.0f}мм) - знак оси камеры? "
+                          f"(watch_logic.CAM_FWD_SIGN)")
+    # 3. Чтение - та же логика, что стоя в центре, без дедупа по стене
+    trav = trav_mm()
+    tcell, wall_dir = watch_logic.attribute(cell, _next_cell(cell[0], cell[1], hdg),
+                                            hdg, side, trav)
+    try:
+        result = det.read_wall(tcell[0], tcell[1], wall_dir)
+    except Exception as e:
+        print(f"    [WARN] чтение метки ({side}): {e}")
+        result = None
+    if result is None:
+        print(f"    метка не подтвердилась - место отбраковано ({side}, {trav:.0f}мм)")
+        _reject_mark(cell, hdg, side, m["pos_mm"])
+        return _interrupt_reason()
+    key, along = _mark_world(result, cell, hdg, wall_dir, trav)
+    _marks.add(key, along, "read")
+    _scanned_walls.add((tcell[0], tcell[1], wall_dir))
+    det.scanned.add((tcell[0], tcell[1], wall_dir))
+    _victim_log.append({**result, "side": side, "wall_dir": wall_dir, "on_move": True,
+                        "ts": time.strftime("%H:%M:%S")})
+    print(f"    метка на ходу: {result['label']} → клетка {tcell}, стена "
+          f"{_DIR_NAME[wall_dir]} (проехали {trav:.0f}мм)")
+    return _interrupt_reason()
 
 
 # Число комплектов на тип жертвы - см. шапку victim_detect.py и правила
