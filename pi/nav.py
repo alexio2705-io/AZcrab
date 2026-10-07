@@ -1607,10 +1607,13 @@ def interrupted():
 
 
 def _cmd(s):
+    # Без flush(): это tcdrain, и на Pi он стоил 8.0мс на КАЖДУЮ команду
+    # (замер: p50 7.97, max 8.02) против 0.03мс у самого write() - больше
+    # такта петли (5мс). Ядро отправляет байты и так, 16 байт на 921600 -
+    # это ~0.2мс. Дожимается только при выходе, перед закрытием порта.
     b = s.encode()
     with _write_lock:
         _link.write(b + b"*%04X\n" % crc16(b))    # CRC - см. robot_link.h
-        _link.flush()
 
 
 # Каждая команда хода превращается на ESP в ЧЕТЫРЕ кадра CAN. Управляющая
@@ -4090,6 +4093,7 @@ def main():
             brake()
             time.sleep(0.1)
             stop()
+            _link.flush()     # последний stop() - на провод до закрытия
             _link.close()
         except (serial.SerialException, OSError) as e:
             print(f"  [WARN] порт ESP при выходе: {e}")
