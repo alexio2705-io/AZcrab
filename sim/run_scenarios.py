@@ -61,10 +61,12 @@ def ramp_world():
     return w
 
 
+# имя -> (мир, потолок клеток, ожидаемые горки {(клетка, курс): клетка на другом конце})
 SCENARIOS = {
-    "flat": (corridor_world, 20),
-    "bumps": (lambda: corridor_world(bumps=True), 20),
-    "ramp": (ramp_world, 20),
+    "flat": (corridor_world, 20, {}),
+    "bumps": (lambda: corridor_world(bumps=True), 20, {}),
+    # (0,1) -> горка -> первая клетка наверху (0,3) = этаж 1, y=3
+    "ramp": (ramp_world, 20, {(0, 1, 0): (0, 1003)}),
 }
 
 
@@ -76,7 +78,7 @@ def wall_truth(w, cx, cy, d):
 
 
 def run(name):
-    make, cap = SCENARIOS[name]
+    make, cap, ramps = SCENARIOS[name]
     w = make()
     sim = ms.Sim(w)
     os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
@@ -108,16 +110,25 @@ def run(name):
     print(f"   клеток посещено {len(nav._visited)}, прямо без остановки {straight}, "
           f"остановок {stops}, горки {sorted(nav._ramps)}")
     print(f"   FATAL/WARN: {[l.strip()[:90] for l in log.splitlines() if 'FATAL' in l or '[WARN]' in l][:6]}")
-    print(f"   ошибок карты (нижний этаж): {len(bad)} {bad[:6]}")
+    for edge, end in ramps.items():
+        got = nav._ramps.get(edge)
+        if got is None or got[:2] != end:
+            bad.append(f"горка {edge}: ждали {end}, в карте {None if got is None else got[:2]}")
+    print(f"   ошибок карты: {len(bad)} {bad[:6]}")
+    return not bad
     print(f"   лог: {path}")
 
 
 if __name__ == "__main__":
     names = sys.argv[1:] or list(SCENARIOS)
+    failed = []
     for n in names:
         # каждый сценарий - с чистым nav: модуль перезагружаем
         import importlib
         importlib.reload(ms.nav)
         ms.nav = nav = sys.modules["nav"]
         globals()["nav"] = nav
-        run(n)
+        if not run(n):
+            failed.append(n)
+    print("ВСЕ СЦЕНАРИИ ЧИСТЫЕ" if not failed else f"ОШИБКИ: {failed}")
+    sys.exit(1 if failed else 0)

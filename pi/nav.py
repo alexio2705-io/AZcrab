@@ -2529,7 +2529,7 @@ def turn_to(target, label=None):
 # ══════════════════════════════════════════════════════════════
 #  Непрерывный проезд: клетки подряд, без остановки между ними
 # ══════════════════════════════════════════════════════════════
-def _ramp_measure(log, sign):
+def _ramp_measure(log, sign, origin_cm=0.0):
     """Длина горки по записи (одометрия_см, pitch) за проезд.
 
     Подножие и гребень - по пересечению ПОЛОВИНЫ установившегося наклона:
@@ -2539,8 +2539,12 @@ def _ramp_measure(log, sign):
     Порог по половине реального уклона, а не константой, чтобы горки 25° и
     30° мерились одинаково.
 
+    origin_cm - одометрия центра клетки у подножия: проезд без остановок
+    начинается раньше, на клетку или несколько, а клетка островка
+    отсчитывается от клетки у подножия (record_ramp).
+
     Возвращает dict: sign, tiles, len_cm, slope, foot_cm, crest_cm,
-    start_known (False - поехали уже с горки, длина занижена)."""
+    start_known (False - поехали уже с горки, длина замерена не вся)."""
     ps = [p * sign for _, p in log]
     ds = [d for d, _ in log]
     on = sorted(p for p in ps if p >= RAMP_MAP_DEG)
@@ -2571,8 +2575,8 @@ def _ramp_measure(log, sign):
         j1 += 1
     rise_cm = sign * sum((ds[i] - ds[i - 1]) * math.sin(math.radians(ps[i]))
                          for i in range(j0 + 1, j1 + 1))
-    # Путь в плане от старта проезда (центр клетки у подножия) до гребня.
-    plan_crest_cm = ds[0] + sum((ds[i] - ds[i - 1]) * math.cos(math.radians(ps[i]))
+    # Путь в плане от центра клетки у подножия до гребня.
+    plan_crest_cm = ds[0] - origin_cm + sum((ds[i] - ds[i - 1]) * math.cos(math.radians(ps[i]))
                                 for i in range(1, i_end + 1))
     plan_cells = (plan_crest_cm + cell_cm * 0.5) / cell_cm
     k = max(1, int(round(plan_cells)))
@@ -2700,6 +2704,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
     ramp_saved = None
     ramp_log = []
     ramp_cells0 = 0         # сколько клеток проехали до начала горки
+    ramp_origin_cm = 0.0    # одометрия центра клетки у подножия
     # Всплески наклона на ступеньках/лежачих - см. BUMP_EXTRA_MM.
     bump_on = False
     bump_extra_cm = 0.0
@@ -2920,6 +2925,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
             elif traveled_cm - ramp_cand_cm >= RAMP_CONFIRM_CM:
                 ramp_state = 'on'
                 ramp_cells0 = cells
+                ramp_origin_cm = boundary_cm - cell_cm   # центр клетки у подножия
                 stopping = pending = False
                 print(f"\n    ГОРКА {'ВВЕРХ' if ramp_sign > 0 else 'ВНИЗ'} "
                       f"({pitch_f:+.1f}°) - еду без остановок до гребня")
@@ -2928,7 +2934,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                 if ramp_flat_cm is None:
                     ramp_flat_cm = traveled_cm
                 elif traveled_cm - ramp_flat_cm >= RAMP_FLAT_CM:
-                    info = _ramp_measure(ramp_log, ramp_sign)
+                    info = _ramp_measure(ramp_log, ramp_sign, ramp_origin_cm)
                     f_anchor = None      # всё, что лидар видел на склоне, - мусор
                     if not expect_ramp and (info["len_cm"] < RAMP_MIN_LEN_CM
                             or abs(info["rise_cm"]) < RAMP_MIN_RISE_CM):
