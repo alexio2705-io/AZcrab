@@ -90,6 +90,7 @@ import RPi.GPIO as GPIO
 from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
 from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH, MASKS as _WALLS_MASKS
 import tile_classify
+import corridor
 import runplan
 import watch_logic
 from victim_watch import VictimWatcher
@@ -2594,12 +2595,17 @@ STATUS_PERIOD_S = 0.1     # строка статуса в drive_cells не ча
 
 
 @_timed("ход")
-def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None):
+def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None):
     """См. _drive_cells. cell, hdg - клетка, из которой едем, и курс по карте:
     без них наблюдатель меток на ходу не включается (victim_watch.py). Что бы
-    ни остановило поездку, наблюдатель после неё выключен."""
+    ни остановило поездку, наблюдатель после неё выключен.
+
+    plan (_DrivePlan) - проезд без остановок: в каждой клетке решает план
+    ("прямо или стоп", по стенам впереди из corridor.py), а не прежнее
+    "справа открыто или спереди стена"; проеханные клетки план сам заносит в
+    карту. Без plan - прежнее поведение."""
     try:
-        return _drive_cells(max_cells, expect_ramp, cell, hdg)
+        return _drive_cells(max_cells, expect_ramp, cell, hdg, plan)
     finally:
         if _watcher is not None:
             _watcher.arm(set())
@@ -2608,7 +2614,7 @@ def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None):
                 print(line)
 
 
-def _drive_cells(max_cells, expect_ramp, cell, hdg):
+def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
     """Едет вперёд, пересекая границы клеток БЕЗ остановки, пока очередная
     клетка не потребует поворота (справа открылось или спереди стена), пока
     не кончится лимит клеток, или пока не вмешается бампер/авария/пауза.
@@ -2693,6 +2699,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
     ramp_flat_cm = None
     ramp_saved = None
     ramp_log = []
+    ramp_cells0 = 0         # сколько клеток проехали до начала горки
     # Всплески наклона на ступеньках/лежачих - см. BUMP_EXTRA_MM.
     bump_on = False
     bump_extra_cm = 0.0
@@ -2734,6 +2741,21 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
     side_hold = watch_logic.SideHold()
     odo_t = watch_logic.OdoHistory()
     vmark = None
+
+    # Проезд без остановок по плану (flood_fill_run/return_to_start): стены
+    # клеток впереди - по точкам лидара на подходе (corridor.py), решение
+    # "прямо или стоп" в каждой клетке - plan.decide(). Клетка k - k-я по
+    # ходу от исходной (0), N = cells + 1 - следующая, её центр - boundary_cm.
+    cell_sides = corridor.CellSides(_LIDAR_MASKS) if plan is not None else None
+    scan_mark = _scan_cnt        # обороты до старта учтены замером стоя
+    front_votes = [0, 0]         # передняя стена N по оборотам: [есть, нет]
+    tiles = {}                   # k -> цвета плитки под роботом над клеткой k
+    cp_done = set()              # клетки, уже отмеченные чекпоинтом на ходу
+    side_known = {}              # (k, сторона) -> True/False - для столбиков
+    posts_done = set()           # границы, по которым путь уже поправлен
+    if plan is not None:
+        for side in ("right", "left"):
+            side_known[(0, side)] = plan.known_side(0, side)
 
     print(f"    движение  курс={target_yaw:.0f}°")
 
@@ -2841,7 +2863,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         # обновляется ~10Гц, и одно лишнее подтверждение стоит ещё ~5см хода
         # вглубь чёрного. Запас по порогу большой (C=100 против порога ~210),
         # так что ложные срабатывания маловероятны.
-        if tile_color() == TILE_BLACK:
+        tile = tile_color()
+        if tile == TILE_BLACK:
             reason = "black"
             # Центр клетки, С КОТОРОЙ заехали: boundary_cm всегда указывает на
             # ближайший центр впереди, предыдущий - на клетку назад.
@@ -2849,6 +2872,20 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
             print(f"\n    ЧЁРНАЯ (C={get_rgbc()[3]}) на {traveled_cm*10:.0f}мм - "
                   f"откат {black_back_cm*10:.0f}мм")
             break
+        if plan is not None and tile != TILE_UNKNOWN:
+            # Над какой клеткой датчик: N - уже за её границей (+15мм).
+            k_under = cells + 1 if traveled_cm >= boundary_cm - cell_cm / 2.0 + 1.5 else cells
+            tiles.setdefault(k_under, set()).add(tile)
+            if (tile == TILE_BLUE and k_under == cells >= 1 and not stopping
+                    and traveled_cm < boundary_cm - cell_cm - 3.0):
+                # Синюю заметили уже после решения "прямо": её центр ещё
+                # впереди - встаём там (правила: стоянка на синей).
+                boundary_cm -= cell_cm
+                stopping, pending, reason = True, False, "stop"
+                print(f"\n    → кл.{cells}: синяя после решения - стоп в её центре")
+            if tile == CHECKPOINT_TILE and 1 <= k_under <= cells and k_under not in cp_done:
+                cp_done.add(k_under)
+                plan.checkpoint(k_under)
 
         # ── Горка или всплеск: что под колёсами ──────────────
         pitch_f = pitch_delta if pitch_f is None else \
@@ -2881,6 +2918,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
                 ramp_state = None
             elif traveled_cm - ramp_cand_cm >= RAMP_CONFIRM_CM:
                 ramp_state = 'on'
+                ramp_cells0 = cells
                 stopping = pending = False
                 print(f"\n    ГОРКА {'ВВЕРХ' if ramp_sign > 0 else 'ВНИЗ'} "
                       f"({pitch_f:+.1f}°) - еду без остановок до гребня")
@@ -2954,6 +2992,42 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
                 f_anchor = None
         f_est = None if f_anchor is None else \
             f_anchor - (traveled_cm - f_anchor_cm) * 10.0
+
+        # ── Стены клеток впереди (проезд без остановок) ───────
+        # Каждый новый оборот лидара: точки коридоров - в систему пути, в
+        # копилку стен N и следующей за ней; передняя стена N - голос по
+        # этому же обороту; конец/начало боковой стены у границы с N -
+        # поправка пути (столбик). На склоне лидар видит пол - не копим.
+        if cell_sides is not None:
+            if on_slope_now or p_abs >= RAMP_MAP_DEG:
+                scan_mark = _scan_cnt
+            else:
+                yaw_err = angle_err(get_yaw(), target_yaw)
+                for cnt, t_end, trev, pts in _new_scans(scan_mark):
+                    scan_mark = cnt
+                    path_pts = corridor.to_path_frame(
+                        pts, t_end, trev, lambda t: (odo_t.at(t) or 0.0) * 10.0, yaw_err)
+                    x_robot = (odo_t.at(t_end - trev / 2.0) or 0.0) * 10.0
+                    kN, cN = cells + 1, boundary_cm * 10.0
+                    cell_sides.add_scan(path_pts, x_robot,
+                                        [(kN, cN), (kN + 1, cN + corridor.CELL_MM)])
+                    cell_sides.prune(x_robot - corridor.CELL_MM)
+                    to_n = (boundary_cm - traveled_cm) * 10.0
+                    if 0.0 < to_n <= corridor.CELL_MM:
+                        f_c = None if walls["front"] is None else walls["front"] - to_n
+                        front_votes[0 if wall_present(f_c, WALL_THRESH) else 1] += 1
+                    border = cN - corridor.HALF_CELL_MM
+                    if kN not in posts_done:
+                        for side in ("right", "left"):
+                            e = corridor.post_error(cell_sides.band_x[side], border,
+                                                    side_known.get((kN - 1, side)),
+                                                    cell_sides.result(kN, side)[0])
+                            if e is not None:
+                                boundary_cm += e / 20.0
+                                posts_done.add(kN)
+                                print(f"\n    [odo] столбик {side} у границы кл.{kN}: "
+                                      f"{e:+.0f}мм - цель {e / 2:+.0f}мм")
+                                break
 
         # ── Наблюдатель меток ─────────────────────────────────
         # Только на ровном (не горка, не всплеск, не ассист) и только к
@@ -3040,7 +3114,9 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
         # Принимается один раз за клетку, ровно за DECIDE_LEAD_MM до её
         # центра - раньше нельзя (боковое окно замера ещё читает предыдущую
         # клетку), позже нельзя (не успеем затормозить).
-        if pending and rem <= lead_cm:
+        # С планом решение ждёт, пока кандидат в горку не выяснится: иначе
+        # клетку перед горкой план записал бы посещённой.
+        if pending and rem <= lead_cm and not (plan is not None and ramp_state == 'cand'):
             pending = False
             br = wall_present(walls["right"], SIDE_THRESH)
 
@@ -3058,6 +3134,29 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
 
             if cells + 1 >= max_cells:
                 stopping, reason = True, "done"
+            elif plan is not None and cell_sides is not None:
+                kN = cells + 1
+                res = {s: cell_sides.result(kN, s) for s in ("right", "left")}
+                fv, fn = front_votes
+                f_wall = (True if get_bumper() or (fv >= 2 and fv > fn) else
+                          False if fn >= 2 and fn > fv else None)
+                if TILE_BLUE in tiles.get(kN, ()):
+                    print(f"\n    → кл.{kN}: синяя - стоп в её центре")
+                    go, walls_rel = False, {}
+                else:
+                    go, walls_rel = plan.decide(kN, res, (f_wall, fv, fn))
+                if go:
+                    cells += 1
+                    boundary_cm += cell_cm
+                    rem += cell_cm
+                    pending = True
+                    t_cell = time.monotonic()
+                    plan.passed(kN, walls_rel)
+                    for s in ("right", "left"):
+                        side_known[(kN, s)] = walls_rel.get(s)
+                    front_votes = [0, 0]
+                else:
+                    stopping, reason = True, "stop"
             elif not br or bf:
                 stopping, reason = True, "stop"
             else:
@@ -3344,7 +3443,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
     # вплотную, бампер, таймаут), он на другом этаже, и вызывающий обязан
     # занести горку в карту, а не шагнуть на соседа по одометрии.
     if ramp_state == 'exit' and reason not in ("lifted", "link_lost", "odo_fault"):
-        cells, reason = 1, "ramp"
+        cells, reason = ramp_cells0 + 1, "ramp"
 
     # Никакого доката: профиль уже привёл скорость почти к нулю, поэтому сразу
     # в фиксацию. ESP держит 0 dps активно и повторяет команду, пока мы меряем
