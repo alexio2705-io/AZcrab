@@ -133,6 +133,33 @@ def stop_point_cm(traveled_cm, v_cms, decel_cms2, lead_s):
     return traveled_cm + v_cms * lead_s + v_cms * v_cms / (2.0 * decel_cms2)
 
 
+def mark_center_y(xyxy, frame_px=FRAME_PX):
+    """Центр метки по y в долях кадра. Метка, обрезанная верхним или нижним
+    краем кадра (въезжает спереди или уезжает назад), выглядит ниже, чем она
+    есть, а центр видимой части врёт на полметки. Ширину край не режет, а
+    метки почти квадратные: центр - на полширины от необрезанного края."""
+    x1, y1, x2, y2 = xyxy
+    w, h = x2 - x1, y2 - y1
+    if h < w and y1 <= 1.0:
+        return (y2 - w / 2.0) / frame_px
+    if h < w and y2 >= frame_px - 1.0:
+        return (y1 + w / 2.0) / frame_px
+    return (y1 + y2) / 2.0 / frame_px
+
+
+def brake_target_cm(mark_pos_mm, traveled_cm, v_cms, decel_cms2, lead_s):
+    """Куда тормозить ради метки: (путь в см, поздно ли). Цель - встать так,
+    чтобы метка была в центре кадра (центр робота на CAM_BACK_MM впереди
+    объектива), а не "как можно раньше": иначе при раннем кадре робот
+    вставал до метки, при позднем - улетал за неё. Если до этой точки уже не
+    затормозить, - как можно раньше, дальше подъезд назад."""
+    target = (mark_pos_mm + CAM_BACK_MM) / 10.0
+    soonest = stop_point_cm(traveled_cm, v_cms, decel_cms2, lead_s)
+    if target >= soonest:
+        return target, False
+    return soonest, True
+
+
 def creep_to_mark(box_y, est_mm, tol_mm, max_mm=CREEP_MAX_MM):
     """Сколько подъехать, чтобы метка встала в центр кадра: (мм или None,
     если такому подъезду не верим; источник). box_y - (y1, y2) рамки со

@@ -185,6 +185,34 @@ class TestStopAndCreep(unittest.TestCase):
         self.assertEqual(wl.creep_to_mark(None, 260.0, 15.0), (None, "оценка"))
 
 
+class TestMarkCenter(unittest.TestCase):
+    def test_full_box_center(self):
+        self.assertAlmostEqual(wl.mark_center_y((100, 100, 160, 160)), 130 / 320)
+
+    def test_cut_by_top_edge_uses_width(self):
+        # метка въезжает в кадр сверху (спереди): видна нижняя часть 20px,
+        # ширина не обрезана - центр на полширины выше нижнего края
+        self.assertAlmostEqual(wl.mark_center_y((100, 0, 160, 20)), (20 - 30) / 320)
+
+    def test_cut_by_bottom_edge_uses_width(self):
+        self.assertAlmostEqual(wl.mark_center_y((100, 300, 160, 320)), (300 + 30) / 320)
+
+    def test_tall_box_at_edge_is_not_cut(self):
+        self.assertAlmostEqual(wl.mark_center_y((100, 0, 140, 60)), 30 / 320)
+
+
+class TestBrakeTarget(unittest.TestCase):
+    def test_brakes_to_mark_when_far_enough(self):
+        # метка в 300мм от центра клетки: в центре кадра она будет, когда
+        # центр робота (объектив на 25мм сзади) пройдёт 325мм
+        self.assertEqual(wl.brake_target_cm(300.0, 10.0, 55.0, 300.0, 0.05), (32.5, False))
+
+    def test_too_late_stops_as_soon_as_possible(self):
+        target, late = wl.brake_target_cm(100.0, 20.0, 55.0, 300.0, 0.05)
+        self.assertTrue(late)
+        self.assertAlmostEqual(target, wl.stop_point_cm(20.0, 55.0, 300.0, 0.05))
+
+
 class TestWatchAllowed(unittest.TestCase):
     def ok(self, **kw):
         a = dict(ramp_state=None, bump_on=False, assist_mode=None, pitch_delta=0.5,
