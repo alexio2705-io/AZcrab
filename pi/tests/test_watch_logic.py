@@ -221,6 +221,21 @@ class TestBrakeTarget(unittest.TestCase):
         self.assertAlmostEqual(target, wl.stop_point_cm(20.0, 55.0, 300.0, 0.05))
 
 
+class TestPreferNcnn(unittest.TestCase):
+    def test_pt_when_no_export(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pt = os.path.join(d, "maze_v26n_B.pt")
+            self.assertEqual(wl.prefer_ncnn(pt), pt)
+
+    def test_ncnn_dir_when_exported(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pt = os.path.join(d, "maze_v26n_B.pt")
+            os.mkdir(os.path.join(d, "maze_v26n_B_ncnn_model"))
+            self.assertEqual(wl.prefer_ncnn(pt), os.path.join(d, "maze_v26n_B_ncnn_model"))
+
+
 class TestWatchAllowed(unittest.TestCase):
     def ok(self, **kw):
         a = dict(ramp_state=None, bump_on=False, assist_mode=None, pitch_delta=0.5,

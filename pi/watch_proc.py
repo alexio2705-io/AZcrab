@@ -6,11 +6,13 @@
 пустой перед - именно из-за этого. Один поток torch и nice +5: инференс
 занимает одно ядро из четырёх.
 
-Замер на Pi 5 (YOLO26n, 320): 1 поток - ~96 мс на кадр, 2 - 85, 3 - 80;
-модель упирается в память, а не в ядра. Привязка к ядрам (sched_setaffinity)
-torch здесь только тормозит: 2 потока на ядрах 2-3 - ~190 мс. И число потоков
-ставится ПОСЛЕ первого predict: ultralytics в select_device() сам выставляет
-cpu_count-1 = 3 потока.
+МОДЕЛЬ - .pt (PyTorch) или папка экспорта NCNN (*_ncnn_model, см.
+watch_logic.prefer_ncnn). Замер на Pi 5 (YOLO26n, 320): NCNN в 1 поток - 28 мс
+на кадр, в 4 - 15; PyTorch в 1 поток - ~96 мс, в 3 - 80. Привязка к ядрам
+(sched_setaffinity) torch здесь только тормозит. Потоки PyTorch ставятся
+ПОСЛЕ первого predict (ultralytics в select_device() сам выставляет
+cpu_count-1 = 3), а NCNN - до загрузки: менять opt.num_threads у загруженной
+сети поздно, свёртки остаются на значении при загрузке.
 
 Запуск (это делает victim_watch.py):
     watch_proc.py МОДЕЛЬ ПАПКА CONF idx:shm [idx:shm]
@@ -36,6 +38,7 @@ from victim_watch import attach_shm  # noqa: E402
 IMGSZ = 320
 FRAME_SHAPE = (IMGSZ, IMGSZ, 3)
 TORCH_THREADS = 1
+NCNN_THREADS = 1
 NICE = 5
 CAM_TAG = {0: 'r', 1: 'l'}
 
@@ -65,12 +68,26 @@ def main():
     frames = {i: np.ndarray(FRAME_SHAPE, np.uint8, buffer=s.buf) for i, s in slots.items()}
 
     os.nice(NICE)
+    is_ncnn = model_path.rstrip('/').endswith('_ncnn_model')
+    if is_ncnn:
+        import ncnn
+
+        class _Net(ncnn.Net):
+            """ultralytics создаёт ncnn.Net() сам - число потоков задаём ему
+            здесь, до load_param (см. шапку)."""
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.opt.num_threads = NCNN_THREADS
+
+        ncnn.Net = _Net
     import torch
     from ultralytics import YOLO
-    model = YOLO(model_path)
+    model = YOLO(model_path, task='detect')
     os.makedirs(save_dir, exist_ok=True)
     model.predict(np.zeros(FRAME_SHAPE, np.uint8), imgsz=IMGSZ, conf=conf, verbose=False)
-    torch.set_num_threads(TORCH_THREADS)    # после predict - см. шапку
+    if not is_ncnn:
+        torch.set_num_threads(TORCH_THREADS)    # после predict - см. шапку
+    print(f'[VW] модель {os.path.basename(model_path.rstrip("/"))}', file=sys.stderr, flush=True)
     print(json.dumps({'ready': True}), flush=True)
 
     for line in sys.stdin:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import bisect
 import math
+import os
 
 CELL_MM = 300.0
 
@@ -36,6 +37,16 @@ _CALIB_Y = [y for y, _ in CAM_CALIB_Y_MM]
 # Метка на ходу - клетке, над которой робот: пройдено меньше этого от
 # центра исходной клетки - она, иначе следующая.
 ATTRIB_MM = 150.0
+
+
+def prefer_ncnn(pt_path):
+    """Модель для наблюдателя: экспорт NCNN рядом с .pt (maze_v26n_B.pt ->
+    maze_v26n_B_ncnn_model/), если он есть, иначе сам .pt. На Pi 5 NCNN в один
+    поток - ~28 мс на кадр против ~85-100 у PyTorch: метку замечают раньше,
+    и робот встаёт ближе к ней. Экспорт: YOLO(pt).export(format="ncnn",
+    imgsz=320)."""
+    ncnn_dir = os.path.splitext(pt_path)[0] + "_ncnn_model"
+    return ncnn_dir if os.path.isdir(ncnn_dir) else pt_path
 
 
 def px_to_mm(cy_frac):
