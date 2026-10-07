@@ -15,12 +15,23 @@ STRIDE = 1000
 
 
 class TestGeometry(unittest.TestCase):
-    def test_px_to_mm_center_is_zero(self):
-        self.assertAlmostEqual(wl.px_to_mm(0.5), 0.0)
+    # Калибровка линейкой (правая камера, 2026-10-07): напротив объектива -
+    # y=165.3 из 320, деления 6 см вверх/вниз - y=5 и y=315.
+    def test_px_to_mm_lens_axis_is_zero(self):
+        self.assertAlmostEqual(wl.px_to_mm(165.3 / 320), 0.0)
 
-    def test_px_to_mm_edges_are_90mm(self):
-        self.assertAlmostEqual(wl.px_to_mm(0.0), 90.0, delta=1.0)
-        self.assertAlmostEqual(wl.px_to_mm(1.0), -90.0, delta=1.0)
+    def test_px_to_mm_calibration_points(self):
+        self.assertAlmostEqual(wl.px_to_mm(5.0 / 320), 60.0)
+        self.assertAlmostEqual(wl.px_to_mm(106.0 / 320), 20.0)
+        self.assertAlmostEqual(wl.px_to_mm(315.0 / 320), -60.0)
+
+    def test_px_to_mm_interpolates_between_points(self):
+        self.assertAlmostEqual(wl.px_to_mm((135.3 + 165.3) / 2 / 320), 5.0)
+
+    def test_px_to_mm_extrapolates_past_frame_edges(self):
+        # центр обрезанной метки (mark_center_y) бывает за краем кадра
+        self.assertGreater(wl.px_to_mm(-10.0 / 320), 60.0)
+        self.assertLess(wl.px_to_mm(330.0 / 320), -60.0)
 
     def test_px_to_mm_top_is_forward(self):
         # верх кадра - вперёд по ходу (шлейф смотрит назад)
@@ -31,10 +42,7 @@ class TestGeometry(unittest.TestCase):
         self.assertTrue(all(a > b for a, b in zip(vals, vals[1:])))
         center_step = vals[5] - vals[6]
         edge_step = vals[0] - vals[1]
-        self.assertGreater(edge_step, 1.4 * center_step)   # у края мм/px крупнее
-
-    def test_px_to_mm_quarter(self):
-        self.assertAlmostEqual(wl.px_to_mm(0.25), 39.3, delta=0.5)
+        self.assertGreater(edge_step, 1.2 * center_step)   # у края мм/px крупнее
 
     def test_mark_pos_accounts_for_camera_back_offset(self):
         self.assertAlmostEqual(wl.mark_pos_mm(200.0, 30.0), 205.0)
@@ -164,7 +172,7 @@ class TestStopAndCreep(unittest.TestCase):
         mm, src = wl.creep_to_mark((0.2, 0.4), 0.0, 15.0)
         self.assertEqual(src, "рамка")
         assert mm is not None
-        self.assertAlmostEqual(mm, 31.0, delta=0.5)
+        self.assertAlmostEqual(mm, 30.0 - 10.0 * (96.0 - 77.3) / (106.0 - 77.3))
 
     def test_creep_box_cut_by_edge(self):
         mm, src = wl.creep_to_mark((0.0, 0.2), 0.0, 15.0)
