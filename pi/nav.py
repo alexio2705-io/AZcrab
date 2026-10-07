@@ -56,6 +56,12 @@ flood_fill_run() ищет по уже известным открытым рёб
 обе камеры и ленту целиком - полезно для быстрых тестовых заездов без
 прогрева YOLO.
 
+На ходу те же камеры смотрит наблюдатель меток (victim_watch.py, YOLO -
+отдельным процессом watch_proc.py): только на ровном и со стороны стены.
+Заметил - робот штатно тормозит, подъезжает к метке, читает её как стоя
+(VictimDetector.read_wall), репортит жертву на месте и доезжает до центра
+клетки той же поездкой. --no-vision выключает и его.
+
 Когда разведка окончена (по исчерпании непосещённых клеток или по потолку
 N), робот тем же способом - BFS по уже известной карте - едет на старт
 (0,0) (return_to_start()) и там мигает ТЕМ ЖЕ индикатором, что и при находке
@@ -77,7 +83,6 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING
 
 import serial
 import RPi.GPIO as GPIO
@@ -86,11 +91,9 @@ from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
 from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH
 import tile_classify
 import watch_logic
+from victim_watch import VictimWatcher
 from victim_detect import VictimDetector, CONF_FAST, MIN_BOX_PX, YOLO_MODEL_PATH, SAVE_DIR
 from leds import NeoPixels, blink_pink, blink_return, RED, SLEEP, VICTIM_STOP_S, MARGIN_S
-
-if TYPE_CHECKING:
-    from victim_watch import VictimWatcher
 
 LINK_PORT = "/dev/serial0"
 LINK_BAUD = 921600
@@ -4285,7 +4288,7 @@ def _on_hangup(_signum, _frame):
 
 
 def main():
-    global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds
+    global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds, _watcher
     signal.signal(signal.SIGHUP, _on_hangup)
 
     global PER_CELL_STOP, CHECKPOINT_TILE
@@ -4373,6 +4376,18 @@ def main():
             print(f"  [WARN] левая камера недоступна: {e}")
             _victim_l = None
 
+        cams = {s: d.cam for s, d in (("right", _victim_r), ("left", _victim_l))
+                if d is not None}
+        if cams:
+            # Воркер грузит YOLO в своём процессе, пока здесь поднимается
+            # лента и ждём кнопку; arm() до его готовности ничего не делает.
+            print("Запуск наблюдателя меток на ходу (YOLO отдельным процессом)...")
+            try:
+                _watcher = VictimWatcher(cams, YOLO_MODEL_PATH, SAVE_DIR, CONF_FAST)
+            except Exception as e:
+                print(f"  [WARN] наблюдатель не поднялся: {e}")
+                _watcher = None
+
         print("Инициализация ленты индикации...")
         try:
             _leds = NeoPixels()
@@ -4385,6 +4400,8 @@ def main():
     # Кнопка - раньше первого замера лидара и тем более раньше проезда:
     # пока не нажата, лидар не проверяем и никуда не едем.
     wait_start_button()
+    if _watcher is not None and not _watcher.ready.is_set():
+        print("  [WARN] наблюдатель меток ещё грузится - включится, когда будет готов")
     # Курс поля - именно сейчас: кнопку жмут, когда робот уже стоит на старте
     # ровно по сетке. Всё, что было до нажатия (запуск за полигоном, перенос
     # в руках), в систему отсчёта не попадает. Если робота тронут во время
@@ -4466,6 +4483,8 @@ def main():
                 map_web_proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
+        if _watcher is not None:
+            _watcher.close()
         if _victim_r is not None:
             _victim_r.close()
         if _victim_l is not None:
