@@ -100,6 +100,29 @@ class TestVictimWatcher(unittest.TestCase):
         self.assertTrue(wait_for(lambda: (w.poll(), w.dead)[1], timeout=4.0))
         self.assertFalse(w.arm({'right'}))
 
+    def test_frame_copy_does_not_block_control_loop(self):
+        # arm()/poll() зовутся каждый такт drive_cells (5 мс): копия кадра в
+        # общую память не должна держать их замок
+        import threading
+
+        class SlowSlot:
+            def __init__(self):
+                self.busy = threading.Event()
+
+            def __setitem__(self, key, value):
+                self.busy.set()
+                time.sleep(0.3)
+
+        w = self.make()
+        slot = SlowSlot()
+        w._buf['right'] = slot
+        w.arm({'right'})
+        self.assertTrue(slot.busy.wait(2.0))
+        t = time.monotonic()
+        w.arm({'right'})
+        w.poll()
+        self.assertLess(time.monotonic() - t, 0.1)
+
     def test_stats_line(self):
         w = self.make()
         w.arm({'right'})

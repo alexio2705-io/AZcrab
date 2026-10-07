@@ -306,12 +306,16 @@ class VictimWatcher:
                 log_exposure = None
                 print(f"\n    [VW] {side}: выдержка {exp}мкс x{gain:.1f}, "
                       f"яркость {float(frame.mean()):.0f}", flush=True)
+            if not self._armed[side] or self.dead:
+                continue
+            # Копия - вне замка: слот этой камеры свободен (_free), а замок
+            # каждый такт берут arm()/poll() из петли drive_cells.
+            self._buf[side][...] = frame
             with self._lock:
                 if not self._armed[side] or self.dead:
                     continue
                 self._fid += 1
                 fid, arm_id = self._fid, self._arm_id
-                self._buf[side][...] = frame
                 self._pending[side] = (fid, t_frame, arm_id, time.monotonic())
                 self._free[side].clear()
                 self._frames_n[side] += 1
