@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """YOLO наблюдателя меток на ходу - отдельным процессом (см. victim_watch.py).
 
-Свой GIL и свои ядра: петля drive_cells в nav.py (200 Гц) и поток телеметрии
-не делят интерпретатор с инференсом. Раньше после YOLO в том же процессе
-лидар отдавал пустой перед - именно из-за этого. Ядра 2-3, nice +5, 2 потока
-torch: ядра 0-1 остаются nav.py и lidar_proc.py.
+Свой GIL: петля drive_cells в nav.py (200 Гц) и поток телеметрии не делят
+интерпретатор с инференсом. Раньше после YOLO в том же процессе лидар отдавал
+пустой перед - именно из-за этого. Один поток torch и nice +5: инференс
+занимает одно ядро из четырёх.
+
+Замер на Pi 5 (YOLO26n, 320): 1 поток - ~96 мс на кадр, 2 - 85, 3 - 80;
+модель упирается в память, а не в ядра. Привязка к ядрам (sched_setaffinity)
+torch здесь только тормозит: 2 потока на ядрах 2-3 - ~190 мс. И число потоков
+ставится ПОСЛЕ первого predict: ultralytics в select_device() сам выставляет
+cpu_count-1 = 3 потока.
 
 Запуск (это делает victim_watch.py):
     watch_proc.py МОДЕЛЬ ПАПКА CONF idx:shm [idx:shm]
@@ -22,15 +28,14 @@ import time
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
-from multiprocessing import shared_memory  # noqa: E402
-
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+from victim_watch import attach_shm  # noqa: E402
+
 IMGSZ = 320
 FRAME_SHAPE = (IMGSZ, IMGSZ, 3)
-TORCH_THREADS = 2
-CPU_CORES = {2, 3}
+TORCH_THREADS = 1
 NICE = 5
 CAM_TAG = {0: 'r', 1: 'l'}
 
@@ -56,23 +61,16 @@ def main():
     slots = {}
     for arg in sys.argv[4:]:
         idx, name = arg.split(':', 1)
-        # track=False: память создал и освободит nav.py, не наш resource_tracker
-        slots[int(idx)] = shared_memory.SharedMemory(name=name, track=False)
+        slots[int(idx)] = attach_shm(name)     # создал и освободит nav.py
     frames = {i: np.ndarray(FRAME_SHAPE, np.uint8, buffer=s.buf) for i, s in slots.items()}
 
-    if sys.platform == 'linux':        # sched_setaffinity есть только в Linux
-        try:
-            os.sched_setaffinity(0, CPU_CORES)
-        except OSError as e:
-            print(f'[VW] привязка к ядрам {CPU_CORES} не удалась: {e}',
-                  file=sys.stderr, flush=True)
     os.nice(NICE)
     import torch
-    torch.set_num_threads(TORCH_THREADS)
     from ultralytics import YOLO
     model = YOLO(model_path)
     os.makedirs(save_dir, exist_ok=True)
     model.predict(np.zeros(FRAME_SHAPE, np.uint8), imgsz=IMGSZ, conf=conf, verbose=False)
+    torch.set_num_threads(TORCH_THREADS)    # после predict - см. шапку
     print(json.dumps({'ready': True}), flush=True)
 
     for line in sys.stdin:

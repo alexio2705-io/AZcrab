@@ -2,7 +2,7 @@
 
 Кадры снимают потоки здесь (picamera2 не открыть из двух процессов, а скан
 стоя - VictimDetector в nav.py - пользуется теми же камерами), а YOLO крутится
-в отдельном процессе watch_proc.py: со своим GIL и на своих ядрах. Цена для
+в отдельном процессе watch_proc.py: со своим GIL, на одном ядре. Цена для
 nav.py - копия 300 КБ в общую память и строка в pipe на кадр.
 
 nav.py на каждом такте drive_cells говорит arm(стороны) и забирает рамки
@@ -35,6 +35,19 @@ IDLE_WAIT_S = 0.2
 TS_SKEW_MAX_S = 0.5            # SensorTimestamp дальше от monotonic - чужие часы
 FRAME_SHAPE = (320, 320, 3)
 SIDE_IDX = {"right": 0, "left": 1}   # как cam_idx в victim_detect.py
+
+
+def attach_shm(name):
+    """Открыть общую память, которую создал nav.py, не отдавая её своему
+    resource_tracker: иначе при выходе воркера он удалил бы чужой сегмент и
+    ругался на "утечку". track=False есть только с Python 3.13, а venv на Pi
+    - 3.11: там то же самое делает unregister."""
+    if sys.version_info >= (3, 13):
+        return shared_memory.SharedMemory(name=name, track=False)
+    from multiprocessing import resource_tracker
+    shm = shared_memory.SharedMemory(name=name)
+    resource_tracker.unregister(shm._name, "shared_memory")   # type: ignore[attr-defined]
+    return shm
 
 
 @dataclass

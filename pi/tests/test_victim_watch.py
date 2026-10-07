@@ -123,6 +123,21 @@ class TestVictimWatcher(unittest.TestCase):
         w.poll()
         self.assertLess(time.monotonic() - t, 0.1)
 
+    def test_attach_shm_shares_memory_and_leaves_it_to_owner(self):
+        # watch_proc.py открывает память nav.py; на Pi venv - Python 3.11,
+        # где у SharedMemory ещё нет track=False
+        from multiprocessing import shared_memory
+        from victim_watch import attach_shm
+        own = shared_memory.SharedMemory(create=True, size=16)
+        self.addCleanup(own.unlink)
+        self.addCleanup(own.close)
+        other = attach_shm(own.name)
+        other.buf[0] = 42
+        self.assertEqual(own.buf[0], 42)
+        other.close()
+        again = shared_memory.SharedMemory(name=own.name)   # владелец её не потерял
+        again.close()
+
     def test_stats_line(self):
         w = self.make()
         w.arm({'right'})
