@@ -176,8 +176,13 @@ class TestStopAndCreep(unittest.TestCase):
     def test_creep_by_estimate_backwards(self):
         self.assertEqual(wl.creep_to_mark(None, -95.0, 15.0), (-95.0, "оценка"))
 
+    def test_creep_back_after_real_latency_accepted(self):
+        # замер на Pi: кадр->решение ~175 мс при двух камерах; на 55 см/с
+        # это ~10 см, плюс тормозной путь с упреждением ~8 см - назад ~20 см
+        self.assertEqual(wl.creep_to_mark(None, -200.0, 15.0), (-200.0, "оценка"))
+
     def test_creep_too_far_rejected(self):
-        self.assertEqual(wl.creep_to_mark(None, 160.0, 15.0), (None, "оценка"))
+        self.assertEqual(wl.creep_to_mark(None, 260.0, 15.0), (None, "оценка"))
 
 
 class TestWatchAllowed(unittest.TestCase):
