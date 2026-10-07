@@ -145,6 +145,11 @@ MOVE_MIN_CMS = 9.0
 # есть вдвое меньше, чем есть в запасе.
 # 300 см/с² = ~4000 dps/с - втрое ниже лимита MOTOR_ACCEL_DPS_S на ESP.
 BRAKE_DECEL_CMS2 = 300.0
+# Торможение к метке, замеченной на ходу (см. drive_cells) - жёстче, чем к
+# центру клетки: камера видит всего ±62мм стены, и каждый сантиметр
+# тормозного пути - это подъезд назад после остановки. С 55см/с - ~30мм
+# вместо ~50. Мотору по силам: MOTOR_ACCEL_DPS_S=11000 на ESP - это ~820см/с².
+MARK_BRAKE_DECEL_CMS2 = 500.0
 
 # Разгон - ПО ВРЕМЕНИ, не по пройденному пути. Профиль "по пути" (было
 # ACCEL_MM=60) считает скорость от traveled_cm, а сам traveled_cm растёт тем
@@ -2974,7 +2979,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
                         # же профилем. Не успеваем - как можно раньше и
                         # подъезд назад (см. watch_logic.brake_target_cm).
                         m["stop_cm"], late = watch_logic.brake_target_cm(
-                            m["pos_mm"], traveled_cm, fwd, BRAKE_DECEL_CMS2, STOP_LEAD_S)
+                            m["pos_mm"], traveled_cm, fwd, MARK_BRAKE_DECEL_CMS2, STOP_LEAD_S)
                         vmark = m
                         watch_armed = watcher.arm(set())
                         print(f"    метка на ходу: торможу {'(поздно) ' if late else 'к метке '}"
@@ -3168,7 +3173,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
             # Постоянное замедление: пока запас пути велик, sqrt даёт больше
             # крейсерской и ничего не ограничивает - робот едет полным ходом.
             # Тормозить начинает сам, ровно когда пути остаётся в обрез.
-            v_brake = math.sqrt(2.0 * BRAKE_DECEL_CMS2 * max(0.0, rem_eff))
+            decel = MARK_BRAKE_DECEL_CMS2 if mark_first else BRAKE_DECEL_CMS2
+            v_brake = math.sqrt(2.0 * decel * max(0.0, rem_eff))
             braking = v_brake < ramp_up
             fwd = min(ramp_up, v_brake)
             if braking:
@@ -4391,7 +4397,8 @@ def main():
             # лента и ждём кнопку; arm() до его готовности ничего не делает.
             print("Запуск наблюдателя меток на ходу (YOLO отдельным процессом)...")
             try:
-                _watcher = VictimWatcher(cams, YOLO_MODEL_PATH, SAVE_DIR, CONF_FAST)
+                _watcher = VictimWatcher(cams, watch_logic.prefer_ncnn(YOLO_MODEL_PATH),
+                                         SAVE_DIR, CONF_FAST)
             except Exception as e:
                 print(f"  [WARN] наблюдатель не поднялся: {e}")
                 _watcher = None
