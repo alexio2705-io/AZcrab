@@ -11,6 +11,7 @@ pi/tests/test_watch_logic.py. Дизайн: docs/superpowers/specs/
 """
 from __future__ import annotations
 
+import bisect
 import math
 
 CELL_MM = 300.0
@@ -142,3 +143,92 @@ def creep_to_mark(box_y, est_mm, tol_mm, max_mm=CREEP_MAX_MM):
     if abs(mm) > max_mm:
         return None, src
     return mm, src
+
+
+# Сторона включена ещё столько после того, как лидар перестал видеть стену:
+# на стыке клеток боковое окно мигает, а камере дёргаться незачем.
+WATCH_SIDE_HOLD_S = 0.2
+
+
+def watch_allowed(ramp_state, bump_on, assist_mode, pitch_delta, rearm_deg, wall_forced):
+    """Наблюдатель - только на ровном ходу: не горка и не кандидат в неё, не
+    всплеск наклона, не ассист моментом, не экстренное торможение у стены."""
+    return (ramp_state is None and not bump_on and assist_mode is None
+            and abs(pitch_delta) < rearm_deg and not wall_forced)
+
+
+def shift_timers(times, pause_s):
+    """Отметки времени, сдвинутые на паузу остановки у метки; 0.0 значит
+    "не взведено" (так их и заводит drive_cells) - такие не трогаем."""
+    return tuple(t + pause_s if t else t for t in times)
+
+
+class OdoHistory:
+    """(время, путь) за последние keep_s: путь на момент экспозиции кадра,
+    а не на момент ответа воркера - на 55см/с разница 2-5см."""
+
+    def __init__(self, keep_s=1.0):
+        self.keep_s = keep_s
+        self.t = []
+        self.d = []
+
+    def add(self, t, d):
+        self.t.append(t)
+        self.d.append(d)
+        cut = 0
+        while cut < len(self.t) - 1 and self.t[cut] < t - self.keep_s:
+            cut += 1
+        if cut:
+            del self.t[:cut]
+            del self.d[:cut]
+
+    def at(self, t):
+        if not self.t:
+            return None
+        if t <= self.t[0]:
+            return self.d[0]
+        if t >= self.t[-1]:
+            return self.d[-1]
+        i = bisect.bisect_right(self.t, t)
+        t0, t1 = self.t[i - 1], self.t[i]
+        d0, d1 = self.d[i - 1], self.d[i]
+        return d0 + (d1 - d0) * (t - t0) / (t1 - t0)
+
+
+class Stats:
+    """Выборка для p50/p95/max: частота, задержки, такт цикла."""
+
+    def __init__(self):
+        self.v = []
+
+    def add(self, x):
+        self.v.append(x)
+
+    def pct(self, p):
+        if not self.v:
+            return None
+        s = sorted(self.v)
+        return s[max(0, math.ceil(p / 100.0 * len(s)) - 1)]
+
+    def fmt(self):
+        if not self.v:
+            return "—"
+        return (f"p50 {self.pct(50):.1f} p95 {self.pct(95):.1f} "
+                f"max {max(self.v):.1f} (n={len(self.v)})")
+
+
+class SideHold:
+    """Стороны, где есть стена, с удержанием hold_s (см. WATCH_SIDE_HOLD_S)."""
+
+    def __init__(self, hold_s=WATCH_SIDE_HOLD_S):
+        self.hold_s = hold_s
+        self.last = {}
+
+    def update(self, t, present):
+        for side, p in present.items():
+            if p:
+                self.last[side] = t
+        return {s for s, tl in self.last.items() if t - tl <= self.hold_s}
+
+    def reset(self):
+        self.last.clear()

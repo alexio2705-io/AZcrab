@@ -172,5 +172,84 @@ class TestStopAndCreep(unittest.TestCase):
         self.assertEqual(wl.creep_to_mark(None, 160.0, 15.0), (None, "оценка"))
 
 
+class TestWatchAllowed(unittest.TestCase):
+    def ok(self, **kw):
+        a = dict(ramp_state=None, bump_on=False, assist_mode=None, pitch_delta=0.5,
+                 rearm_deg=1.2, wall_forced=False)
+        a.update(kw)
+        return wl.watch_allowed(**a)
+
+    def test_flat(self):
+        self.assertTrue(self.ok())
+
+    def test_blocked(self):
+        for kw in (dict(ramp_state="cand"), dict(ramp_state="exit"), dict(bump_on=True),
+                   dict(assist_mode="kick"), dict(pitch_delta=1.3), dict(pitch_delta=-1.3),
+                   dict(wall_forced=True)):
+            with self.subTest(**kw):
+                self.assertFalse(self.ok(**kw))
+
+
+class TestShiftTimers(unittest.TestCase):
+    def test_shift_skips_unarmed_zero(self):
+        self.assertEqual(wl.shift_timers((10.0, 0.0, 5.0), 2.5), (12.5, 0.0, 7.5))
+
+
+def _at(h, t):
+    v = h.at(t)
+    assert v is not None
+    return v
+
+
+class TestOdoHistory(unittest.TestCase):
+    def test_empty(self):
+        self.assertIsNone(wl.OdoHistory().at(1.0))
+
+    def test_interpolate_and_clamp(self):
+        h = wl.OdoHistory()
+        h.add(0.0, 0.0)
+        h.add(0.1, 5.0)
+        h.add(0.2, 10.0)
+        self.assertAlmostEqual(_at(h, 0.15), 7.5)
+        self.assertAlmostEqual(_at(h, -1.0), 0.0)
+        self.assertAlmostEqual(_at(h, 5.0), 10.0)
+
+    def test_trims_old(self):
+        h = wl.OdoHistory(keep_s=1.0)
+        for i in range(21):
+            h.add(i * 0.1, float(i))
+        self.assertGreaterEqual(h.t[0], 2.0 - 1.0 - 1e-9)
+        self.assertAlmostEqual(_at(h, 0.0), h.d[0])
+
+
+class TestStats(unittest.TestCase):
+    def test_percentiles(self):
+        s = wl.Stats()
+        for i in range(1, 101):
+            s.add(float(i))
+        self.assertEqual(s.pct(50), 50.0)
+        self.assertEqual(s.pct(95), 95.0)
+        self.assertIn("max 100.0", s.fmt())
+        self.assertIn("n=100", s.fmt())
+
+    def test_empty(self):
+        self.assertIsNone(wl.Stats().pct(50))
+        self.assertEqual(wl.Stats().fmt(), "—")
+
+
+class TestSideHold(unittest.TestCase):
+    def test_hold(self):
+        h = wl.SideHold(0.2)
+        self.assertEqual(h.update(0.0, {"right": True, "left": False}), {"right"})
+        self.assertEqual(h.update(0.1, {"right": False, "left": False}), {"right"})
+        self.assertEqual(h.update(0.25, {"right": False, "left": False}), set())
+
+    def test_reset(self):
+        h = wl.SideHold(0.2)
+        h.update(0.0, {"left": True})
+        h.reset()
+        self.assertEqual(h.update(0.05, {"left": False}), set())
+
+
 if __name__ == "__main__":
     unittest.main()
