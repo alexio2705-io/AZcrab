@@ -176,6 +176,30 @@ class Camera:
         exp = int(min(max_exposure_us, max(1000, total)))
         return exp, max(1.0, total / exp)
 
+    def fast_exposure(self, max_us):
+        """Кадры на ходу: выдержка не длиннее max_us (смаз), остаток яркости,
+        выбранной автоэкспозицией, - усилением. Наоборот к auto_exposure():
+        там шум важнее смаза. Сумма - с текущего кадра; зовётся из потока
+        наблюдателя, не из петли управления (capture_metadata ждёт кадр).
+        Возвращает (выдержка, усиление) или None - камера занята снимком."""
+        if self.cam is None or not self.cap_lock.acquire(timeout=1.0):
+            return None
+        try:
+            md = self.cam.capture_metadata()
+            total = (md.get('ExposureTime', 10000) * md.get('AnalogueGain', 1.0)
+                     * md.get('DigitalGain', 1.0))
+            exp = int(max(100, min(max_us, total)))
+            gain = max(1.0, total / exp)
+            self.cam.set_controls({'AeEnable': False, 'ExposureTime': exp,
+                                   'AnalogueGain': float(gain)})
+            return exp, gain
+        finally:
+            self.cap_lock.release()
+
+    def restore_exposure(self):
+        """Назад к camera_settings.json после fast_exposure()."""
+        self.apply(cam_settings)
+
     def capture_long(self, exposure_us, gain, size=None, timeout=6.0, settle_async=False,
                      auto_max_us=None):
         """Один кадр с ручной выдержкой (и, если задан size, в большом разрешении).
@@ -268,6 +292,21 @@ class Camera:
                 return self.cam.capture_array()
         with self.cond:
             return None if self.frame is None else self.frame.copy()
+
+    def try_latest(self):
+        """(кадр, метаданные) без ожидания cap_lock: камера занята снимком
+        или его фоновым возвратом (settle_async) - (None, {}), наблюдатель
+        просто пропустит кадр. Метаданные нужны ради SensorTimestamp."""
+        if self.cam is None or not self.cap_lock.acquire(blocking=False):
+            return None, {}
+        try:
+            req = self.cam.capture_request()
+            try:
+                return req.make_array('main'), req.get_metadata()
+            finally:
+                req.release()
+        finally:
+            self.cap_lock.release()
 
 
 def cam_settings_controls():
