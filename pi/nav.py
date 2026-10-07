@@ -2970,13 +2970,15 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
                 for b in watcher.poll():
                     m = _watch_decide(b, cell, hdg, odo_t, vmark is not None)
                     if m is not None:
-                        m["stop_cm"] = watch_logic.stop_point_cm(traveled_cm, fwd,
-                                                                 BRAKE_DECEL_CMS2,
-                                                                 STOP_LEAD_S)
+                        # Тормозим К МЕТКЕ: встать с ней в центре кадра, тем
+                        # же профилем. Не успеваем - как можно раньше и
+                        # подъезд назад (см. watch_logic.brake_target_cm).
+                        m["stop_cm"], late = watch_logic.brake_target_cm(
+                            m["pos_mm"], traveled_cm, fwd, BRAKE_DECEL_CMS2, STOP_LEAD_S)
                         vmark = m
                         watch_armed = watcher.arm(set())
-                        print(f"    метка на ходу: торможу, встану через "
-                              f"{(m['stop_cm'] - traveled_cm) * 10:.0f}мм")
+                        print(f"    метка на ходу: торможу {'(поздно) ' if late else 'к метке '}"
+                              f"через {(m['stop_cm'] - traveled_cm) * 10:.0f}мм")
 
         # Не глушится и на склоне: при лидаре на 130мм пол носом вниз ближе
         # FRONT_EMERGENCY_MM - это уклон больше 40°, а стена вплотную - всегда
@@ -3483,7 +3485,7 @@ def _watch_decide(b, cell, hdg, odo_t, busy):
     x1, y1, x2, y2 = b.xyxy
     side_px = max(x2 - x1, y2 - y1)
     t_cm = odo_t.at(b.t_frame) or 0.0
-    off = watch_logic.px_to_mm((y1 + y2) / 2.0 / watch_logic.FRAME_PX)
+    off = watch_logic.px_to_mm(watch_logic.mark_center_y(b.xyxy))
     pos = watch_logic.mark_pos_mm(t_cm * 10.0, off)
     key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, b.side),
                                          pos, LEVEL_STRIDE)
@@ -3555,7 +3557,7 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
                 if after > before:
                     print(f"    [WARN] после подъезда метка дальше от центра кадра "
                           f"({before:.0f} -> {after:.0f}мм) - знак оси камеры? "
-                          f"(watch_logic.CAM_FWD_SIGN)")
+                          f"(watch_logic.CAM_CALIB_Y_MM)")
     # 3. Чтение - та же логика, что стоя в центре, без дедупа по стене
     trav = trav_mm()
     tcell, wall_dir = watch_logic.attribute(cell, _next_cell(cell[0], cell[1], hdg),
