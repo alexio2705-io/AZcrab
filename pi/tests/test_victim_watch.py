@@ -138,6 +138,23 @@ class TestVictimWatcher(unittest.TestCase):
         again = shared_memory.SharedMemory(name=own.name)   # владелец её не потерял
         again.close()
 
+    def test_rate_counts_from_capture_start(self):
+        # съёмка кадра (ожидание камеры) не должна добавляться к периоду
+        # WATCH_HZ: камера на 30 кадрах ждёт до 33 мс
+        import victim_watch
+
+        class SlowCam(FakeCam):
+            def try_latest(self):
+                time.sleep(0.02)
+                return super().try_latest()
+
+        w = self.make(SlowCam())
+        w.arm({'right'})
+        time.sleep(0.3)
+        n0 = w._frames_n['right']
+        time.sleep(1.0)
+        self.assertGreaterEqual(w._frames_n['right'] - n0, 0.85 * victim_watch.WATCH_HZ)
+
     def test_stats_line(self):
         w = self.make()
         w.arm({'right'})

@@ -309,6 +309,7 @@ class VictimWatcher:
                     continue
                 if not self._free[side].wait(0.1):
                     continue
+                t_cap = time.monotonic()
                 frame, md = cam.try_latest()
             except Exception as e:
                 self._fail(side, e)
@@ -316,7 +317,7 @@ class VictimWatcher:
             if frame is None:
                 time.sleep(0.02)
                 continue
-            next_t = time.monotonic() + 1.0 / WATCH_HZ
+            next_t = t_cap + 1.0 / WATCH_HZ    # от начала съёмки: ожидание кадра входит в период
             t_frame = self._frame_time(md)
             if log_exposure is not None:
                 exp, gain = log_exposure
