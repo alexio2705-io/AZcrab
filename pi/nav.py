@@ -2971,7 +2971,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg):
                     m = _watch_decide(b, cell, hdg, odo_t, vmark is not None)
                     if m is not None:
                         m["stop_cm"] = watch_logic.stop_point_cm(traveled_cm, fwd,
-                                                                 BRAKE_DECEL_CMS2)
+                                                                 BRAKE_DECEL_CMS2,
+                                                                 STOP_LEAD_S)
                         vmark = m
                         watch_armed = watcher.arm(set())
                         print(f"    метка на ходу: торможу, встану через "

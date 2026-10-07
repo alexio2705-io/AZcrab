@@ -122,9 +122,12 @@ def decide_stop(conf, side_px, key, along, registry, busy, conf_min, min_box_px)
     return True, "стоп"
 
 
-def stop_point_cm(traveled_cm, v_cms, decel_cms2):
-    """Где встанет робот, если тормозить с v_cms с постоянным замедлением."""
-    return traveled_cm + v_cms * v_cms / (2.0 * decel_cms2)
+def stop_point_cm(traveled_cm, v_cms, decel_cms2, lead_s):
+    """Где встанет робот, если тормозить с v_cms с постоянным замедлением.
+    lead_s - поправка на запаздывание (STOP_LEAD_S): профиль drive_cells
+    вычитает v*lead_s из остатка, и без неё в такт решения скорость
+    скачком падала бы ниже текущей - рывок."""
+    return traveled_cm + v_cms * lead_s + v_cms * v_cms / (2.0 * decel_cms2)
 
 
 def creep_to_mark(box_y, est_mm, tol_mm, max_mm=CREEP_MAX_MM):

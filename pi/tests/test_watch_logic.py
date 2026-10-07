@@ -144,10 +144,18 @@ class TestDecideStop(unittest.TestCase):
 
 class TestStopAndCreep(unittest.TestCase):
     def test_stop_point(self):
-        self.assertAlmostEqual(wl.stop_point_cm(10.0, 55.0, 300.0), 10.0 + 3025.0 / 600.0)
+        self.assertAlmostEqual(wl.stop_point_cm(10.0, 55.0, 300.0, 0.05),
+                               10.0 + 55.0 * 0.05 + 3025.0 / 600.0)
 
     def test_stop_point_standing(self):
-        self.assertAlmostEqual(wl.stop_point_cm(12.0, 0.0, 300.0), 12.0)
+        self.assertAlmostEqual(wl.stop_point_cm(12.0, 0.0, 300.0, 0.05), 12.0)
+
+    def test_stop_point_brakes_from_current_speed(self):
+        # профиль drive_cells: v = sqrt(2a*(остаток - v*STOP_LEAD_S)); в такт
+        # решения он должен дать текущую скорость, а не скачок вниз (рывок)
+        v, a, lead = 55.0, 300.0, 0.05
+        rem = wl.stop_point_cm(0.0, v, a, lead)
+        self.assertAlmostEqual((2.0 * a * (rem - v * lead)) ** 0.5, v)
 
     def test_creep_box_centered_no_move(self):
         self.assertEqual(wl.creep_to_mark((0.45, 0.55), 999.0, 15.0), (0.0, "рамка"))
