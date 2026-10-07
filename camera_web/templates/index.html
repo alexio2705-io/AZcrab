@@ -1,27 +1,152 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8">
-<title>Камеры MAZE2027</title>
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Камеры - MAZE2027</title>
 <style>
-  body { background:#111; color:#eee; font-family: sans-serif; text-align:center; margin:0; padding:24px; }
-  h1 { margin-bottom: 24px; }
-  .cams { display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }
-  .cam img { width:640px; max-width:95vw; border:2px solid #444; border-radius:8px; display:block; }
-  .cam h3 { margin: 8px 0; }
-</style>
-</head>
+  /* Системный моноширинный стек: страницы отдаёт Пи без интернета, веб-шрифт не загрузится. */
+  :root {
+    color-scheme:dark;
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/20px var(--mono);
+         font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
+  @media (min-width:900px) { .wrap { padding:24px; } }
+  b { font-weight:600; }
+  .mut { color:var(--mut); }
+  .bad { color:var(--acc); }
+
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .nav { display:flex; gap:16px; font-size:12px; letter-spacing:.06em; }
+  .nav a { color:var(--mut); text-decoration:none; }
+  .nav a:hover, .nav a[aria-current] { color:var(--fg); }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .led { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .led.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .led.err { background:var(--acc); }
+
+  .grid2 { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .grid2 { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  .stack > * + * { margin-top:16px; }
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; text-transform:none; font-size:12px; }
+  .pad { padding:12px 16px; }
+  .tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 16px; }
+  .tools label { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; }
+  .hint { color:var(--mut); font-size:12px; line-height:18px; padding:8px 16px 12px; }
+
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
+
+  .note { margin:8px 16px 12px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b, .note.err { color:var(--acc); }
+  .note.err { color:var(--mut); }
+
+  .vid { display:block; width:100%; background:#000; border-top:1px solid var(--line); }
+  .vidbox { position:relative; background:#000; border-top:1px solid var(--line); }
+  .vidbox .vid { border-top:0; }
+  .ph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+        color:var(--mut); font-size:12px; letter-spacing:.06em; padding:16px; pointer-events:none; }
+  .ph.err { color:var(--acc); }
+
+  .btn { font:inherit; font-size:13px; color:var(--fg); background:none; border:1px solid var(--line2);
+         border-radius:4px; padding:6px 12px; min-height:32px; cursor:pointer; text-decoration:none; display:inline-flex;
+         align-items:center; justify-content:center; gap:8px; }
+  .btn:hover { background:var(--hov); }
+  .btn.p { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+  .btn.p:hover { opacity:.88; }
+  .btn.on { border-color:var(--fg); background:rgba(255,255,255,.08); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn.block { width:100%; }
+  .btn:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  select, input[type=text], input:not([type]) { font:inherit; color:var(--fg); background:var(--bg);
+         border:1px solid var(--line2); border-radius:4px; padding:5px 8px; min-height:32px; }
+  input[type=text], input:not([type]) { width:100%; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:20px; background:transparent; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track { height:2px; background:var(--line2); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; margin-top:-5px; border-radius:50%; background:var(--fg); border:0; }
+  input[type=range]::-moz-range-track { height:2px; background:var(--line2); }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--fg); border:0; }
+  kbd { font:11px var(--mono); color:var(--mut); border:1px solid var(--line2); border-radius:2px; padding:0 5px; }
+  .btn.p kbd { color:var(--bg); border-color:rgba(20,22,26,.4); }
+  a { color:var(--fg); }
+
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th { color:var(--mut); font-weight:400; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+       text-align:right; padding:6px 8px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; padding-left:16px; }
+  th:last-child, td:last-child { padding-right:16px; }
+  tbody tr:hover td, tr:hover > td { background:var(--hov); }
+  .tscroll { overflow-x:auto; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:-1px;
+        box-shadow:inset 0 0 0 1px var(--line2); }
+  .sw.sq { border-radius:2px; }
+
+  .sl { display:grid; grid-template-columns:170px minmax(0,1fr) 48px; gap:2px 12px; align-items:center; padding:4px 16px 12px; }
+  @media (max-width:520px) { .sl { grid-template-columns:96px minmax(0,1fr) 44px; } }
+  .sl .k { font-size:12px; color:var(--mut); }
+  .sl .o { text-align:right; font-size:13px; }
+  .sl .grp { grid-column:1/-1; margin-top:12px; padding-top:8px; border-top:1px solid var(--line);
+             color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sl .grp:first-child { margin-top:0; border-top:0; }
+  .sl .hn { grid-column:1/-1; color:var(--mut); font-size:11px; line-height:16px; margin:-2px 0 4px; opacity:.85; }
+
+  .vidbox { aspect-ratio:16/9; }
+  .vidbox .vid { height:100%; object-fit:contain; }
+</style></head>
 <body>
-  <h1>Трансляция с камер</h1>
-  <div class="cams">
-    <div class="cam">
-      <h3>Камера 0</h3>
-      <img src="/stream/0.mjpg">
+<div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ камеры</span></h1><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
+  <div class="grid2">
+    <div class="panel">
+      <div class="sec"><span>Камера 0 · правая</span><span class="n" id="s0">ожидание кадра</span></div>
+      <div class="vidbox"><img class="vid" id="v0" src="/stream/0.mjpg" alt=""><div class="ph" id="p0">ожидание кадра</div></div>
     </div>
-    <div class="cam">
-      <h3>Камера 1</h3>
-      <img src="/stream/1.mjpg">
+    <div class="panel">
+      <div class="sec"><span>Камера 1 · левая</span><span class="n" id="s1">ожидание кадра</span></div>
+      <div class="vidbox"><img class="vid" id="v1" src="/stream/1.mjpg" alt=""><div class="ph" id="p1">ожидание кадра</div></div>
     </div>
   </div>
-</body>
-</html>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function setConn(kind, text) { $('conn-led').className = 'led' + (kind === 'on' ? '' : ' ' + kind); $('conn').textContent = text; }
+
+const live = {0: null, 1: null};
+function upd() {
+  const n = Object.values(live).filter(x => x === true).length;
+  const failed = Object.values(live).some(x => x === false);
+  if (n === 2) setConn('on', 'потоки открыты 2/2');
+  else if (n === 0 && !failed) setConn('off', 'ожидание кадров');
+  else setConn('err', 'потоки ' + n + '/2');
+}
+[0, 1].forEach(i => {
+  const v = $('v' + i);
+  v.onload = () => { live[i] = true; $('p' + i).style.display = 'none'; $('s' + i).textContent = 'поток открыт'; upd(); };
+  v.onerror = () => { live[i] = false; const p = $('p' + i); p.style.display = 'flex'; p.className = 'ph err';
+                      p.textContent = 'нет сигнала'; $('s' + i).textContent = 'нет сигнала'; upd(); };
+});
+upd();
+</script>
+</body></html>

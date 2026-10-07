@@ -6,3 +6,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# clangd (machine-specific)
+compile_commands.json
+.clangd
+.cache/

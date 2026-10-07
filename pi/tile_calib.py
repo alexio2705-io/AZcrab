@@ -194,117 +194,225 @@ def index():
 
 PAGE = r"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Калибровка цвета</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Калибровка цвета - MAZE2027</title>
 <style>
-:root{--bg:#0f1115;--card:#171a21;--line:#2a2f3a;--txt:#e8eaee;--dim:#8a93a3;--ok:#4ee27a;--bad:#ff5c5c;--acc:#ffd23f}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,sans-serif;padding:16px;max-width:900px;margin:auto}
-h1{font-size:20px;margin:0 0 12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
-.big{font-size:34px;font-weight:800;letter-spacing:.5px}
-.dim{color:var(--dim)}
-.mono{font-family:ui-monospace,Menlo,monospace}
-.row{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
-.btns{display:flex;gap:8px;flex-wrap:wrap}
-button{background:#232833;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;cursor:pointer}
-button.sel{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc) inset}
-button.go{background:var(--acc);color:#111;font-weight:700;border:none}
-button.x{padding:2px 8px;font-size:12px}
-.sw{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:6px;border:1px solid #0006}
-table{border-collapse:collapse;width:100%}
-td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
-.msg{padding:8px 10px;border-radius:8px;background:#1d2a1f}
-.msg.bad{background:#2d1a1a;color:#ffb3b3}
-.warn{color:var(--bad)}
-</style></head><body>
-<h1>Калибровка датчика цвета</h1>
+  /* Системный моноширинный стек: страницы отдаёт Пи без интернета, веб-шрифт не загрузится. */
+  :root {
+    color-scheme:dark;
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/20px var(--mono);
+         font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
+  @media (min-width:900px) { .wrap { padding:24px; } }
+  b { font-weight:600; }
+  .mut { color:var(--mut); }
+  .bad { color:var(--acc); }
 
-<div class="card">
-  <div class="row">
-    <div><span class="sw" id="sw"></span><span class="big" id="verdict">—</span></div>
-    <div class="dim" id="vdist"></div>
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .nav { display:flex; gap:16px; font-size:12px; letter-spacing:.06em; }
+  .nav a { color:var(--mut); text-decoration:none; }
+  .nav a:hover, .nav a[aria-current] { color:var(--fg); }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .led { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .led.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .led.err { background:var(--acc); }
+
+  .grid2 { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .grid2 { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  .stack > * + * { margin-top:16px; }
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; text-transform:none; font-size:12px; }
+  .pad { padding:12px 16px; }
+  .tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 16px; }
+  .tools label { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; }
+  .hint { color:var(--mut); font-size:12px; line-height:18px; padding:8px 16px 12px; }
+
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
+
+  .note { margin:8px 16px 12px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b, .note.err { color:var(--acc); }
+  .note.err { color:var(--mut); }
+
+  .vid { display:block; width:100%; background:#000; border-top:1px solid var(--line); }
+  .vidbox { position:relative; background:#000; border-top:1px solid var(--line); }
+  .vidbox .vid { border-top:0; }
+  .ph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+        color:var(--mut); font-size:12px; letter-spacing:.06em; padding:16px; pointer-events:none; }
+  .ph.err { color:var(--acc); }
+
+  .btn { font:inherit; font-size:13px; color:var(--fg); background:none; border:1px solid var(--line2);
+         border-radius:4px; padding:6px 12px; min-height:32px; cursor:pointer; text-decoration:none; display:inline-flex;
+         align-items:center; justify-content:center; gap:8px; }
+  .btn:hover { background:var(--hov); }
+  .btn.p { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+  .btn.p:hover { opacity:.88; }
+  .btn.on { border-color:var(--fg); background:rgba(255,255,255,.08); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn.block { width:100%; }
+  .btn:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  select, input[type=text], input:not([type]) { font:inherit; color:var(--fg); background:var(--bg);
+         border:1px solid var(--line2); border-radius:4px; padding:5px 8px; min-height:32px; }
+  input[type=text], input:not([type]) { width:100%; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:20px; background:transparent; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track { height:2px; background:var(--line2); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; margin-top:-5px; border-radius:50%; background:var(--fg); border:0; }
+  input[type=range]::-moz-range-track { height:2px; background:var(--line2); }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--fg); border:0; }
+  kbd { font:11px var(--mono); color:var(--mut); border:1px solid var(--line2); border-radius:2px; padding:0 5px; }
+  .btn.p kbd { color:var(--bg); border-color:rgba(20,22,26,.4); }
+  a { color:var(--fg); }
+
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th { color:var(--mut); font-weight:400; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+       text-align:right; padding:6px 8px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; padding-left:16px; }
+  th:last-child, td:last-child { padding-right:16px; }
+  tbody tr:hover td, tr:hover > td { background:var(--hov); }
+  .tscroll { overflow-x:auto; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:-1px;
+        box-shadow:inset 0 0 0 1px var(--line2); }
+  .sw.sq { border-radius:2px; }
+
+  .sl { display:grid; grid-template-columns:170px minmax(0,1fr) 48px; gap:2px 12px; align-items:center; padding:4px 16px 12px; }
+  @media (max-width:520px) { .sl { grid-template-columns:96px minmax(0,1fr) 44px; } }
+  .sl .k { font-size:12px; color:var(--mut); }
+  .sl .o { text-align:right; font-size:13px; }
+  .sl .grp { grid-column:1/-1; margin-top:12px; padding-top:8px; border-top:1px solid var(--line);
+             color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sl .grp:first-child { margin-top:0; border-top:0; }
+  .sl .hn { grid-column:1/-1; color:var(--mut); font-size:11px; line-height:16px; margin:-2px 0 4px; opacity:.85; }
+
+  .wrap { max-width:760px; }
+  .verdict { display:flex; align-items:center; gap:12px; padding:4px 16px 8px; }
+  .verdict .sw { width:20px; height:20px; border-radius:2px; margin:0; flex:none; }
+  .verdict .big { font-size:28px; line-height:32px; font-weight:600; }
+  .verdict .big.none { color:var(--mut); font-weight:400; }
+  #vdist, #raw { padding:0 16px; font-size:12px; color:var(--mut); }
+  #raw { padding-bottom:12px; }
+  .steps { padding:4px 16px 8px; color:var(--mut); font-size:12px; }
+  .steps b { color:var(--fg); }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; padding:0 16px 8px; }
+  .actions { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:4px 16px 8px; }
+  #presses { color:var(--mut); font-size:12px; }
+  #path { color:var(--mut); letter-spacing:0; text-transform:none; font-size:11px; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @media (max-width:520px) { .t { display:none; } }
+  #sep .r.err span:first-child { color:var(--acc); }
+  .btn.x { min-height:24px; padding:0 8px; font-size:12px; }
+</style></head>
+<body>
+<div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ калибровка цвета</span></h1><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
+  <div class="stack">
+    <div class="panel">
+      <div class="sec"><span>Датчик сейчас</span></div>
+      <div class="verdict"><i class="sw sq" id="sw"></i><span class="big none" id="verdict">-</span></div>
+      <div id="vdist"></div>
+      <div id="raw"></div>
+    </div>
+    <div class="panel">
+      <div class="sec"><span>Замер</span></div>
+      <div class="steps">1. Выбери цвет · 2. поставь робота на плитку · 3. нажми кнопку <b>GPIO__BTN__</b></div>
+      <div class="btns" id="colors"></div>
+      <div class="actions"><button class="btn p" onclick="post('/api/measure')">Замерить без кнопки</button><span id="presses"></span></div>
+      <div class="note" id="msg">-</div>
+    </div>
+    <div class="panel">
+      <div class="sec"><span>Сохранённые образцы</span><span class="n" id="path"></span></div>
+      <div class="tscroll"><table><thead><tr><th>цвет</th><th>#</th><th>R</th><th>G</th><th>B</th><th>C</th><th class="t">время</th><th></th></tr></thead>
+      <tbody id="samples"></tbody></table></div>
+    </div>
+    <div class="panel">
+      <div class="sec"><span>Насколько цвета различимы</span></div>
+      <div id="sep"></div>
+      <div class="hint">Ближе порога: шум будет путать цвета.</div>
+    </div>
   </div>
-  <div class="mono dim" id="raw" style="margin-top:6px"></div>
 </div>
-
-<div class="card">
-  <div style="margin-bottom:8px">1. Выбери цвет · 2. поставь робота на плитку · 3. нажми кнопку <b>GPIO__BTN__</b></div>
-  <div class="btns" id="colors"></div>
-  <div style="margin-top:10px" class="row">
-    <button class="go" onclick="post('/api/measure')">Замерить без кнопки</button>
-    <span class="dim" id="presses"></span>
-  </div>
-  <div class="msg" id="msg" style="margin-top:10px">…</div>
-</div>
-
-<div class="card">
-  <div style="margin-bottom:6px"><b>Сохранённые образцы</b> <span class="dim mono" id="path"></span></div>
-  <table><thead><tr><th>цвет</th><th>#</th><th>R</th><th>G</th><th>B</th><th>C</th><th>время</th><th></th></tr></thead>
-  <tbody id="samples"></tbody></table>
-</div>
-
-<div class="card">
-  <div style="margin-bottom:6px"><b>Насколько цвета различимы</b> <span class="dim">(ближе порога — шум будет путать)</span></div>
-  <div id="sep" class="mono"></div>
-</div>
-
 <script>
-const SW={white:'#f4f4f4',black:'#111',blue:'#3a6cff',red:'#e03b3b',silver:'linear-gradient(135deg,#aaa,#fff,#999)',air:'transparent'};
-let last=null;
-async function post(url,body){await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});poll(true);}
-function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
-function render(s){
-  const v=s.verdict;
-  document.getElementById('verdict').textContent=v?s.names[v]:'не знаю';
-  document.getElementById('sw').style.background=v?SW[v]:'transparent';
-  document.getElementById('vdist').textContent=s.dist==null?(Object.keys(s.samples).length?'датчик ничего не видит':'образцов ещё нет'):
-    `расстояние ${s.dist.toFixed(1)} (порог ${s.max_dist})`+
+const $ = id => document.getElementById(id);
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function setConn(kind, text) { $('conn-led').className = 'led' + (kind === 'on' ? '' : ' ' + kind); $('conn').textContent = text; }
+
+const SW = {white:'#f4f4f4', black:'#111', blue:'#3a6cff', red:'#e03b3b', silver:'linear-gradient(135deg,#aaa,#fff,#999)', air:'transparent'};
+let fails = 0;
+async function post(url, body) { await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {})}); poll(true); }
+function render(s) {
+  const v = s.verdict;
+  $('verdict').textContent = v ? s.names[v] : 'не знаю';
+  $('verdict').className = 'big' + (v ? '' : ' none');
+  $('sw').style.background = v ? SW[v] : 'transparent';
+  $('vdist').textContent = s.dist == null ? (Object.keys(s.samples).length ? 'датчик ничего не видит' : 'образцов ещё нет') :
+    `расстояние ${s.dist.toFixed(1)} (порог ${s.max_dist})` +
     // Вердикта нет - second это ближайший цвет, и dist уже до него; при
     // одном откалиброванном цвете dist2 нет вовсе (null) - раньше на нём
     // падала вся отрисовка и страница оставалась пустой.
-    (!s.second?'':!v?` · ближайший: ${s.names[s.second]}`:
-      ` · следующий: ${s.names[s.second]}`+(s.dist2==null?'':` ${s.dist2.toFixed(1)}`));
-  const [r,g,b,c]=s.raw, f=s.frac;
-  document.getElementById('raw').textContent=`R=${r} G=${g} B=${b} C=${c}   r/c=${f[0].toFixed(3)} g/c=${f[1].toFixed(3)} b/c=${f[2].toFixed(3)} lnC=${s.lnc.toFixed(2)}`;
-  const box=document.getElementById('colors');
-  box.innerHTML='';
-  for(const k of s.colors){
-    const n=(s.samples[k]||[]).length;
-    const bt=document.createElement('button');
-    bt.className=s.state.selected===k?'sel':'';
-    bt.innerHTML=`<span class="sw" style="background:${SW[k]}"></span>${esc(s.names[k])} <span class="dim">(${n})</span>`;
-    bt.onclick=()=>post('/api/select',{color:k});
+    (!s.second ? '' : !v ? ` · ближайший: ${s.names[s.second]}` :
+      ` · следующий: ${s.names[s.second]}` + (s.dist2 == null ? '' : ` ${s.dist2.toFixed(1)}`));
+  const [r, g, b, c] = s.raw, f = s.frac;
+  $('raw').textContent = `R=${r} G=${g} B=${b} C=${c}   r/c=${f[0].toFixed(3)} g/c=${f[1].toFixed(3)} b/c=${f[2].toFixed(3)} lnC=${s.lnc.toFixed(2)}`;
+  const box = $('colors');
+  box.innerHTML = '';
+  for (const k of s.colors) {
+    const n = (s.samples[k] || []).length;
+    const bt = document.createElement('button');
+    bt.className = 'btn' + (s.state.selected === k ? ' on' : '');
+    bt.innerHTML = `<i class="sw sq" style="background:${SW[k]};margin:0"></i>${esc(s.names[k])} <span class="mut">${n}</span>`;
+    bt.onclick = () => post('/api/select', {color:k});
     box.appendChild(bt);
   }
-  const m=document.getElementById('msg');
-  m.textContent=(s.state.busy?'⏳ ':'')+(s.state.msg||'выбери цвет');
-  m.className='msg'+(s.state.msg_ok?'':' bad');
-  document.getElementById('presses').textContent=`нажатий GPIO: ${s.state.presses}`;
-  document.getElementById('path').textContent=s.path;
-  const tb=document.getElementById('samples');
-  tb.innerHTML='';
-  for(const k of s.colors){
-    (s.samples[k]||[]).forEach((x,i)=>{
-      const tr=document.createElement('tr');
-      tr.innerHTML=`<td><span class="sw" style="background:${SW[k]}"></span>${esc(s.names[k])}</td><td>${i+1}</td><td>${Math.round(x.r)}</td><td>${Math.round(x.g)}</td><td>${Math.round(x.b)}</td><td>${Math.round(x.c)}</td><td class="dim">${esc(x.ts||'')}</td>`;
-      const td=document.createElement('td');
-      const del=document.createElement('button');del.className='x';del.textContent='удалить';
-      del.onclick=()=>{if(confirm('Удалить образец?'))post('/api/delete',{color:k,idx:i});};
-      td.appendChild(del);tr.appendChild(td);tb.appendChild(tr);
+  const m = $('msg');
+  m.textContent = (s.state.busy ? 'замер… ' : '') + (s.state.msg || 'выбери цвет');
+  m.className = 'note' + (s.state.msg_ok ? '' : ' err');
+  $('presses').textContent = `нажатий GPIO: ${s.state.presses}`;
+  $('path').textContent = s.path;
+  const tb = $('samples');
+  tb.innerHTML = '';
+  for (const k of s.colors) {
+    (s.samples[k] || []).forEach((x, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><i class="sw sq" style="background:${SW[k]}"></i>${esc(s.names[k])}</td><td>${i+1}</td><td>${Math.round(x.r)}</td><td>${Math.round(x.g)}</td><td>${Math.round(x.b)}</td><td>${Math.round(x.c)}</td><td class="mut t">${esc(x.ts || '')}</td>`;
+      const td = document.createElement('td');
+      const del = document.createElement('button'); del.className = 'btn x'; del.textContent = 'удалить';
+      del.onclick = () => { if (confirm('Удалить образец?')) post('/api/delete', {color:k, idx:i}); };
+      td.appendChild(del); tr.appendChild(td); tb.appendChild(tr);
     });
   }
-  const need=['white','black'].filter(k=>!s.samples[k]);
-  const sep=document.getElementById('sep');
-  sep.innerHTML=(need.length?`<div class="warn">без образцов «${need.map(k=>s.names[k]).join('», «')}» nav.py калибровку не возьмёт</div>`:'')+
-    s.separation.map(([a,b,d])=>`<div class="${d<s.sep_warn?'warn':''}">${esc(s.names[a])} — ${esc(s.names[b])}: ${d.toFixed(1)}${d<s.sep_warn?'  ← близко!':''}</div>`).join('');
+  if (!tb.children.length) tb.innerHTML = '<tr><td colspan="7" class="mut" style="text-align:left;padding:12px 16px">Образцов пока нет.</td></tr>';
+  const need = ['white', 'black'].filter(k => !s.samples[k]);
+  $('sep').innerHTML = (need.length ? `<div class="r err"><span>без образцов «${need.map(k => esc(s.names[k])).join('», «')}» nav.py калибровку не возьмёт</span></div>` : '') +
+    s.separation.map(([a, b, d]) => `<div class="r${d < s.sep_warn ? ' err' : ''}"><span>${esc(s.names[a])} — ${esc(s.names[b])}</span><span class="v">${d.toFixed(1)}${d < s.sep_warn ? '<small>близко</small>' : ''}</span></div>`).join('');
 }
-async function poll(once){
-  try{const r=await fetch('/api/state',{cache:'no-store'});render(await r.json());}catch(e){}
-  if(!once)setTimeout(poll,300);
+async function poll(once) {
+  try { const r = await fetch('/api/state', {cache:'no-store'}); render(await r.json()); fails = 0; setConn('on', 'онлайн'); }
+  catch (e) { if (++fails >= 3) setConn('off', 'нет связи'); }
+  if (!once) setTimeout(poll, 300);
 }
 poll();
-</script></body></html>
+</script>
+</body></html>
 """
 
 

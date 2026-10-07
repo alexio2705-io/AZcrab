@@ -402,59 +402,184 @@ def api_logs():
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Сбор датасета</title>
+<title>Сбор датасета - MAZE2027</title>
 <style>
-  body { margin: 0; font-family: sans-serif; background: #1b1b1b; color: #eee; }
-  header { padding: 10px 16px; background: #262626; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
-  .cam { background: #262626; padding: 10px; border-radius: 6px; }
-  .cam img { width: 480px; height: 480px; max-width: 90vw; max-height: 90vw; background: #000; display: block; image-rendering: pixelated; }
-  button { font-size: 18px; padding: 10px 16px; margin-top: 8px; width: 100%; cursor: pointer;
-           background: #2e7d32; color: #fff; border: 0; border-radius: 4px; }
-  button:disabled { background: #555; cursor: default; }
-  #logs { flex: 1; min-width: 300px; height: 540px; overflow-y: auto; background: #111;
-          font: 13px monospace; padding: 8px; border-radius: 6px; white-space: pre-wrap; }
-  #setup { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex;
-           align-items: center; justify-content: center; }
-  #setup form { background: #262626; padding: 24px; border-radius: 8px; min-width: 320px; }
-  #setup input { font-size: 18px; padding: 8px; width: 100%; box-sizing: border-box; }
-  #err { color: #ff6b6b; min-height: 1.2em; }
-  .flash { outline: 4px solid #fff; }
-  #settings { margin: 0 16px 16px; background: #262626; padding: 10px 16px; border-radius: 6px;
-              display: grid; grid-template-columns: 130px 1fr 60px; gap: 6px 12px; align-items: center; max-width: 700px; }
-  #settings input[type=range] { width: 100%; }
-  #settings .small { width: auto; font-size: 14px; padding: 6px 10px; margin: 0; }
-</style></head><body>
-<div id="setup"><form id="setupForm">
-  <h2>Новая папка датасета</h2>
-  <input id="name" placeholder="например run1" autofocus>
-  <div id="err"></div>
-  <div style="font-size:13px;color:#aaa">Уже есть: <span id="existing">—</span></div>
-  <button type="submit">Создать / продолжить</button>
+  /* Системный моноширинный стек: страницы отдаёт Пи без интернета, веб-шрифт не загрузится. */
+  :root {
+    color-scheme:dark;
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/20px var(--mono);
+         font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
+  @media (min-width:900px) { .wrap { padding:24px; } }
+  b { font-weight:600; }
+  .mut { color:var(--mut); }
+  .bad { color:var(--acc); }
+
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .nav { display:flex; gap:16px; font-size:12px; letter-spacing:.06em; }
+  .nav a { color:var(--mut); text-decoration:none; }
+  .nav a:hover, .nav a[aria-current] { color:var(--fg); }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .led { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .led.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .led.err { background:var(--acc); }
+
+  .grid2 { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .grid2 { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  .stack > * + * { margin-top:16px; }
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; text-transform:none; font-size:12px; }
+  .pad { padding:12px 16px; }
+  .tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 16px; }
+  .tools label { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; }
+  .hint { color:var(--mut); font-size:12px; line-height:18px; padding:8px 16px 12px; }
+
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
+
+  .note { margin:8px 16px 12px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b, .note.err { color:var(--acc); }
+  .note.err { color:var(--mut); }
+
+  .vid { display:block; width:100%; background:#000; border-top:1px solid var(--line); }
+  .vidbox { position:relative; background:#000; border-top:1px solid var(--line); }
+  .vidbox .vid { border-top:0; }
+  .ph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+        color:var(--mut); font-size:12px; letter-spacing:.06em; padding:16px; pointer-events:none; }
+  .ph.err { color:var(--acc); }
+
+  .btn { font:inherit; font-size:13px; color:var(--fg); background:none; border:1px solid var(--line2);
+         border-radius:4px; padding:6px 12px; min-height:32px; cursor:pointer; text-decoration:none; display:inline-flex;
+         align-items:center; justify-content:center; gap:8px; }
+  .btn:hover { background:var(--hov); }
+  .btn.p { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+  .btn.p:hover { opacity:.88; }
+  .btn.on { border-color:var(--fg); background:rgba(255,255,255,.08); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn.block { width:100%; }
+  .btn:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  select, input[type=text], input:not([type]) { font:inherit; color:var(--fg); background:var(--bg);
+         border:1px solid var(--line2); border-radius:4px; padding:5px 8px; min-height:32px; }
+  input[type=text], input:not([type]) { width:100%; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:20px; background:transparent; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track { height:2px; background:var(--line2); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; margin-top:-5px; border-radius:50%; background:var(--fg); border:0; }
+  input[type=range]::-moz-range-track { height:2px; background:var(--line2); }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--fg); border:0; }
+  kbd { font:11px var(--mono); color:var(--mut); border:1px solid var(--line2); border-radius:2px; padding:0 5px; }
+  .btn.p kbd { color:var(--bg); border-color:rgba(20,22,26,.4); }
+  a { color:var(--fg); }
+
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th { color:var(--mut); font-weight:400; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+       text-align:right; padding:6px 8px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; padding-left:16px; }
+  th:last-child, td:last-child { padding-right:16px; }
+  tbody tr:hover td, tr:hover > td { background:var(--hov); }
+  .tscroll { overflow-x:auto; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:-1px;
+        box-shadow:inset 0 0 0 1px var(--line2); }
+  .sw.sq { border-radius:2px; }
+
+  .sl { display:grid; grid-template-columns:170px minmax(0,1fr) 48px; gap:2px 12px; align-items:center; padding:4px 16px 12px; }
+  @media (max-width:520px) { .sl { grid-template-columns:96px minmax(0,1fr) 44px; } }
+  .sl .k { font-size:12px; color:var(--mut); }
+  .sl .o { text-align:right; font-size:13px; }
+  .sl .grp { grid-column:1/-1; margin-top:12px; padding-top:8px; border-top:1px solid var(--line);
+             color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sl .grp:first-child { margin-top:0; border-top:0; }
+  .sl .hn { grid-column:1/-1; color:var(--mut); font-size:11px; line-height:16px; margin:-2px 0 4px; opacity:.85; }
+
+  #setup { position:fixed; inset:0; background:rgba(20,22,26,.94); display:flex; align-items:center; justify-content:center; padding:16px; z-index:5; }
+  #setup form { width:100%; max-width:380px; }
+  #setup h2 { margin:0; padding:12px 16px 8px; color:var(--mut); font:400 11px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; }
+  #setup .f { padding:0 16px 12px; }
+  #err { color:var(--acc); min-height:20px; font-size:12px; padding:4px 0; }
+  .strip { display:flex; flex-wrap:wrap; gap:4px 24px; align-items:baseline; padding:12px 16px; }
+  .strip span.k { color:var(--mut); font-size:12px; margin-right:8px; }
+  .strip .grow { flex:1; }
+  .sq1 { aspect-ratio:1/1; }
+  .sq1 .vid { height:100%; object-fit:contain; image-rendering:pixelated; }
+  .flash { outline:3px solid var(--acc); outline-offset:-3px; }
+  #logs { height:260px; overflow-y:auto; font-size:12px; line-height:18px; padding:8px 16px 12px; white-space:pre-wrap;
+          border-top:1px solid var(--line); color:var(--mut); }
+</style></head>
+<body>
+
+<div id="setup"><form id="setupForm" class="panel">
+  <h2>Папка датасета</h2>
+  <div class="f">
+    <input id="name" placeholder="например run1" autofocus autocomplete="off">
+    <div id="err"></div>
+    <div class="mut" style="font-size:12px;margin-bottom:12px">Уже есть: <span id="existing">-</span></div>
+    <button class="btn p block" type="submit">Создать / продолжить</button>
+  </div>
 </form></div>
-<header>
-  <b>Папка:</b> <span id="folder">—</span>
-  <b>Кадров:</b> <span id="count">0</span>
-  <a href="#" id="change" style="color:#8ab4f8">сменить папку</a>
-  <span style="color:#aaa">клавиши: 1 / 2</span>
-</header>
-<main>
-  <div class="cam"><div>Камера 0 (правая)</div><img id="img0" src="/stream/0.mjpg">
-    <button onclick="save(0)">Сохранить с камеры 0</button></div>
-  <div class="cam"><div>Камера 1 (левая)</div><img id="img1" src="/stream/1.mjpg">
-    <button onclick="save(1)">Сохранить с камеры 1</button></div>
-  <div id="logs"></div>
-</main>
-<div id="settings"></div>
+<div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ датасет</span></h1><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
+  <div class="panel" style="margin-bottom:16px">
+    <div class="strip">
+      <span><span class="k">Папка</span><b id="folder">-</b></span>
+      <span><span class="k">Кадров</span><b id="count">0</b></span>
+      <a href="#" id="change" class="mut">сменить папку</a>
+      <span class="grow"></span>
+      <span class="mut">клавиши <kbd>1</kbd> <kbd>2</kbd></span>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <div class="sec"><span>Камера 0 · правая</span></div>
+      <div class="vidbox sq1" id="box0"><img class="vid" id="img0" src="/stream/0.mjpg" alt=""></div>
+      <div class="pad"><button class="btn p block" onclick="save(0)">Сохранить <kbd>1</kbd></button></div>
+    </div>
+    <div class="panel">
+      <div class="sec"><span>Камера 1 · левая</span></div>
+      <div class="vidbox sq1" id="box1"><img class="vid" id="img1" src="/stream/1.mjpg" alt=""></div>
+      <div class="pad"><button class="btn p block" onclick="save(1)">Сохранить <kbd>2</kbd></button></div>
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="panel"><div class="sec"><span>Журнал</span></div><div id="logs"></div></div>
+    <div class="panel">
+      <div class="sec"><span>Настройки камер · обе сразу</span></div>
+      <div class="sl" id="settings"></div>
+    </div>
+  </div>
+</div>
 <script>
 const $ = id => document.getElementById(id);
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function setConn(kind, text) { $('conn-led').className = 'led' + (kind === 'on' ? '' : ' ' + kind); $('conn').textContent = text; }
+
 let lastLog = 0, busy = false;
 
 function showSession(s) {
-  $('folder').textContent = s.folder || '—';
+  $('folder').textContent = s.folder || '-';
   $('count').textContent = s.count || 0;
   $('setup').style.display = s.folder ? 'none' : 'flex';
-  if (s.existing) $('existing').textContent = s.existing.join(', ') || '—';
+  if (s.existing) $('existing').textContent = s.existing.join(', ') || '-';
 }
 async function loadSession() {
   showSession(await (await fetch('/api/session')).json());
@@ -483,8 +608,8 @@ async function save(cam) {
     const j = await r.json();
     if (r.ok) {
       $('count').textContent = j.count;
-      const img = $('img' + cam);
-      img.classList.add('flash'); setTimeout(() => img.classList.remove('flash'), 150);
+      const b = $('box' + cam);
+      b.classList.add('flash'); setTimeout(() => b.classList.remove('flash'), 150);
     }
   } finally { busy = false; pollLogs(); }
 }
@@ -503,7 +628,8 @@ async function pollLogs() {
       if (atBottom) box.scrollTop = box.scrollHeight;
     }
     lastLog = j.last;
-  } catch (e) {}
+    setConn('on', 'онлайн');
+  } catch (e) { setConn('off', 'нет связи'); }
 }
 let camSpec = {}, sendTimer = null, pending = {};
 function sendSetting(k, v) {
@@ -516,34 +642,28 @@ function sendSetting(k, v) {
     pollLogs();
   }, 250);
 }
+function cell(cls, text) { const s = document.createElement('span'); s.className = cls; s.textContent = text; return s; }
 async function loadCamSettings() {
   const j = await (await fetch('/api/camera_settings')).json();
   camSpec = j.spec;
   const box = $('settings');
-  box.innerHTML = '<b style="grid-column:1/-1">Настройки камер (обе сразу)</b>';
+  box.innerHTML = '';
   for (const [k, [def, lo, hi, step]] of Object.entries(j.spec)) {
-    const lab = document.createElement('span'); lab.textContent = k;
     const r = document.createElement('input');
     Object.assign(r, {type: 'range', min: lo, max: hi, step: step, value: j.values[k], id: 'set_' + k});
-    const out = document.createElement('span'); out.textContent = j.values[k];
+    const out = cell('o', j.values[k]);
     r.oninput = () => { out.textContent = r.value; sendSetting(k, r.value); };
-    box.append(lab, r, out);
+    box.append(cell('k', k), r, out);
   }
-  const lab = document.createElement('span'); lab.textContent = 'AwbMode';
   const sel = document.createElement('select');
   j.awb_modes.forEach((m, i) => sel.add(new Option(m, i, false, i === j.values.AwbMode)));
   sel.onchange = () => sendSetting('AwbMode', sel.value);
-  const aeLab = document.createElement('span'); aeLab.textContent = 'AeExposureMode';
   const aeSel = document.createElement('select');
   j.ae_modes.forEach((m, i) => aeSel.add(new Option(m, i, false, i === j.values.AeExposureMode)));
   aeSel.onchange = () => sendSetting('AeExposureMode', aeSel.value);
-  box.append(aeLab, aeSel, document.createElement('span'));
-  const hint = document.createElement('span');
-  hint.style.cssText = 'grid-column:1/-1;font-size:13px;color:#aaa';
-  hint.textContent = 'ExposureTime = 0 — автоэкспозиция; > 0 — ручная выдержка (мкс) с AnalogueGain. Длинная выдержка смазывает кадр на ходу.';
-  box.append(hint);
+  box.append(cell('k', 'AeExposureMode'), aeSel, document.createElement('span'));
   const reset = document.createElement('button');
-  reset.className = 'small'; reset.textContent = 'сброс';
+  reset.className = 'btn'; reset.textContent = 'сброс';
   reset.onclick = async () => {
     const d = {AwbMode: 0, AeExposureMode: 1};
     for (const [k, v] of Object.entries(camSpec)) d[k] = v[0];
@@ -551,12 +671,14 @@ async function loadCamSettings() {
                                          body: JSON.stringify(d)});
     loadCamSettings(); pollLogs();
   };
-  box.append(lab, sel, reset);
+  box.append(cell('k', 'AwbMode'), sel, reset);
+  box.append(cell('hn', 'ExposureTime = 0 — автоэкспозиция; > 0 — ручная выдержка (мкс) с AnalogueGain. Длинная выдержка смазывает кадр на ходу.'));
 }
 loadCamSettings();
 setInterval(pollLogs, 1000);
 loadSession(); pollLogs();
-</script></body></html>
+</script>
+</body></html>
 """
 
 

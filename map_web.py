@@ -64,196 +64,157 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Карта лабиринта — MAZE2027</title>
+<title>Карта — MAZE2027</title>
 <style>
+  /* Системный моноширинный стек: страница отдаётся с Пи без интернета, веб-шрифт
+     не загрузится. Один семейство на всё - подписи, значения, единицы. */
   :root {
-    --bg:#0c0e12; --panel:#181b21; --panel-2:#20242c; --border:#2a2f38;
-    --text:#eef1f6; --dim:#8892a0; --accent:#5b9dff;
-    --damaged:#ff5c5c; --stable:#ffcf4d; --unharmed:#4ee27a; --fake:#6b7280;
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;                       /* внимание: авария, чекпоинт, робот */
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;   /* типы меток = цвета LED */
+    --blue:#4C8DF0;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   }
-  * { box-sizing: border-box; }
-  @keyframes pulse {
-    0%   { transform:scale(.7); opacity:.9; }
-    70%  { transform:scale(1.8); opacity:0; }
-    100% { transform:scale(1.8); opacity:0; }
-  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
   body {
-    background:
-      radial-gradient(1200px 600px at 15% -10%, #1b2a4499 0%, transparent 60%),
-      radial-gradient(900px 500px at 100% 0%, #1a1f3355 0%, transparent 55%),
-      var(--bg);
-    background-attachment:fixed;
-    color:var(--text); margin:0; padding:28px;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased;
+    margin:0; background:var(--bg); color:var(--fg);
+    font:13px/20px var(--mono); font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%;
   }
-  h1 {
-    font-size:21px; margin:0 0 4px; font-weight:800; letter-spacing:-.01em;
-    display:flex; align-items:center; gap:10px;
-  }
-  h1 .live {
-    position:relative; width:9px; height:9px; border-radius:50%;
-    background:#4ee27a; box-shadow:0 0 8px #4ee27a99; flex:none;
-  }
-  h1 .live::after {
-    content:""; position:absolute; inset:0; border-radius:50%; background:#4ee27a;
-    animation:pulse 1.8s ease-out infinite;
-  }
-  .subtitle { color:var(--dim); font-size:12.5px; margin:0 0 18px; }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
 
-  #status-bar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:22px; }
-  .chip {
-    display:inline-flex; align-items:center; gap:6px;
-    background:#20242cb3; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
-    border:1px solid var(--border);
-    border-radius:999px; padding:6px 13px; font-size:12.5px; color:var(--dim);
-    box-shadow:inset 0 1px 0 #ffffff0a;
-  }
-  .chip b { color:var(--text); font-weight:600; }
-  .chip.phase {
-    background:linear-gradient(135deg, var(--accent), #7b6bff); color:#fff; border:none;
-    box-shadow:0 4px 14px -4px #5b9dff66;
-  }
-  .chip.phase b { color:#fff; text-transform:uppercase; letter-spacing:.04em; font-weight:700; }
-  .chip .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:16px;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .dot.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .dot.err { background:var(--acc); }
 
-  .layout { display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
-  #map-col { flex: 1 1 480px; min-width:320px; }
-  #victims-col { flex: 1 1 560px; min-width:300px; }
+  .layout { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .layout { grid-template-columns:minmax(0,1fr) 360px; } .wrap { padding:24px; } }
 
-  #map-wrap {
-    background:linear-gradient(180deg, #191d24ee, #14171cee);
-    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-    border:1px solid var(--border); border-radius:16px;
-    padding:18px; overflow:auto;
-    box-shadow:0 12px 32px -12px #000000aa, inset 0 1px 0 #ffffff0d;
-  }
-  svg#map { display:block; }
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:baseline; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; }
 
-  .legend { display:flex; flex-wrap:wrap; gap:8px 10px; margin-top:16px; }
-  .legend span {
-    display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--dim);
-    background:#20242cb3; border:1px solid var(--border); border-radius:999px; padding:4px 10px;
-    transition:border-color .15s ease, color .15s ease;
-  }
-  .legend span:hover { border-color:#3a4150; color:var(--text); }
-  .swatch { width:11px; height:11px; border-radius:3px; display:inline-block; flex:none; }
-  .swatch.dot { border-radius:50%; }
+  #map-wrap { padding:8px 16px 16px; overflow:auto; }
+  svg#map { display:block; margin:0 auto; height:auto; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 16px; padding:12px 16px; border-top:1px solid var(--line);
+            color:var(--mut); font-size:11px; letter-spacing:.06em; }
+  .legend i { display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:-1px;
+              border:1px solid var(--line2); border-radius:2px; }
+  .legend i.c { border-radius:50%; }
 
-  h2 {
-    font-size:13px; margin:0 0 12px; color:var(--dim); font-weight:600;
-    text-transform:uppercase; letter-spacing:.08em;
-  }
-  h2 .count {
-    display:inline-block; margin-left:6px; background:var(--panel-2); color:var(--text);
-    border-radius:999px; padding:1px 8px; font-size:11px; font-weight:700;
-  }
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
 
-  #victims { display:flex; flex-direction:column; gap:10px; max-height:80vh; overflow-y:auto; padding-right:2px; }
-  .vcard {
-    background:linear-gradient(180deg, #191d24ee, #14171cee);
-    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-    border:1px solid var(--border); border-radius:12px;
-    padding:12px; display:flex; flex-direction:column; gap:10px; position:relative; overflow:hidden;
-    flex:none;   /* список ограничен по высоте - без этого карточки сплющивались */
-    box-shadow:inset 0 1px 0 #ffffff0a;
-    transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease;
-  }
-  .vcard::before {
-    content:""; position:absolute; inset:0 auto 0 0; width:4px; background:var(--fake);
-  }
-  .vcard.damaged::before  { background:var(--damaged); box-shadow:0 0 10px 0 var(--damaged); }
-  .vcard.stable::before   { background:var(--stable); box-shadow:0 0 10px 0 var(--stable); }
-  .vcard.unharmed::before { background:var(--unharmed); box-shadow:0 0 10px 0 var(--unharmed); }
-  .vcard.fake { opacity:.55; }
-  .vcard:hover { transform:translateX(3px); border-color:#3a4150; box-shadow:0 8px 20px -10px #000000cc, inset 0 1px 0 #ffffff0a; }
-  /* Снимок целиком и крупно: метка на кадре бывает в углу, и миниатюра с
-     обрезкой (cover) её просто отрезала. Клик - оригинал в новой вкладке. */
-  .vcard a.shot { display:block; }
-  .vcard img { display:block; width:100%; max-height:70vh; object-fit:contain; border-radius:8px; background:#000; border:1px solid var(--border); cursor:zoom-in; }
-  .vcard .body { flex:1; min-width:0; }
-  .vcard .title { font-weight:700; font-size:18px; display:flex; align-items:center; gap:6px; }
-  .vcard .title .glyph {
-    display:inline-flex; align-items:center; justify-content:center;
-    width:22px; height:22px; border-radius:50%; font-size:13px; font-weight:800; flex:none;
-    background:var(--panel-2);
-  }
-  .vcard.damaged  .glyph { color:var(--damaged); }
-  .vcard.stable   .glyph { color:var(--stable); }
-  .vcard.unharmed .glyph { color:var(--unharmed); }
-  .vcard .meta { color:var(--dim); font-size:13.5px; margin-top:5px; line-height:1.5; }
-  .rings { display:flex; gap:5px; margin-top:8px; }
-  .ring { width:22px; height:22px; border-radius:50%; border:1.5px solid #00000066; box-shadow:0 0 0 1px #ffffff1a inset; }
-  .ring[data-c="black"]  { background:#000; }
-  .ring[data-c="red"]    { background:var(--damaged); }
-  .ring[data-c="yellow"] { background:var(--stable); }
-  .ring[data-c="green"]  { background:var(--unharmed); }
-  .ring[data-c="blue"]   { background:#3f8bff; }
-  .ring[data-c="?"]      { background:#555; }
+  .note { margin:8px 16px 16px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); font-weight:600; margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b { color:var(--acc); }
 
-  #empty {
-    color:var(--dim); font-size:13px; text-align:center; padding:32px 16px;
-    border:1px dashed var(--border); border-radius:12px;
-  }
-  #empty svg { display:block; margin:0 auto 10px; opacity:.5; }
-
-  #victims::-webkit-scrollbar { width:8px; }
-  #victims::-webkit-scrollbar-thumb { background:var(--border); border-radius:99px; }
+  #victims { max-height:70vh; overflow-y:auto; }
+  .v-row { display:grid; grid-template-columns:3px minmax(0,1fr) auto; gap:12px; padding:12px 16px 12px 0;
+           border-top:1px solid var(--line); }
+  .v-row:hover { background:var(--hov); }
+  .v-row .bar3 { background:var(--mut); margin:-12px 0; }
+  .v-row.damaged .bar3 { background:var(--damaged); } .v-row.stable .bar3 { background:var(--stable); }
+  .v-row.unharmed .bar3 { background:var(--unharmed); }
+  .v-row.fake { opacity:.6; }
+  .v-t { font-weight:600; }
+  .v-t .g { display:inline-block; width:20px; text-align:center; margin-right:4px; }
+  .v-row.damaged .g { color:var(--damaged); } .v-row.stable .g { color:var(--stable); } .v-row.unharmed .g { color:var(--unharmed); }
+  .v-m { color:var(--mut); font-size:12px; }
+  .v-r { text-align:right; color:var(--mut); font-size:12px; }
+  .v-r b { display:block; color:var(--fg); font-weight:400; font-size:14px; }
+  .v-img { display:block; margin-top:8px; width:100%; max-width:240px; max-height:160px; object-fit:contain;
+           background:#000; border:1px solid var(--line); border-radius:2px; }
+  .rings { display:flex; align-items:center; gap:4px; margin-top:8px; font-size:12px; color:var(--mut); }
+  .ring { width:14px; height:14px; border-radius:50%; box-shadow:inset 0 0 0 1px var(--line2); }
+  .ring[data-c="black"]{background:#000} .ring[data-c="red"]{background:var(--damaged)}
+  .ring[data-c="yellow"]{background:var(--stable)} .ring[data-c="green"]{background:var(--unharmed)}
+  .ring[data-c="blue"]{background:var(--blue)} .ring[data-c="?"]{background:#555}
+  a { color:inherit; } a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  #victims::-webkit-scrollbar { width:8px; } #victims::-webkit-scrollbar-thumb { background:var(--line2); }
 </style>
 </head>
 <body>
-  <h1><span class="live"></span>Карта лабиринта — MAZE2027</h1>
-  <p class="subtitle">живой снимок state.json · опрос каждые 0.25 с</p>
-  <div id="status-bar">
-    <span class="chip phase">фаза <b id="phase">—</b></span>
-    <span class="chip">позиция <b class="mono" id="pos">?,?</b></span>
-    <span class="chip">курс <b id="dir">?</b></span>
-    <span class="chip">обновлено <b class="mono" id="ts">—</b></span>
+<div class="wrap">
+  <div class="bar">
+    <h1>MAZE2027 <span>/ карта</span></h1>
+    <div class="st"><i class="dot off" id="conn-dot"></i><span id="conn">подключение</span></div>
   </div>
 
   <div class="layout">
-    <div id="map-col">
+    <div class="panel">
+      <div class="sec"><span>Лабиринт</span><span class="n" id="floors"></span></div>
       <div id="map-wrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div id="map-note"></div>
       <div class="legend">
-        <span><i class="swatch" style="background:#2a3a2a"></i> посещено</span>
-        <span><i class="swatch" style="background:#5b8fff33;border:1px solid #5b8fff"></i> синяя (стоянка)</span>
-        <span><i class="swatch" style="background:#ff555533;border:1px solid #ff5555"></i> чекпоинт</span>
-        <span><i class="swatch" style="background:repeating-linear-gradient(45deg,#772222,#772222 3px,#331111 3px,#331111 6px)"></i> непроезжая клетка</span>
-        <span><i class="swatch dot" style="background:#ffd23f"></i> робот</span>
-        <span><i class="swatch dot" style="background:var(--damaged)"></i> Φ повреждён</span>
-        <span><i class="swatch dot" style="background:var(--stable)"></i> Ψ стабилен</span>
-        <span><i class="swatch dot" style="background:var(--unharmed)"></i> Ω не повреждён</span>
+        <span><i style="background:#2A2F37"></i>посещено</span>
+        <span><i style="background:rgba(76,141,240,.3);border-color:var(--blue)"></i>синяя</span>
+        <span><i style="border-color:var(--acc)"></i>чекпоинт</span>
+        <span><i style="background:repeating-linear-gradient(45deg,rgba(229,83,75,.55) 0 2px,transparent 2px 4px)"></i>непроезжая</span>
+        <span><i class="c" style="background:var(--acc);border:0"></i>робот</span>
+        <span><i class="c" style="background:var(--damaged);border:0"></i>Φ</span>
+        <span><i class="c" style="background:var(--stable);border:0"></i>Ψ</span>
+        <span><i class="c" style="background:var(--unharmed);border:0"></i>Ω</span>
       </div>
     </div>
 
-    <div id="victims-col">
-      <h2>Найденные метки<span class="count" id="vcount">0</span></h2>
-      <div id="victims"></div>
-      <div id="empty">
-        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-          <circle cx="20" cy="20" r="18" stroke="#8892a0" stroke-width="1.5" stroke-dasharray="3 4"/>
-          <circle cx="20" cy="20" r="11" stroke="#8892a0" stroke-width="1.5" stroke-dasharray="3 4"/>
-          <circle cx="20" cy="20" r="2.5" fill="#8892a0"/>
-        </svg>
-        пока ничего не найдено
+    <div>
+      <div class="panel">
+        <div class="sec"><span>Показания</span></div>
+        <div class="r"><span>Фаза</span><span class="v" id="phase">-</span></div>
+        <div class="r"><span>Позиция</span><span class="v" id="pos">-</span></div>
+        <div class="r"><span>Курс</span><span class="v" id="dir">-</span></div>
+        <div class="r"><span>Этаж</span><span class="v" id="lvl">-</span></div>
+        <div class="r"><span>Посещено</span><span class="v" id="nvis">-</span></div>
+        <div class="r" id="r-blk"><span>Непроезжих</span><span class="v" id="nblk">-</span></div>
+        <div class="r"><span>Снимок</span><span class="v" id="ts">-</span></div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="sec"><span>Метки</span><span class="n" id="vcount">0</span></div>
+        <div id="victims"></div>
+        <div class="note" id="empty"><b>Меток пока нет</b>Появятся после первого скана стены.</div>
       </div>
     </div>
   </div>
+</div>
 
 <script>
-const CELL = 56;   // px на клетку карты
+const CELL = 56;   // единиц viewBox на клетку карты
 const NAMES = {damaged: 'ПОВРЕЖДЁН', stable: 'СТАБИЛЕН', unharmed: 'НЕ ПОВРЕЖДЁН', fake: 'ФЕЙК'};
 const GLYPH = {damaged: 'Φ', stable: 'Ψ', unharmed: 'Ω'};
+const COLOR = {damaged: '#E5534B', stable: '#C7D84B', unharmed: '#3FB27F'};
+const PHASE = {waiting: ['ожидание', 'off'], exploring: ['разведка', 'on'], sleep: ['сон', 'off'],
+               explored: ['разведка завершена', 'on'], fatal: ['авария', 'err']};
 const DIR_DX = [0, 1, 0, -1], DIR_DY = [1, 0, -1, 0];   // N,E,S,W - как в nav.py
+const ACC = '#F2A900', FG = '#D7DADF';
 
 function svgEl(tag, attrs) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const k in attrs) el.setAttribute(k, attrs[k]);
   return el;
 }
+const $ = id => document.getElementById(id);
+function setDot(kind) { $('conn-dot').className = 'dot' + (kind === 'on' ? '' : ' ' + kind); }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 function drawMap(s) {
-  const svg = document.getElementById('map');
+  const svg = $('map');
   svg.innerHTML = '';
   const keys = Object.keys(s.maze || {});
   const cells = keys.map(k => { const [x, y] = k.split(',').map(Number); return {x, y, w: s.maze[k]}; });
@@ -269,16 +230,19 @@ function drawMap(s) {
   const spanX = Math.max(...xs) - Math.min(...xs) + 3;
   const vx = (x, y) => x + lvl(y) * spanX;
   const vy = y => y - lvl(y) * LS;
+  const levels = [...new Set(known.map(c => lvl(c.y)).concat([lvl(robot.cy)]))].sort((a, b) => a - b);
+  const multi = levels.length > 1;
 
-  let minX = Math.min(...known.map(c => vx(c.x, c.y)), vx(robot.cx, robot.cy));
-  let maxX = Math.max(...known.map(c => vx(c.x, c.y)), vx(robot.cx, robot.cy));
-  let minY = Math.min(...known.map(c => vy(c.y)), vy(robot.cy));
-  let maxY = Math.max(...known.map(c => vy(c.y)), vy(robot.cy));
+  const minX = Math.min(...known.map(c => vx(c.x, c.y)), vx(robot.cx, robot.cy));
+  const maxX = Math.max(...known.map(c => vx(c.x, c.y)), vx(robot.cx, robot.cy));
+  const minY = Math.min(...known.map(c => vy(c.y)), vy(robot.cy));
+  const maxY = Math.max(...known.map(c => vy(c.y)), vy(robot.cy));
 
+  const PAD = 4, TOP = multi ? 22 : 0;
   const W = (maxX - minX + 1) * CELL, H = (maxY - minY + 1) * CELL;
-  svg.setAttribute('width', W + 4);
-  svg.setAttribute('height', H + 4);
-  svg.setAttribute('viewBox', `-2 -2 ${W + 4} ${H + 4}`);
+  svg.setAttribute('viewBox', `${-PAD} ${-PAD - TOP} ${W + 2 * PAD} ${H + 2 * PAD + TOP}`);
+  svg.style.width = '100%';
+  svg.style.maxWidth = (W + 2 * PAD) + 'px';   // клетка на экране не крупнее CELL px
 
   const sx = x => (x - minX) * CELL;
   const sy = y => (maxY - y) * CELL;   // север (y растёт) - вверх экрана
@@ -288,33 +252,36 @@ function drawMap(s) {
   const blueDone = new Set((s.blue_done || []).map(p => p[0] + ',' + p[1]));
   const cp = s.checkpoint || {cx: 0, cy: 0};
 
-  // Общие defs: точечная сетка фона и мягкое свечение для меток/робота.
   const defs = svgEl('defs', {});
-  const dotgrid = svgEl('pattern', {id: 'dotgrid', width: CELL, height: CELL, patternUnits: 'userSpaceOnUse'});
-  dotgrid.appendChild(svgEl('circle', {cx: 1, cy: 1, r: 1, fill: '#242933'}));
-  defs.appendChild(dotgrid);
-  const glow = svgEl('filter', {id: 'glow', x: '-80%', y: '-80%', width: '260%', height: '260%'});
-  glow.appendChild(svgEl('feGaussianBlur', {stdDeviation: 3.5, result: 'blur'}));
-  const merge = svgEl('feMerge', {});
-  merge.appendChild(svgEl('feMergeNode', {in: 'blur'}));
-  merge.appendChild(svgEl('feMergeNode', {in: 'SourceGraphic'}));
-  glow.appendChild(merge);
-  defs.appendChild(glow);
+  const pat = svgEl('pattern', {id: 'hatch', width: 8, height: 8, patternUnits: 'userSpaceOnUse',
+                                 patternTransform: 'rotate(45)'});
+  pat.appendChild(svgEl('rect', {width: 3, height: 8, fill: 'rgba(229,83,75,.55)'}));
+  defs.appendChild(pat);
   svg.appendChild(defs);
-  svg.appendChild(svgEl('rect', {x: -2, y: -2, width: W + 4, height: H + 4, fill: 'url(#dotgrid)'}));
+
+  if (multi) {
+    for (const z of levels) {
+      const xsz = known.filter(c => lvl(c.y) === z).map(c => vx(c.x, c.y));
+      const t = svgEl('text', {x: sx(Math.min(...xsz)), y: -10, fill: '#7E838C', 'font-size': 13,
+                                'letter-spacing': '1.2', 'font-family': 'ui-monospace,Menlo,Consolas,monospace'});
+      t.textContent = 'ЭТАЖ ' + z;
+      svg.appendChild(t);
+    }
+  }
 
   for (const c of cells) {
     const key = c.x + ',' + c.y;
     const x = sx(vx(c.x, c.y)), y = sy(vy(c.y));
     let fill = 'transparent';
     if (blocked.has(key)) fill = 'url(#hatch)';
-    else if (blueDone.has(key)) fill = '#5b8fff33';
-    else if (cp.cx === c.x && cp.cy === c.y) fill = '#ff555533';
-    else if (visited.has(key)) fill = '#2a3a2a';
+    else if (blueDone.has(key)) fill = 'rgba(76,141,240,.28)';
+    else if (visited.has(key)) fill = '#2A2F37';
     svg.appendChild(svgEl('rect', {x, y, width: CELL, height: CELL, fill,
-                                    stroke: '#2a2a2a', 'stroke-width': 1}));
-    // Стены: [N,E,S,W]. true - рисуем толстую линию, null (неизвестно) -
-    // не рисуем вовсе (это чужая, ещё не подтверждённая сторона соседа).
+                                    stroke: 'rgba(255,255,255,.08)', 'stroke-width': 1}));
+    if (cp.cx === c.x && cp.cy === c.y)
+      svg.appendChild(svgEl('rect', {x: x + 4, y: y + 4, width: CELL - 8, height: CELL - 8, fill: 'none',
+                                      stroke: ACC, 'stroke-width': 1.5}));
+    // Стены: [N,E,S,W]. true - линия, null (неизвестно) - не рисуем.
     const edges = [
       c.w[0] === true ? [x, y, x + CELL, y] : null,               // N
       c.w[1] === true ? [x + CELL, y, x + CELL, y + CELL] : null, // E
@@ -324,95 +291,112 @@ function drawMap(s) {
     for (const e of edges) {
       if (!e) continue;
       svg.appendChild(svgEl('line', {x1: e[0], y1: e[1], x2: e[2], y2: e[3],
-                                      stroke: '#eee', 'stroke-width': 3, 'stroke-linecap': 'round'}));
+                                      stroke: FG, 'stroke-width': 3, 'stroke-linecap': 'square'}));
     }
   }
 
-  // Диагональная штриховка для непроезжих клеток. svg.innerHTML='' выше
-  // чистит всё на каждый опрос, поэтому паттерн приходится пересоздавать
-  // тут же - но rect'ы, ссылающиеся на url(#hatch), это переживают: SVG
-  // резолвит ссылку по живому DOM, а не по порядку добавления узлов.
-  const pat = svgEl('pattern', {id: 'hatch', width: 8, height: 8, patternUnits: 'userSpaceOnUse',
-                                 patternTransform: 'rotate(45)'});
-  pat.appendChild(svgEl('rect', {width: 8, height: 8, fill: '#331111'}));
-  pat.appendChild(svgEl('rect', {width: 3, height: 8, fill: '#772222'}));
-  defs.appendChild(pat);
+  // Горки - пунктир от подножия до гребня (другой этаж) с числом плиток.
+  for (const [ax, ay, , bx, by, n] of (s.ramps || [])) {
+    const x1 = sx(vx(ax, ay)) + CELL / 2, y1 = sy(vy(ay)) + CELL / 2;
+    const x2 = sx(vx(bx, by)) + CELL / 2, y2 = sy(vy(by)) + CELL / 2;
+    svg.appendChild(svgEl('line', {x1, y1, x2, y2, stroke: ACC, 'stroke-width': 1.5, 'stroke-dasharray': '5 4'}));
+    const t = svgEl('text', {x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle', 'font-size': 13,
+                              fill: ACC, 'font-family': 'ui-monospace,Menlo,Consolas,monospace'});
+    t.textContent = 'горка ' + n;
+    svg.appendChild(t);
+  }
 
-  // Метки на карте - точка со свечением и глифом у той стены, где их нашли.
+  // Метки: диск цвета типа у той стены, где нашли, глиф типа внутри.
   for (const v of (s.victims || [])) {
     const [vcx, vcy] = v.cell;
     const d = v.wall_dir ?? 0;
     const cx0 = sx(vx(vcx, vcy)) + CELL / 2, cy0 = sy(vy(vcy)) + CELL / 2;
     const px = cx0 + DIR_DX[d] * CELL * 0.32, py = cy0 - DIR_DY[d] * CELL * 0.32;
-    const color = {damaged: '#ff5c5c', stable: '#ffcf4d', unharmed: '#4ee27a'}[v.type] || '#888';
-    const glyph = {damaged: 'Φ', stable: 'Ψ', unharmed: 'Ω'}[v.type] || '?';
-    // мягкое свечение под меткой, чтобы она не терялась на фоне стен
-    svg.appendChild(svgEl('circle', {cx: px, cy: py, r: 9, fill: color, opacity: 0.55, filter: 'url(#glow)'}));
-    svg.appendChild(svgEl('circle', {cx: px, cy: py, r: 8.5, fill: color, stroke: '#0c0e12', 'stroke-width': 2}));
+    svg.appendChild(svgEl('circle', {cx: px, cy: py, r: 10.5, fill: COLOR[v.type] || '#7E838C',
+                                      stroke: '#14161A', 'stroke-width': 2}));
     const label = svgEl('text', {x: px, y: py, 'text-anchor': 'middle', 'dominant-baseline': 'central',
-                                  'font-size': 10, 'font-weight': 800, fill: '#0c0e12',
-                                  'font-family': 'ui-monospace,SFMono-Regular,Menlo,monospace'});
-    label.textContent = glyph;
+                                  'font-size': 13, 'font-weight': 700, fill: '#14161A',
+                                  'font-family': 'ui-monospace,Menlo,Consolas,monospace'});
+    label.textContent = GLYPH[v.type] || '?';
     svg.appendChild(label);
   }
 
-  // Горки - пунктир от клетки у подножия до клетки за гребнем (на другом
-  // этаже) с числом плиток.
-  for (const [ax, ay, , bx, by, n] of (s.ramps || [])) {
-    const x1 = sx(vx(ax, ay)) + CELL / 2, y1 = sy(vy(ay)) + CELL / 2;
-    const x2 = sx(vx(bx, by)) + CELL / 2, y2 = sy(vy(by)) + CELL / 2;
-    svg.appendChild(svgEl('line', {x1, y1, x2, y2, stroke: '#ffcf4d', 'stroke-width': 2,
-                                    'stroke-dasharray': '6 5', opacity: 0.8}));
-    const t = svgEl('text', {x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle',
-                              'font-size': 11, fill: '#ffcf4d'});
-    t.textContent = `⛰ ${n}`;
-    svg.appendChild(t);
-  }
-
-  // Робот - треугольник со свечением, острие по курсу (0=N вверх, 1=E вправо, ...).
-  const rcx = sx(vx(robot.cx, robot.cy)) + CELL / 2, rcy = sy(vy(robot.cy)) + CELL / 2, r = CELL * 0.3;
-  const points = `${rcx},${rcy - r} ${rcx - r * 0.7},${rcy + r * 0.7} ${rcx + r * 0.7},${rcy + r * 0.7}`;
-  const transform = `rotate(${robot.hdg * 90} ${rcx} ${rcy})`;
-  svg.appendChild(svgEl('polygon', {points, fill: '#ffd23f', opacity: 0.5, filter: 'url(#glow)', transform}));
-  svg.appendChild(svgEl('polygon', {points, fill: '#ffd23f', stroke: '#0c0e12', 'stroke-width': 1.5, transform}));
+  // Робот - треугольник, острие по курсу (0=N вверх, 1=E вправо, ...).
+  const rcx = sx(vx(robot.cx, robot.cy)) + CELL / 2, rcy = sy(vy(robot.cy)) + CELL / 2, r = CELL * 0.28;
+  const points = `${rcx},${rcy - r} ${rcx - r * 0.75},${rcy + r * 0.7} ${rcx + r * 0.75},${rcy + r * 0.7}`;
+  svg.appendChild(svgEl('polygon', {points, fill: ACC, stroke: '#14161A', 'stroke-width': 1.5,
+                                     'stroke-linejoin': 'round', transform: `rotate(${robot.hdg * 90} ${rcx} ${rcy})`}));
+  return {levels, LS, lvl, vy};
 }
 
+let lastVictims = null;
 function drawVictims(list) {
-  const box = document.getElementById('victims');
-  const empty = document.getElementById('empty');
-  document.getElementById('vcount').textContent = list.length;
+  const key = JSON.stringify(list);
+  $('vcount').textContent = list.length;
+  $('empty').style.display = list.length ? 'none' : 'block';
+  if (key === lastVictims) return;   // не пересобираем DOM зря - иначе мигают снимки
+  lastVictims = key;
+  const box = $('victims');
   box.innerHTML = '';
-  empty.style.display = list.length ? 'none' : 'block';
-  // Свежие сверху.
-  for (const v of [...list].reverse()) {
-    const card = document.createElement('div');
-    card.className = 'vcard ' + (v.type || '');
+  for (const v of [...list].reverse()) {   // свежие сверху
+    const row = document.createElement('div');
+    row.className = 'v-row ' + (v.type || '');
     const src = v.image ? `/detections/${encodeURIComponent(v.image)}` : '';
-    const img = src ? `<a class="shot" href="${src}" target="_blank"><img src="${src}" loading="lazy"></a>` : '';
-    const rings = (v.rings || []).map(c => `<span class="ring" data-c="${c}"></span>`).join('');
-    card.innerHTML = `
-      ${img}
-      <div class="body">
-        <div class="title"><span class="glyph">${GLYPH[v.type] || '?'}</span>${NAMES[v.type] || v.type || '?'}</div>
-        <div class="meta">клетка (${v.cell[0]},${v.cell[1]}) · сторона ${v.side === 'right' ? 'право' : 'лево'}
-          · класс ${v.class} · conf ${v.conf} · ${v.ts || ''}</div>
+    const img = src ? `<a href="${src}" target="_blank" rel="noopener"><img class="v-img" src="${src}" loading="lazy" alt=""></a>` : '';
+    const rings = (v.rings || []).map(c => `<span class="ring" data-c="${esc(c)}"></span>`).join('');
+    row.innerHTML = `
+      <i class="bar3"></i>
+      <div style="min-width:0">
+        <div class="v-t"><span class="g">${GLYPH[v.type] || '·'}</span>${esc(NAMES[v.type] || v.type || '?')}</div>
+        <div class="v-m">клетка ${v.cell[0]}:${v.cell[1]} · ${v.side === 'right' ? 'право' : 'лево'} · ${esc(v.class)}</div>
         ${v.class === 'cognetive' ? `<div class="rings">${rings}<span style="margin-left:6px">сумма ${v.checksum ?? '?'}</span></div>` : ''}
-      </div>`;
-    box.appendChild(card);
+        ${img}
+      </div>
+      <div class="v-r"><b>${v.conf ?? ''}</b>${esc(v.ts || '')}</div>`;
+    box.appendChild(row);
   }
 }
 
+function render(s) {
+  const waiting = !s.ts;
+  const [pname, pkind] = PHASE[s.phase] || [s.phase || '-', 'off'];
+  const info = drawMap(s);
+  $('phase').textContent = pname;
+  const robot = s.robot || {cx: 0, cy: 0, hdg: 0, dir: '?'};
+  const z = info.lvl(robot.cy);
+  $('pos').textContent = waiting ? '-' : `${robot.cx} : ${info.vy(robot.cy)}`;
+  $('dir').innerHTML = waiting ? '-' : `${robot.dir}<small>${(robot.hdg * 90) % 360}°</small>`;
+  $('lvl').textContent = waiting ? '-' : z;
+  $('nvis').textContent = waiting ? '-' : (s.visited || []).length;
+  const nb = (s.blocked || []).length;
+  $('nblk').textContent = waiting ? '-' : nb;
+  $('r-blk').className = 'r' + (nb ? ' err' : '');
+  $('ts').textContent = s.ts || '-';
+  $('floors').textContent = info.levels.length > 1 ? info.levels.length + ' этажа' : '';
+  $('map-note').innerHTML = waiting
+    ? '<div class="note"><b>Ожидание nav.py</b>state.json ещё не создан: робот не вышел на первую клетку.</div>' : '';
+  document.querySelector('#map').style.display = waiting ? 'none' : 'block';
+  drawVictims(s.victims || []);
+  if (waiting) setConn('off', 'ожидание nav.py');
+  else setConn(pkind === 'err' ? 'err' : 'on', pkind === 'err' ? 'авария' : 'онлайн');
+}
+
+function setConn(kind, text) { setDot(kind); $('conn').textContent = text; }
+
+let fails = 0;
 async function poll() {
   try {
     const r = await fetch('/state.json', {cache: 'no-store'});
-    const s = await r.json();
-    document.getElementById('phase').textContent = s.phase || '—';
-    document.getElementById('pos').textContent = `${s.robot.cx},${s.robot.cy}`;
-    document.getElementById('dir').textContent = s.robot.dir || '?';
-    document.getElementById('ts').textContent = s.ts || '—';
-    drawMap(s);
-    drawVictims(s.victims || []);
-  } catch (e) { /* сеть/JSON моргнули - подождём следующего опроса */ }
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    fails = 0;
+  } catch (e) {
+    // одна-две потери пакета при поллинге 4 Гц - не повод мигать офлайном
+    if (++fails >= 3) {
+      setConn('off', 'нет связи');
+      $('map-note').innerHTML = '<div class="note err"><b>Нет связи с map_web.py</b>Страница будет пытаться снова каждые 0.25 с.</div>';
+    }
+  }
   setTimeout(poll, 250);
 }
 poll();

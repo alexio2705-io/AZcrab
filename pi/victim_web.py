@@ -347,127 +347,349 @@ def api_ring_config():
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Детекция меток</title>
+<title>Детекция меток - MAZE2027</title>
 <style>
-  body { margin: 0; font-family: sans-serif; background: #1b1b1b; color: #eee; }
-  header { padding: 10px 16px; background: #262626; }
-  header a { color: #8ab4f8; }
-  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
-  .cam { background: #262626; padding: 12px; border-radius: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
-  .cam h3 { margin: 0 0 8px; font-size: 16px; width: 100%; }
-  .cam img.video { width: 560px; height: 560px; max-width: 90vw; max-height: 90vw; background: #000; }
-  .card { width: 580px; max-width: 90vw; background: #111; border-radius: 8px; padding: 12px; box-sizing: border-box; }
-  .card.stale { opacity: .45; }
-  .crop { width: 100%; aspect-ratio: 1; background: #000; object-fit: contain; border-radius: 4px; }
-  .big { font-size: 56px; text-align: center; line-height: 1.1; margin: 6px 0; }
-  .row { display: flex; justify-content: space-between; margin: 3px 0; font-size: 17px; }
-  .type { font-size: 20px; font-weight: bold; text-align: center; margin: 8px 0; padding: 6px; border-radius: 4px; }
-  .damaged { background: #b71c1c; } .stable { background: #f9a825; color: #000; }
-  .unharmed { background: #2e7d32; } .fake, .none { background: #555; }
-  .ring { display: flex; align-items: center; gap: 8px; font-size: 18px; margin: 3px 0; }
-  .sw { width: 24px; height: 24px; border-radius: 50%; border: 1px solid #888; flex: none; }
-  .muted { color: #999; font-size: 13px; }
-</style></head><body>
-<header><a href="/tune">настройка цветов колец →</a> &nbsp; <a href="/colors">разметка цветов →</a></header>
-<main>
-  <div class="cam"><h3>Камера 0 (правая) <span class="muted" id="fps0"></span></h3>
-    <img class="video" src="/stream/0.mjpg"><div class="card" id="card0">нет данных</div></div>
-  <div class="cam"><h3>Камера 1 (левая) <span class="muted" id="fps1"></span></h3>
-    <img class="video" src="/stream/1.mjpg"><div class="card" id="card1">нет данных</div></div>
-</main>
+  /* Системный моноширинный стек: страницы отдаёт Пи без интернета, веб-шрифт не загрузится. */
+  :root {
+    color-scheme:dark;
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/20px var(--mono);
+         font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
+  @media (min-width:900px) { .wrap { padding:24px; } }
+  b { font-weight:600; }
+  .mut { color:var(--mut); }
+  .bad { color:var(--acc); }
+
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .nav { display:flex; gap:16px; font-size:12px; letter-spacing:.06em; }
+  .nav a { color:var(--mut); text-decoration:none; }
+  .nav a:hover, .nav a[aria-current] { color:var(--fg); }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .led { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .led.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .led.err { background:var(--acc); }
+
+  .grid2 { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .grid2 { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  .stack > * + * { margin-top:16px; }
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; text-transform:none; font-size:12px; }
+  .pad { padding:12px 16px; }
+  .tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 16px; }
+  .tools label { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; }
+  .hint { color:var(--mut); font-size:12px; line-height:18px; padding:8px 16px 12px; }
+
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
+
+  .note { margin:8px 16px 12px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b, .note.err { color:var(--acc); }
+  .note.err { color:var(--mut); }
+
+  .vid { display:block; width:100%; background:#000; border-top:1px solid var(--line); }
+  .vidbox { position:relative; background:#000; border-top:1px solid var(--line); }
+  .vidbox .vid { border-top:0; }
+  .ph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+        color:var(--mut); font-size:12px; letter-spacing:.06em; padding:16px; pointer-events:none; }
+  .ph.err { color:var(--acc); }
+
+  .btn { font:inherit; font-size:13px; color:var(--fg); background:none; border:1px solid var(--line2);
+         border-radius:4px; padding:6px 12px; min-height:32px; cursor:pointer; text-decoration:none; display:inline-flex;
+         align-items:center; justify-content:center; gap:8px; }
+  .btn:hover { background:var(--hov); }
+  .btn.p { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+  .btn.p:hover { opacity:.88; }
+  .btn.on { border-color:var(--fg); background:rgba(255,255,255,.08); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn.block { width:100%; }
+  .btn:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  select, input[type=text], input:not([type]) { font:inherit; color:var(--fg); background:var(--bg);
+         border:1px solid var(--line2); border-radius:4px; padding:5px 8px; min-height:32px; }
+  input[type=text], input:not([type]) { width:100%; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:20px; background:transparent; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track { height:2px; background:var(--line2); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; margin-top:-5px; border-radius:50%; background:var(--fg); border:0; }
+  input[type=range]::-moz-range-track { height:2px; background:var(--line2); }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--fg); border:0; }
+  kbd { font:11px var(--mono); color:var(--mut); border:1px solid var(--line2); border-radius:2px; padding:0 5px; }
+  .btn.p kbd { color:var(--bg); border-color:rgba(20,22,26,.4); }
+  a { color:var(--fg); }
+
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th { color:var(--mut); font-weight:400; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+       text-align:right; padding:6px 8px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; padding-left:16px; }
+  th:last-child, td:last-child { padding-right:16px; }
+  tbody tr:hover td, tr:hover > td { background:var(--hov); }
+  .tscroll { overflow-x:auto; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:-1px;
+        box-shadow:inset 0 0 0 1px var(--line2); }
+  .sw.sq { border-radius:2px; }
+
+  .sl { display:grid; grid-template-columns:170px minmax(0,1fr) 48px; gap:2px 12px; align-items:center; padding:4px 16px 12px; }
+  @media (max-width:520px) { .sl { grid-template-columns:96px minmax(0,1fr) 44px; } }
+  .sl .k { font-size:12px; color:var(--mut); }
+  .sl .o { text-align:right; font-size:13px; }
+  .sl .grp { grid-column:1/-1; margin-top:12px; padding-top:8px; border-top:1px solid var(--line);
+             color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sl .grp:first-child { margin-top:0; border-top:0; }
+  .sl .hn { grid-column:1/-1; color:var(--mut); font-size:11px; line-height:16px; margin:-2px 0 4px; opacity:.85; }
+
+  .sq .vid { aspect-ratio:1/1; object-fit:contain; }
+  .vhead { display:flex; gap:12px; padding:12px 16px; border-top:1px solid var(--line); align-items:stretch; }
+  .crop { width:96px; height:96px; object-fit:contain; background:#000; border:1px solid var(--line); border-radius:2px; flex:none; }
+  .vmain { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:space-between; gap:8px; }
+  .vname { font-size:28px; line-height:32px; font-weight:600; }
+  .vname.s { font-size:20px; line-height:28px; }
+  .vtype { display:flex; gap:8px; align-items:stretch; font-size:13px; }
+  .vtype i { width:3px; background:var(--mut); flex:none; }
+  .vtype.damaged i { background:var(--damaged); } .vtype.stable i { background:var(--stable); } .vtype.unharmed i { background:var(--unharmed); }
+  .vtype.none { color:var(--mut); }
+  .card.stale { opacity:.7; }
+  .r.ring .v b { font-weight:600; margin-right:8px; }
+</style></head>
+<body>
+<div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ детекция меток</span></h1><nav class="nav"><a href="/" aria-current="page">детекция</a><a href="/tune">кольца</a><a href="/colors">цвета</a></nav><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
+  <div class="grid2">
+    <div class="panel sq"><div class="sec"><span>Камера 0 · правая</span><span class="n" id="fps0"></span></div>
+      <img class="vid" src="/stream/0.mjpg" alt=""><div class="card" id="card0"><div class="note">ожидание данных</div></div></div>
+    <div class="panel sq"><div class="sec"><span>Камера 1 · левая</span><span class="n" id="fps1"></span></div>
+      <img class="vid" src="/stream/1.mjpg" alt=""><div class="card" id="card1"><div class="note">ожидание данных</div></div></div>
+  </div>
+</div>
 <script>
-const TYPE_RU = {damaged: 'Повреждённая (2 аптечки)', stable: 'Стабильная (1 аптечка)',
-                 unharmed: 'Невредимая (0 аптечек)', fake: 'Фейк — не жертва'};
+const $ = id => document.getElementById(id);
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function setConn(kind, text) { $('conn-led').className = 'led' + (kind === 'on' ? '' : ' ' + kind); $('conn').textContent = text; }
+
+const TYPE_RU = {damaged: 'Повреждённая · 2 аптечки', stable: 'Стабильная · 1 аптечка',
+                 unharmed: 'Невредимая · 0 аптечек', fake: 'Фейк, не жертва'};
 const COLOR_RU = {black: 'чёрный', red: 'красный', yellow: 'жёлтый', green: 'зелёный', blue: 'синий', '?': 'не понял'};
 const COLOR_CSS = {black: '#000', red: '#e53935', yellow: '#fdd835', green: '#43a047', blue: '#1e40ff', '?': '#777'};
 const RING_RU = ['центр', 'кольцо 2', 'кольцо 3', 'кольцо 4', 'внешнее'];
 const sgn = v => v === null || v === undefined ? '?' : (v > 0 ? '+' + v : '' + v);
+const row = (k, v, cls) => `<div class="r ${cls || ''}"><span>${k}</span><span class="v">${v}</span></div>`;
 
 function render(id, s) {
-  const el = document.getElementById('card' + id);
-  document.getElementById('fps' + id).textContent = s.fps ? s.fps + ' к/с' : '';
+  const el = $('card' + id);
+  $('fps' + id).textContent = s.fps ? s.fps + ' к/с' : '';
   const L = s.last;
-  if (!L) { el.innerHTML = '<div class="muted">меток пока не было</div>'; return; }
+  if (!L) { el.classList.remove('stale'); el.innerHTML = '<div class="note"><b>Меток пока не было</b>Покажи метку камере.</div>'; return; }
   el.classList.toggle('stale', !s.visible);
-  let h = L.crop ? `<img class="crop" src="data:image/jpeg;base64,${L.crop}">` : '';
-  if (L.class === 'cognetive') {
-    h += `<div class="big" style="font-size:28px">Когнитивная цель</div>`;
-    h += L.rings.map((r, i) => `<div class="ring"><span class="sw" style="background:${COLOR_CSS[r.color]}"></span>
-      <span style="flex:1${r.reliable === false ? ';color:#f99' : ''}">${RING_RU[i]}: ${COLOR_RU[r.color]}${r.reliable === false ? ' (?)' : ''}</span><b>${sgn(r.score)}</b>
-      <span class="muted">${Math.round(r.agree * 100)}%</span></div>`).join('');
-    h += `<div class="row" style="font-size:18px;margin-top:8px"><span>Чексумма</span><b>${sgn(L.checksum)}</b></div>`;
-  } else {
-    h += `<div class="big">${L.letter}</div>`;
+  const t = L.type || 'none', cog = L.class === 'cognetive';
+  let h = '<div class="vhead">' + (L.crop ? `<img class="crop" src="data:image/jpeg;base64,${L.crop}" alt="">` : '')
+    + `<div class="vmain"><div class="vname${cog ? ' s' : ''}">${cog ? 'Когнитивная цель' : esc(L.letter)}</div>`
+    + `<div class="vtype ${t}"><i></i><span>${esc(TYPE_RU[L.type] || (cog ? 'не прочитано: видно не всё или не уверен' : 'не определить'))}</span></div></div></div>`;
+  if (cog) {
+    h += L.rings.map((r, i) => {
+      const bad = r.reliable === false;
+      return `<div class="r ring${bad ? ' err' : ''}"><span><i class="sw" style="background:${COLOR_CSS[r.color]}"></i>${RING_RU[i]}: ${COLOR_RU[r.color]}${bad ? ' (?)' : ''}</span>`
+        + `<span class="v"><b>${sgn(r.score)}</b><small>${Math.round(r.agree * 100)}%</small></span></div>`;
+    }).join('');
+    h += row('Чексумма', `<b>${sgn(L.checksum)}</b>`);
   }
-  const t = L.type || 'none';
-  h += `<div class="type ${t}">${TYPE_RU[L.type] || (L.class === 'cognetive' ? 'не прочитано — видно не всё/не уверен' : 'не определить')}</div>`;
-  h += `<div class="row"><span>класс</span><span>${L.class}</span></div>`;
-  if (L.still_class && L.still_class !== L.class)
-    h += `<div class="row muted"><span>на снимке модель видит</span><span>${L.still_class}</span></div>`;
-  h += `<div class="row"><span>уверенность</span><span>${Math.round(L.conf * 100)}%</span></div>`;
-  h += `<div class="row"><span>кадр</span><span>${L.exposure_ms ? L.res + ', ' + L.exposure_ms + ' мс' : 'обычный ' + (L.res || '')}</span></div>`;
-  h += `<div class="row muted"><span>${s.visible ? 'видна сейчас' : 'последняя, сейчас не видна'}</span><span>${L.ts}</span></div>`;
+  h += row('Класс', esc(L.class));
+  if (L.still_class && L.still_class !== L.class) h += row('На снимке модель видит', esc(L.still_class));
+  h += row('Уверенность', Math.round(L.conf * 100) + '<small>%</small>');
+  h += row('Кадр', L.exposure_ms ? esc(L.res) + '<small>' + L.exposure_ms + ' мс</small>' : 'обычный' + (L.res ? '<small>' + esc(L.res) + '</small>' : ''));
+  h += row(s.visible ? 'Видна сейчас' : 'Последняя, сейчас не видна', esc(L.ts));
   el.innerHTML = h;
 }
+let fails = 0;
 async function poll() {
   try {
-    const j = await (await fetch('/api/status')).json();
+    const r = await fetch('/api/status');
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json(); fails = 0;
     for (const id of ['0', '1']) if (j[id]) render(id, j[id]);
-  } catch (e) {}
+    setConn('on', 'онлайн');
+  } catch (e) { if (++fails >= 3) setConn('off', 'нет связи'); }
 }
 setInterval(poll, 300); poll();
-</script></body></html>
+</script>
+</body></html>
 """
 
 
 TUNE_PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Настройка колец</title>
+<title>Настройка колец - MAZE2027</title>
 <style>
-  body { margin: 0; font-family: sans-serif; background: #1b1b1b; color: #eee; }
-  header { padding: 10px 16px; background: #262626; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  header a { color: #8ab4f8; }
-  button, select { font-size: 15px; padding: 6px 12px; border-radius: 4px; border: 0; cursor: pointer; }
-  button.primary { background: #2e7d32; color: #fff; }
-  button.on { background: #1565c0; color: #fff; }
-  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; align-items: flex-start; }
-  .panel { background: #262626; border-radius: 8px; padding: 12px; }
-  #img { display: block; max-width: 95vw; cursor: crosshair; background: #000; min-width: 300px; min-height: 300px; }
-  table { border-collapse: collapse; font-size: 14px; }
-  td, th { padding: 4px 8px; text-align: right; }
-  th { color: #aaa; font-weight: normal; }
-  td:first-child, th:first-child { text-align: left; }
-  .sw { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1px solid #888; vertical-align: middle; margin-right: 6px; }
-  .sl { display: grid; grid-template-columns: 150px 1fr 52px; gap: 4px 10px; align-items: center; font-size: 14px; }
-  .sl input[type=range] { width: 100%; }
-  .grp { grid-column: 1 / -1; color: #8ab4f8; margin-top: 8px; font-size: 13px; }
-  .hint { color: #999; font-size: 12px; grid-column: 1 / -1; margin: -2px 0 4px; }
-  #probe { font: 13px monospace; white-space: pre; color: #ddd; }
-  .big { font-size: 20px; margin: 8px 0; }
-</style></head><body>
-<header>
-  <a href="/">← детекция</a> <a href="/colors">разметка цветов →</a>
-  <label>Камера <select id="cam"><option value="0">0 (правая)</option><option value="1">1 (левая)</option></select></label>
-  <button id="freeze">Заморозить кадр</button>
-  <button class="primary" id="save">Сохранить пороги</button>
-  <button id="reset">Сбросить к умолчаниям</button>
-  <span id="msg" style="color:#8f8"></span>
-</header>
-<main>
-  <div class="panel">
-    <img id="img" alt="покажи когнитивную цель камере">
-    <div id="state" style="color:#aaa;font-size:13px;margin-top:6px"></div>
-    <div id="probe">клик по картинке — HSV точки</div>
+  /* Системный моноширинный стек: страницы отдаёт Пи без интернета, веб-шрифт не загрузится. */
+  :root {
+    color-scheme:dark;
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/20px var(--mono);
+         font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
+  @media (min-width:900px) { .wrap { padding:24px; } }
+  b { font-weight:600; }
+  .mut { color:var(--mut); }
+  .bad { color:var(--acc); }
+
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .nav { display:flex; gap:16px; font-size:12px; letter-spacing:.06em; }
+  .nav a { color:var(--mut); text-decoration:none; }
+  .nav a:hover, .nav a[aria-current] { color:var(--fg); }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .led { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .led.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .led.err { background:var(--acc); }
+
+  .grid2 { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .grid2 { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  .stack > * + * { margin-top:16px; }
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; text-transform:none; font-size:12px; }
+  .pad { padding:12px 16px; }
+  .tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 16px; }
+  .tools label { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; }
+  .hint { color:var(--mut); font-size:12px; line-height:18px; padding:8px 16px 12px; }
+
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
+
+  .note { margin:8px 16px 12px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b, .note.err { color:var(--acc); }
+  .note.err { color:var(--mut); }
+
+  .vid { display:block; width:100%; background:#000; border-top:1px solid var(--line); }
+  .vidbox { position:relative; background:#000; border-top:1px solid var(--line); }
+  .vidbox .vid { border-top:0; }
+  .ph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+        color:var(--mut); font-size:12px; letter-spacing:.06em; padding:16px; pointer-events:none; }
+  .ph.err { color:var(--acc); }
+
+  .btn { font:inherit; font-size:13px; color:var(--fg); background:none; border:1px solid var(--line2);
+         border-radius:4px; padding:6px 12px; min-height:32px; cursor:pointer; text-decoration:none; display:inline-flex;
+         align-items:center; justify-content:center; gap:8px; }
+  .btn:hover { background:var(--hov); }
+  .btn.p { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+  .btn.p:hover { opacity:.88; }
+  .btn.on { border-color:var(--fg); background:rgba(255,255,255,.08); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn.block { width:100%; }
+  .btn:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  select, input[type=text], input:not([type]) { font:inherit; color:var(--fg); background:var(--bg);
+         border:1px solid var(--line2); border-radius:4px; padding:5px 8px; min-height:32px; }
+  input[type=text], input:not([type]) { width:100%; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:20px; background:transparent; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track { height:2px; background:var(--line2); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; margin-top:-5px; border-radius:50%; background:var(--fg); border:0; }
+  input[type=range]::-moz-range-track { height:2px; background:var(--line2); }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--fg); border:0; }
+  kbd { font:11px var(--mono); color:var(--mut); border:1px solid var(--line2); border-radius:2px; padding:0 5px; }
+  .btn.p kbd { color:var(--bg); border-color:rgba(20,22,26,.4); }
+  a { color:var(--fg); }
+
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th { color:var(--mut); font-weight:400; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+       text-align:right; padding:6px 8px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; padding-left:16px; }
+  th:last-child, td:last-child { padding-right:16px; }
+  tbody tr:hover td, tr:hover > td { background:var(--hov); }
+  .tscroll { overflow-x:auto; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:-1px;
+        box-shadow:inset 0 0 0 1px var(--line2); }
+  .sw.sq { border-radius:2px; }
+
+  .sl { display:grid; grid-template-columns:170px minmax(0,1fr) 48px; gap:2px 12px; align-items:center; padding:4px 16px 12px; }
+  @media (max-width:520px) { .sl { grid-template-columns:96px minmax(0,1fr) 44px; } }
+  .sl .k { font-size:12px; color:var(--mut); }
+  .sl .o { text-align:right; font-size:13px; }
+  .sl .grp { grid-column:1/-1; margin-top:12px; padding-top:8px; border-top:1px solid var(--line);
+             color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sl .grp:first-child { margin-top:0; border-top:0; }
+  .sl .hn { grid-column:1/-1; color:var(--mut); font-size:11px; line-height:16px; margin:-2px 0 4px; opacity:.85; }
+
+  .layout { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:1000px) { .layout { grid-template-columns:minmax(0,1fr) 420px; } }
+  #img { display:block; width:100%; max-width:560px; margin:0 auto; cursor:crosshair; background:#000; min-height:200px; }
+  .imgbox { background:#000; border-top:1px solid var(--line); }
+  #probe { padding:8px 16px 12px; font-size:12px; color:var(--mut); white-space:pre-wrap; }
+  #state { padding:8px 16px 0; font-size:12px; color:var(--mut); }
+  #sum { padding:4px 16px 12px; font-size:14px; }
+  #sum b { font-size:20px; margin:0 4px; }
+  #msg { color:var(--mut); font-size:12px; }
+</style></head>
+<body>
+<div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ кольца</span></h1><nav class="nav"><a href="/">детекция</a><a href="/tune" aria-current="page">кольца</a><a href="/colors">цвета</a></nav><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
+  <div class="panel" style="margin-bottom:16px"><div class="tools">
+    <label>Камера <select id="cam"><option value="0">0 · правая</option><option value="1">1 · левая</option></select></label>
+    <button class="btn" id="freeze">Заморозить кадр</button>
+    <button class="btn p" id="save">Сохранить пороги</button>
+    <button class="btn" id="reset">Сбросить к умолчаниям</button>
+    <span id="msg"></span>
+  </div></div>
+  <div class="layout">
+    <div class="stack">
+      <div class="panel">
+        <div class="sec"><span>Кадр после баланса белого</span></div>
+        <div class="imgbox"><img id="img" alt="покажи когнитивную цель камере"></div>
+        <div id="state"></div>
+        <div id="probe">Клик по картинке покажет HSV точки.</div>
+      </div>
+      <div class="panel">
+        <div class="sec"><span>Кольца</span></div>
+        <div id="sum"></div>
+        <div class="tscroll"><table id="rings"></table></div>
+        <div class="hint">V/бум — яркость относительно бумаги. Согласие янтарным — кольцо ненадёжно: мало точек в кадре или разнобой.</div>
+      </div>
+    </div>
+    <div class="panel"><div class="sec"><span>Пороги</span></div><div class="sl" id="sliders"></div></div>
   </div>
-  <div class="panel">
-    <div class="big" id="sum"></div>
-    <table id="rings"></table>
-    <div style="color:#aaa;font-size:12px;margin-top:6px">картинка — после баланса белого по бумаге; V/бум — яркость относительно бумаги;<br>красное согласие — кольцо ненадёжно (мало точек в кадре или разнобой)</div>
-  </div>
-  <div class="panel" style="min-width:380px"><div class="sl" id="sliders"></div></div>
-</main>
+</div>
 <script>
+const $ = id => document.getElementById(id);
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function setConn(kind, text) { $('conn-led').className = 'led' + (kind === 'on' ? '' : ' ' + kind); $('conn').textContent = text; }
+
 const COLOR_RU = {black: 'чёрный', red: 'красный', yellow: 'жёлтый', green: 'зелёный', blue: 'синий', '?': 'не понял'};
 const COLOR_CSS = {black: '#000', red: '#e53935', yellow: '#fdd835', green: '#43a047', blue: '#1e40ff', '?': '#777'};
 const RING_RU = ['центр', 'кольцо 2', 'кольцо 3', 'кольцо 4', 'внешнее'];
@@ -497,22 +719,22 @@ const SLIDERS = [
   ['box_center_tol', 'допуск центра от рамки', 0.02, 0.4, 0.01, 'цель видна целиком, а центр эллипса дальше этого от центра рамки — берём эллипс по рамке'],
   ['samples', 'точек на кольцо', 6, 48, 1],
 ];
-const $ = id => document.getElementById(id);
 let cfg = {}, frozen = false, sendT = null, pending = {};
 const cam = () => $('cam').value;
+const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 
 function buildSliders() {
   const box = $('sliders'); box.innerHTML = '';
   for (const s of SLIDERS) {
-    if (s[0][0] === '#') { const g = document.createElement('div'); g.className = 'grp'; g.textContent = s[0].slice(1); box.append(g); continue; }
+    if (s[0][0] === '#') { box.append(mk('div', 'grp', s[0].slice(1))); continue; }
     const [k, label, lo, hi, step, hint] = s;
-    const lab = document.createElement('span'); lab.textContent = label;
     const r = document.createElement('input');
     Object.assign(r, {type: 'range', min: lo, max: hi, step: step, value: cfg[k]});
-    const out = document.createElement('span'); out.textContent = cfg[k];
+    r.setAttribute('aria-label', label);
+    const out = mk('span', 'o', cfg[k]);
     r.oninput = () => { out.textContent = r.value; pending[k] = r.value; clearTimeout(sendT); sendT = setTimeout(send, 120); };
-    box.append(lab, r, out);
-    if (hint) { const h = document.createElement('div'); h.className = 'hint'; h.textContent = hint; box.append(h); }
+    box.append(mk('span', 'k', label), r, out);
+    if (hint) box.append(mk('div', 'hn', hint));
   }
 }
 async function post(url, body) {
@@ -522,27 +744,29 @@ async function post(url, body) {
 async function send() { const v = pending; pending = {}; cfg = (await post('/api/ring_config', {values: v})).values; refresh(); }
 async function loadCfg() { cfg = (await (await fetch('/api/ring_config')).json()).values; buildSliders(); }
 
+let fails = 0;
 async function refresh() {
   let j;
-  try { j = await (await fetch('/api/tune/' + cam())).json(); } catch (e) { return; }
+  try { j = await (await fetch('/api/tune/' + cam())).json(); fails = 0; setConn('on', 'онлайн'); }
+  catch (e) { if (++fails >= 3) setConn('off', 'нет связи'); return; }
   frozen = j.frozen; $('freeze').classList.toggle('on', frozen);
-  $('freeze').textContent = frozen ? 'Кадр заморожен — разморозить' : 'Заморозить кадр';
-  if (!j.has) { $('state').textContent = 'когнитивных целей эта камера ещё не видела — покажи цель'; return; }
+  $('freeze').textContent = frozen ? 'Кадр заморожен, разморозить' : 'Заморозить кадр';
+  if (!j.has) { $('state').textContent = 'Когнитивных целей эта камера ещё не видела. Покажи цель.'; return; }
   $('img').src = 'data:image/jpeg;base64,' + j.img;
   $('state').textContent = `бумага: V=${j.paper_v}, S=${j.paper_s} · баланс R/G/B ×${j.gains.join('/')}`
     + (j.center_found ? ' · центр по диску' : ' · центр по эллипсу')
     + (frozen ? ' · кадр заморожен' : ' · обновляется');
   const cs = j.checksum === null ? '?' : (j.checksum > 0 ? '+' : '') + j.checksum;
-  $('sum').innerHTML = `Чексумма <b>${cs}</b> — ${TYPE_RU[j.type] || 'не прочитано'}`;
-  let h = '<tr><th>кольцо</th><th>цвет</th><th>балл</th><th>согл.</th><th>в кадре</th><th>H</th><th>S</th><th>V/бум</th><th>голоса</th></tr>';
+  $('sum').innerHTML = `Чексумма<b>${cs}</b>${TYPE_RU[j.type] || 'не прочитано'}`;
+  let h = '<thead><tr><th>кольцо</th><th>цвет</th><th>балл</th><th>согл.</th><th>в кадре</th><th>H</th><th>S</th><th>V/бум</th><th>голоса</th></tr></thead><tbody>';
   j.rings.forEach((r, i) => {
     const votes = Object.entries(r.votes).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${COLOR_RU[c]} ${n}`).join(', ');
-    h += `<tr><td>${RING_RU[i]}</td><td style="text-align:left"><span class="sw" style="background:${COLOR_CSS[r.color]}"></span>${COLOR_RU[r.color]}</td>
-      <td>${r.score === null ? '?' : r.score}</td><td style="${r.reliable ? '' : 'color:#f66'}">${Math.round(r.agree * 100)}%</td>
+    h += `<tr><td>${RING_RU[i]}</td><td style="text-align:left"><i class="sw" style="background:${COLOR_CSS[r.color]}"></i>${COLOR_RU[r.color]}</td>
+      <td>${r.score === null ? '?' : r.score}</td><td class="${r.reliable ? '' : 'bad'}">${Math.round(r.agree * 100)}%</td>
       <td>${Math.round(r.in_frame * 100)}%</td><td>${r.h}</td><td>${r.s}</td><td>${r.v_ratio}</td>
-      <td style="text-align:left;color:#aaa">${votes}</td></tr>`;
+      <td style="text-align:left;color:var(--mut)">${votes}</td></tr>`;
   });
-  $('rings').innerHTML = h;
+  $('rings').innerHTML = h + '</tbody>';
 }
 $('img').onclick = async e => {
   const im = $('img'), k = im.naturalWidth / im.clientWidth;
@@ -556,7 +780,8 @@ $('reset').onclick = async () => { cfg = (await post('/api/ring_config', {reset:
 $('cam').onchange = refresh;
 loadCfg().then(refresh);
 setInterval(() => { if (!frozen) refresh(); }, 700);
-</script></body></html>
+</script>
+</body></html>
 """
 
 

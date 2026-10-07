@@ -42,8 +42,8 @@ cameras = {cam_id: start_camera(cam_id) for cam_id in (0, 1)}
 
 PLACEHOLDER_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">'
-    '<rect width="100%" height="100%" fill="#222"/>'
-    '<text x="50%" y="50%" fill="#eee" font-size="28" font-family="sans-serif" '
+    '<rect width="100%" height="100%" fill="#1B1E23"/>'
+    '<text x="50%" y="50%" fill="#7E838C" font-size="24" font-family="ui-monospace,Menlo,monospace" '
     'text-anchor="middle" dominant-baseline="middle">Камера {cam_id} недоступна</text>'
     '</svg>'
 )

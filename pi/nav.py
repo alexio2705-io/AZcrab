@@ -225,6 +225,15 @@ RAMP_CAP_CMS = 40.0            # потолок скорости колеса н
 ASSIST_STALL_S = 2.5
 OBSTACLE_RETRIES = 2           # столько откатов+повторов, дальше считаем проезд закрытым
 
+# Поле, где все мелкие препятствия заведомо проезжаемы (challenge.py ставит
+# True): не взяли бугорок с ходу - не откатываемся, а толкаем дальше, взведя
+# импульсы момента заново, до PUSH_THROUGH_MAX раз подряд. Подтверждённая
+# горка (ramp_state 'on') - как раньше: застряв на ней, робот скатывается.
+# Кандидат в горку ('cand') - это и есть бугорок, задравший нос выше
+# RAMP_MAP_DEG, его тоже толкаем, а не скатываемся.
+PUSH_THROUGH_SMALL = False
+PUSH_THROUGH_MAX = 4
+
 # Откат перед повтором. Задача скромная - дать колёсам сойти с кромки и снова
 # зацепиться за пол, поэтому не BUMPER_BACKOFF_MM (70мм, он про "стена
 # вплотную, её не видно"), а меньше.
@@ -2329,8 +2338,15 @@ def snap_target(delta_deg=0.0):
 
 
 def turn(delta_deg):
-    """Поворот на delta_deg от снэпнутого к сетке 90° текущего курса."""
-    turn_to(snap_target(delta_deg), label=f"{delta_deg:+.0f}°")
+    """Поворот на delta_deg от снэпнутого к сетке 90° текущего курса.
+    False - не доехал (см. turn_to)."""
+    return turn_to(snap_target(delta_deg), label=f"{delta_deg:+.0f}°")
+
+
+def gyro_heading():
+    """Ближайшая к гироскопу сторона сетки поля, 0=N..3=W - как в
+    detect_heading(), только без сверки со стенами."""
+    return int(round(angle_err(get_yaw(), YAW_ORIGIN) / 90.0)) % 4
 
 
 @_timed("поворот")
@@ -2342,6 +2358,10 @@ def turn_to(target, label=None):
     вызвал бы snap_target() - а тот привязывается к БЛИЖАЙШЕМУ узлу сетки от
     ТЕКУЩЕГО (уже 45°-смещённого) курса, что неоднозначно и может увести не
     туда. turn_to() возвращает точно на тот курс, что был до манёвра.
+
+    Возвращает True, если доехал до цели; False - прервали (пауза, пропала
+    телеметрия) или вышел TURN_TIMEOUT_S. Тогда курс в карте "как просили"
+    считать нельзя - вызывающий берёт его с гироскопа (gyro_heading()).
     """
     global _turn_ff
     settled = 0
@@ -2365,7 +2385,11 @@ def turn_to(target, label=None):
     telem_seq = _telem_seq
     while time.monotonic() < deadline:
         if interrupted():
-            return
+            # Пауза ESP глушит моторы сама. Иначе (пропала телеметрия)
+            # последняя команда вращения работала бы до failsafe ESP.
+            if not get_esp_paused() and not _lifted.is_set():
+                brake()
+            return False
         now = time.monotonic()
         elapsed = now - t_ramp
         rate = get_yaw_rate()
@@ -2466,9 +2490,12 @@ def turn_to(target, label=None):
         telem_seq = wait_telem(telem_seq, TURN_DT)
 
     settle_brake(0.10)
+    done = settled >= TURN_SETTLE
     print(f"    итог yaw={get_yaw():.1f}°  ошибка={angle_err(get_yaw(), target):+.1f}°  "
           f"за {time.monotonic() - t0:.2f}с  TURN_FF={_turn_ff:.3f}"
-          + (f"  застреваний={stuck_stage}" if stuck_stage else ""))
+          + (f"  застреваний={stuck_stage}" if stuck_stage else "")
+          + ("" if done else "  НЕ ДОВЕРНУЛ (таймаут)"))
+    return done
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2604,6 +2631,7 @@ def drive_cells(max_cells, expect_ramp=False):
     assist_t0 = assist_total_t0 = 0.0
     assist_kicks = 0
     assist_gap_until = 0.0
+    push_tries = 0             # PUSH_THROUGH_SMALL: сколько раз уже дотолкивали
     assist_progress_cm = 0.0
     assist_progress_t = 0.0
     assist_extra_s = 0.0
@@ -2723,12 +2751,22 @@ def drive_cells(max_cells, expect_ramp=False):
         if traveled_cm >= last_progress_cm + ODO_PROGRESS_CM:
             last_progress_cm = traveled_cm
             last_progress_t = time.monotonic()
+        elif (PUSH_THROUGH_SMALL and on_obstacle and ramp_state != 'on'
+              and fwd >= MOVE_MIN_CMS and time.monotonic() - last_progress_t > stall_limit
+              and push_tries < PUSH_THROUGH_MAX):
+            push_tries += 1
+            assist_kicks = 0
+            assist_gap_until = 0.0
+            last_progress_t = time.monotonic()
+            t_cell = max(t_cell, time.monotonic() - CELL_TIMEOUT_S / 2)   # бюджет клетки тоже
+            print(f"\n    бугорок не взят с ходу (pitch={pitch_delta:+.1f}°) - "
+                  f"толкаю ещё, без отката ({push_tries}/{PUSH_THROUGH_MAX})")
         elif fwd >= MOVE_MIN_CMS and time.monotonic() - last_progress_t > stall_limit:
-            if ramp_state in ('cand', 'on'):
+            if ramp_state == 'on' or (ramp_state == 'cand' and not PUSH_THROUGH_SMALL):
                 reason = "ramp_stall"
                 print(f"\n    ГОРКА НЕ ВЗЯТА на {traveled_cm*10:.0f}мм "
                       f"(pitch={pitch_delta:+.1f}°) — скатываюсь обратно")
-            elif on_obstacle:
+            elif on_obstacle or ramp_state == 'cand':
                 reason = "obstacle_stall"
                 print(f"\n    ПРЕПЯТСТВИЕ НЕ ВЗЯТО (pitch={pitch_delta:+.1f}°, "
                       f"{assist_kicks} импульс(ов)) — откат и повтор")
@@ -3442,9 +3480,12 @@ def report_victim(result, side, wall_dir, hdg):
     back_hdg = (wall_dir + 2) % 4
     delta = DIR_DELTA[(back_hdg - hdg) % 4]
     if delta != 0:
-        turn(delta)
+        ok = turn(delta)
         if get_esp_paused():
             return hdg
+        if not ok and gyro_heading() != back_hdg:
+            print("    не развернулся спиной к метке - комплекты не выдаю")
+            return gyro_heading()
         hdg = back_hdg
         align_at_wall(snap_target())     # "зад" - к метке, по правилам
 
@@ -3611,8 +3652,14 @@ def flood_fill_run(max_cells):
             steps = (90, 90) if abs(delta) == 180 else (delta,)
             replan = False
             for i, step in enumerate(steps):
-                turn(step)
+                ok = turn(step)
                 if get_esp_paused():
+                    replan = True
+                    break
+                if not ok:
+                    # Не доворачивал - курс в карте с гироскопа, маршрут заново.
+                    hdg = gyro_heading()
+                    _write_state(cx, cy, hdg, checkpoint, "exploring")
                     replan = True
                     break
                 # После поворота стены поменялись местами - встаём в центр
@@ -3799,8 +3846,12 @@ def return_to_start(cx, cy, hdg, checkpoint):
         d = path[0]
         delta = DIR_DELTA[(d - hdg) % 4]
         if delta != 0:
-            turn(delta)
+            ok = turn(delta)
             if get_esp_paused():
+                continue
+            if not ok:
+                hdg = gyro_heading()
+                _write_state(cx, cy, hdg, checkpoint, "returning")
                 continue
             align_at_wall(snap_target())
             hdg = d
