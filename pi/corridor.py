@@ -31,6 +31,11 @@ OPEN_MIN_SPAN_MM = 120.0  # "проход": видно хотя бы столь�
 OPEN_MAX_PTS = 2          # ...и точек в полосе почти нет
 POST_TOL_MM = 40.0        # поправка по столбику - только если ошибка не больше
 POST_MIN_PTS = 3          # столько точек стены у её конца
+# Полтолщины стены: робот по центру клетки - в 140 мм от неё (SIDE_CENTER_MM),
+# сетка - в 150. Стена кончается на столбике - на столько ЗА границей клеток,
+# начинается - на столько ДО неё; без этого каждая поправка тянула бы путь
+# на 5 мм в одну сторону.
+WALL_HALF_T_MM = 10.0
 
 # Коридор, который lidar_proc.py отдаёт в nav.py: в системе робота, мм.
 CORR_X_MIN, CORR_X_MAX = -100.0, 600.0
@@ -155,10 +160,12 @@ def post_error(xs, boundary, wall_before, wall_after):
     if wall_before:
         end = near[-1]
         support = [x for x in near if x >= end - 30.0]
+        expected = boundary + WALL_HALF_T_MM
     else:
         end = near[0]
         support = [x for x in near if x <= end + 30.0]
+        expected = boundary - WALL_HALF_T_MM
     if len(support) < POST_MIN_PTS:
         return None
-    e = end - boundary
+    e = end - expected
     return e if abs(e) <= POST_TOL_MM else None
