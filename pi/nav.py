@@ -3375,6 +3375,15 @@ def align_at_wall(target_yaw):
 KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
 
 
+def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
+    """(ключ стены, мм вдоль неё) прочитанной метки - по её рамке на кадре;
+    traveled_mm - сколько робот проехал от центра cell курсом hdg (стоя в
+    центре - 0)."""
+    y1, y2 = result["box_y"]
+    pos = watch_logic.mark_pos_mm(traveled_mm, watch_logic.px_to_mm((y1 + y2) / 2.0))
+    return watch_logic.world_along(cell, hdg, wall_dir, pos, LEVEL_STRIDE)
+
+
 @_timed("камеры")
 def scan_sides(cx, cy, hdg, walls_rel=None):
     """Проверяет ОБЕ боковые стены (лево и право по камерам) и, если стена
@@ -3445,6 +3454,15 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
         result = results.get(side)
         if result is None:
             continue
+        # Та же метка могла быть прочитана на ходу из соседней клетки (или
+        # с другой стороны стыка) - второй раз не репортим.
+        key, along = _mark_world(result, (cx, cy), hdg, wall_dir, 0.0)
+        dup = _marks.near(key, along)
+        if dup is not None and dup[2] == "read":
+            print(f"    [W] {side}: {result['label']} в {along:.0f}мм - уже прочитана "
+                  f"рядом ({dup[1]:.0f}мм), не репортю")
+            continue
+        _marks.add(key, along, "read")
         if get_esp_paused():
             # Усыпили посреди скана: находку в лог, но ни мигать, ни
             # разворачиваться - робот должен замереть сразу.
