@@ -104,6 +104,28 @@ class TestCellSides(unittest.TestCase):
         self.assertEqual(s.band_x["right"], [])
 
 
+class TestPostError(unittest.TestCase):
+    @staticmethod
+    def wall(lo, hi):
+        return [lo + i * 5.0 for i in range(int((hi - lo) / 5.0) + 1)]
+
+    def test_wall_ends_later_than_expected(self):
+        self.assertAlmostEqual(cr.post_error(self.wall(300, 465), 450.0, True, False), 15.0)
+
+    def test_wall_starts_earlier_than_expected(self):
+        self.assertAlmostEqual(cr.post_error(self.wall(440, 600), 450.0, False, True), -10.0)
+
+    def test_too_far_is_ignored(self):
+        self.assertIsNone(cr.post_error(self.wall(300, 500), 450.0, True, False))
+
+    def test_same_sides_have_no_post(self):
+        self.assertIsNone(cr.post_error(self.wall(300, 600), 450.0, True, True))
+        self.assertIsNone(cr.post_error(self.wall(300, 465), 450.0, True, None))
+
+    def test_needs_points_at_the_end(self):
+        self.assertIsNone(cr.post_error([300.0, 360.0, 465.0], 450.0, True, False))
+
+
 class TestCorridorPoints(unittest.TestCase):
     def test_keeps_only_side_corridors(self):
         filt = {0: 300.0, 45: 212.13, 90: 140.0, 270: 140.0, 30: 1000.0}

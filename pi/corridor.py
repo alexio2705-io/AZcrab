@@ -136,3 +136,29 @@ class CellSides:
         """Забыть точки полосы позади x_min - на длинной прямой их копится много."""
         for side in self.band_x:
             self.band_x[side] = [x for x in self.band_x[side] if x >= x_min]
+
+
+def post_error(xs, boundary, wall_before, wall_after):
+    """Ошибка одометрии вдоль хода по столбику (как в micromouse): где боковая
+    стена кончается (стена до границы клеток, проход после) или начинается
+    (наоборот), против ожидаемой границы. xs - X точек полосы этой стороны.
+
+    Возвращает e в мм (> 0 - стена кончается/начинается дальше, чем ждали:
+    робот на самом деле не доехал столько, сколько показывает одометрия,
+    цель надо отодвинуть на e) или None: стороны не различаются, у конца
+    меньше POST_MIN_PTS точек или |e| > POST_TOL_MM."""
+    if wall_before is None or wall_after is None or wall_before == wall_after:
+        return None
+    near = sorted(x for x in xs if abs(x - boundary) <= SEG_HALF_MM)
+    if not near:
+        return None
+    if wall_before:
+        end = near[-1]
+        support = [x for x in near if x >= end - 30.0]
+    else:
+        end = near[0]
+        support = [x for x in near if x <= end + 30.0]
+    if len(support) < POST_MIN_PTS:
+        return None
+    e = end - boundary
+    return e if abs(e) <= POST_TOL_MM else None
