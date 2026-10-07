@@ -153,7 +153,9 @@ smoothstep-разгон), `fwd`, `last_steer`, `odo_hist`, `last_loop_t`,
    лог причина.
 4. **Приписать.** `attribute` по пути после подъезда. (клетка, стена) →
    `_scanned_walls` и `det.scanned`; запись в `_victim_log` (side, wall_dir,
-   флаг «на ходу»); координата в реестр как прочитанная; `_write_state`.
+   флаг «на ходу»); координата в реестр как прочитанная. Карта на веб-странице
+   обновится при приезде в клетку (`_write_state` в `arrive`): `drive_cells`
+   не знает чекпоинта и фазы, а до приезда — секунда.
 5. **Жертва (blink).** `hold_while(blink_pink)` как сейчас. n = min(нужно,
    `kits_left()`); n > 0 ⇒ поворот ∓90° спиной к стене (без `align_at_wall`),
    n × `dispense_kit()`, `turn_to(target_yaw)` — точно на исходный курс. Не
