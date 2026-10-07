@@ -3936,6 +3936,96 @@ def _walls_rel_map(w):
     }
 
 
+_WALL_TXT = {True: "есть", False: "нет", None: "?"}
+
+
+class _DrivePlan:
+    """План поездки без остановок для drive_cells(plan=...): какая клетка
+    k-я по ходу, ехать ли через следующую клетку N прямо и что записать в
+    карту, когда робот её проехал. Решение - тот же BFS, что выбирает
+    маршрут стоя (runplan.go_straight): в новой клетке - по стенам, которые
+    лидар собрал на подходе (corridor.py), в известной - по карте.
+
+    goal_test - цель маршрута: фронтир разведки или старт. home=True -
+    возврат: цель в самой N значит встать в ней (при разведке N сама
+    становится посещённой, цель ищется дальше). on_pass(N) - клетку N
+    проехали без остановки, on_checkpoint(N) - под ней серебряная плитка."""
+
+    def __init__(self, cell, hdg, goal_test, home=False, on_pass=None, on_checkpoint=None):
+        self.cell0, self.hdg, self.goal_test, self.home = cell, hdg, goal_test, home
+        self.on_pass, self.on_checkpoint = on_pass, on_checkpoint
+        self._measured = {}     # k -> {сторона: замер лидара или None}
+
+    def cell(self, k):
+        return _cell_at(self.cell0, self.hdg, k)
+
+    def known_side(self, k, side):
+        """Боковая стена k-й клетки по карте (True/False/None)."""
+        c = _maze.get(self.cell(k))
+        return None if c is None else c[watch_logic.wall_of(self.hdg, side)]
+
+    def decide(self, k, sides_res, front):
+        """sides_res - {'right'/'left': CellSides.result()}, front - (стена
+        спереди по голосам или None, голосов "есть", голосов "нет").
+        Возвращает (ехать прямо, {'right'/'left': стена}) - стены для карты
+        и для столбиков: замер, а где его нет - карта."""
+        N, hdg = self.cell(k), self.hdg
+        rel = {"right": (hdg + 1) % 4, "left": (hdg + 3) % 4, "front": hdg}
+        measured = {"right": sides_res["right"][0], "left": sides_res["left"][0],
+                    "front": front[0]}
+        self._measured[k] = measured
+        known = _maze.get(N)
+        walls = {s: (measured[s] if measured[s] is not None
+                     else None if known is None else known[d])
+                 for s, d in rel.items()}
+        if N in _visited and known is not None:
+            walls = {s: known[d] for s, d in rel.items()}   # стоя мерили - карте верим
+        go, why = False, None
+        if (N[0], N[1], hdg) in _ramps:
+            why = "дальше горка"
+        elif self.home and self.goal_test(N):
+            why = "цель"
+        elif None in walls.values():
+            why = "не уверен"
+        else:
+            abs_w = {d: walls[s] for s, d in rel.items()}
+            abs_w[(hdg + 2) % 4] = False       # оттуда приехали
+
+            def od(cx, cy):
+                if (cx, cy) != N:
+                    return open_dirs(cx, cy)
+                return [d for d in range(4)
+                        if abs_w[d] is False and _next_cell(cx, cy, d) not in _blocked]
+
+            goal = self.goal_test if self.home else (lambda c: c != N and self.goal_test(c))
+            go = runplan.go_straight(N, hdg, od, _next_cell, goal, SIDE_ORDER[_side_pref])
+            why = "известна" if N in _visited else "новая"
+        r, l = sides_res["right"], sides_res["left"]
+        print(f"\n    → кл.{N}: R={_WALL_TXT[walls['right']]}({r[1]}т,{r[2]:.0f}мм) "
+              f"L={_WALL_TXT[walls['left']]}({l[1]}т,{l[2]:.0f}мм) "
+              f"F={_WALL_TXT[walls['front']]}({front[1]}:{front[2]}) → "
+              f"{'прямо' if go else 'стоп'} ({why})")
+        return go, {"right": walls["right"], "left": walls["left"]}
+
+    def passed(self, k, walls_rel):
+        """Клетку k проехали без остановки: ребро в неё - проход по факту,
+        она посещена, боковые стены - голосом лидара (только где был свой
+        замер: повторять карту её же голосом незачем)."""
+        prev, N = self.cell(k - 1), self.cell(k)
+        open_edge(prev[0], prev[1], self.hdg)
+        _visited.add(N)
+        for s in ("right", "left"):
+            v = self._measured.get(k, {}).get(s)
+            if v is not None:
+                vote_wall(N[0], N[1], watch_logic.wall_of(self.hdg, s), v)
+        if self.on_pass is not None:
+            self.on_pass(N)
+
+    def checkpoint(self, k):
+        if self.on_checkpoint is not None:
+            self.on_checkpoint(self.cell(k))
+
+
 def _arrived_cell(cx, cy, hdg, reason):
     """Где робот оказался после drive_cells(), проехавшего одну клетку."""
     if reason == "ramp":
@@ -4096,13 +4186,29 @@ def flood_fill_run(max_cells):
             if replan:
                 continue
 
-        n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps,
-                                cell=(cx, cy), hdg=hdg)
+        # Прямые - без остановок: drive_cells встанет сам там, где нужен
+        # поворот, где не уверен в стенах или на синей (см. _DrivePlan).
+        def on_pass(N, h=hdg):
+            _write_state(N[0], N[1], h, checkpoint, "exploring")
+
+        def on_checkpoint(N, h=hdg):
+            nonlocal checkpoint
+            if checkpoint[:2] != N:
+                checkpoint = (N[0], N[1], h)
+                print(f"\n  ✓ ЧЕКПОИНТ ({N[0]},{N[1]}) курс={_DIR_NAME[h]} (на ходу)")
+
+        plan = _DrivePlan((cx, cy), hdg, lambda c: c not in _visited,
+                          on_pass=on_pass, on_checkpoint=on_checkpoint)
+        n, reason = drive_cells(max(1, max_cells - total), expect_ramp=(cx, cy, hdg) in _ramps,
+                                cell=(cx, cy), hdg=hdg, plan=plan)
         if n > 0:
+            # Клетки до последней уже в карте (_DrivePlan.passed); последний
+            # шаг - как раньше: проход по факту или горка, и замер стоя.
+            cx, cy = plan.cell(n - 1)
             if reason != "ramp":
                 open_edge(cx, cy, hdg)   # проехали - значит, проход (горку пишет record_ramp)
             cx, cy = _arrived_cell(cx, cy, hdg, reason)
-            total += 1
+            total += n
             arrive((cx, cy) not in _visited)
 
         if reason in ("paused", "lifted", "link_lost"):
@@ -4267,9 +4373,13 @@ def return_to_start(cx, cy, hdg, checkpoint):
             hdg = d
             _write_state(cx, cy, hdg, checkpoint, "returning")
 
-        n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps,
-                                cell=(cx, cy), hdg=hdg)
+        plan = _DrivePlan((cx, cy), hdg, lambda c: c == (0, 0), home=True,
+                          on_pass=lambda N, h=hdg: _write_state(N[0], N[1], h, checkpoint,
+                                                                "returning"))
+        n, reason = drive_cells(300, expect_ramp=(cx, cy, hdg) in _ramps,
+                                cell=(cx, cy), hdg=hdg, plan=plan)
         if n > 0:
+            cx, cy = plan.cell(n - 1)
             if reason != "ramp":
                 open_edge(cx, cy, hdg)
             cx, cy = _arrived_cell(cx, cy, hdg, reason)
