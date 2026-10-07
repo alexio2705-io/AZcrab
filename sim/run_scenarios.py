@@ -61,12 +61,65 @@ def ramp_world():
     return w
 
 
+def brick_world():
+    """Коридор (0,0)..(0,3), в (0,2) поперёк - кирпич 50 мм: лидар на 130 мм
+    его не видит, проехать нельзя."""
+    w = World()
+    w.box([(0, 0), (0, 1), (0, 2), (0, 3)])
+    w.walls.append((-150.0, 560.0, 150.0, 620.0, 0.0, 50.0))
+    return w
+
+
+def bigbump_world():
+    """Коридор как corridor_world, бугорок 25 мм у точки решения клетки
+    (0,2): нос задирается выше RAMP_MAP_DEG - кандидат в горку."""
+    w = corridor_world()
+    w.pieces.append((-150.0, 545.0, 150.0, 575.0, lambda x, y: 25.0))
+    return w
+
+
+def two_ramps_world():
+    """Две горки разной длины на один островок: A из (0,1) на север в 1
+    плитку (25°), B из (2,1) на север в 2 плитки (13°). Островок:
+    (0,3),(0,4),(1,3),(1,4),(2,4)."""
+    w = World()
+    top = RAMP_RISE + WALL_H
+    lo = [(0, 0), (1, 0), (2, 0), (0, 1), (2, 1)]
+    hi = [(0, 3), (0, 4), (1, 3), (1, 4), (2, 4)]
+    entries = {(0, 1, 0), (2, 1, 0)}
+    s = set(lo)
+    for cx, cy in lo:
+        for d, (dx, dy) in enumerate(((0, 1), (1, 0), (0, -1), (-1, 0))):
+            if (cx + dx, cy + dy) not in s and (cx, cy, d) not in entries:
+                w.wall(cx, cy, d)
+    w.pieces.append((-150.0, 450.0, 150.0, 750.0,
+                     lambda x, y: RAMP_RISE * (y - 450.0) / 300.0))
+    w.pieces.append((450.0, 450.0, 750.0, 1050.0,
+                     lambda x, y: RAMP_RISE * (y - 450.0) / 600.0))
+    for cx, cy, d in ((0, 2, 1), (0, 2, 3), (2, 2, 1), (2, 2, 3), (2, 3, 1), (2, 3, 3)):
+        w.wall(cx, cy, d, 0.0, top)
+    for cx, cy in hi:
+        x, y = cx * CELL, cy * CELL
+        w.pieces.append((x - 150.0, y - 150.0, x + 150.0, y + 150.0,
+                         lambda x, y: RAMP_RISE))
+    hs = set(hi)
+    for cx, cy in hi:
+        for d, (dx, dy) in enumerate(((0, 1), (1, 0), (0, -1), (-1, 0))):
+            if (cx + dx, cy + dy) not in hs and (cx, cy, d) not in ((0, 3, 2), (2, 4, 2)):
+                w.wall(cx, cy, d, RAMP_RISE, top)
+    return w
+
+
 # имя -> (мир, потолок клеток, ожидаемые горки {(клетка, курс): клетка на другом конце})
 SCENARIOS = {
     "flat": (corridor_world, 20, {}),
     "bumps": (lambda: corridor_world(bumps=True), 20, {}),
     # (0,1) -> горка -> первая клетка наверху (0,3) = этаж 1, y=3
     "ramp": (ramp_world, 20, {(0, 1, 0): (0, 1003)}),
+    "brick": (brick_world, 20, {}),
+    "bigbump": (bigbump_world, 20, {}),
+    # обе горки - на один этаж: A -> (0,3), B -> (2,4)
+    "two_ramps": (two_ramps_world, 30, {(0, 1, 0): (0, 1003), (2, 1, 0): (2, 1004)}),
 }
 
 
@@ -99,6 +152,8 @@ def run(name):
         if nav.level_of(cy) != 0 or (cx, cy) not in nav._visited:
             continue
         for d in range(4):
+            if nav._edge_fixed.get(nav._edge_key(cx, cy, d)) is True:
+                continue          # закрыто по факту (упёрлись) - стена нарочно
             if cell[d] is not None and cell[d] != wall_truth(w, cx, cy, d):
                 bad.append(f"({cx},{cy}){'NESW'[d]}: карта={'стена' if cell[d] else 'проход'}")
     log = buf.getvalue()
