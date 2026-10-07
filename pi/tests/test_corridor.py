@@ -110,10 +110,10 @@ class TestPostError(unittest.TestCase):
         return [lo + i * 5.0 for i in range(int((hi - lo) / 5.0) + 1)]
 
     def test_wall_ends_later_than_expected(self):
-        self.assertAlmostEqual(cr.post_error(self.wall(300, 465), 450.0, True, False), 15.0)
+        self.assertEqual(cr.post_error(self.wall(300, 465), 450.0, True, False), 15.0)
 
     def test_wall_starts_earlier_than_expected(self):
-        self.assertAlmostEqual(cr.post_error(self.wall(440, 600), 450.0, False, True), -10.0)
+        self.assertEqual(cr.post_error(self.wall(440, 600), 450.0, False, True), -10.0)
 
     def test_too_far_is_ignored(self):
         self.assertIsNone(cr.post_error(self.wall(300, 500), 450.0, True, False))
