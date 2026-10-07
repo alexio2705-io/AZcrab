@@ -3,6 +3,7 @@
 // ============================================================================
 #include "robot_link.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -12,6 +13,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
+#include "esp_random.h"
 
 #include "buttons.h"
 #include "apds9960.h"
@@ -81,6 +83,22 @@ static volatile uint8_t     g_color     = APDS9960_COLOR_BLACK;
 // пороги классификации подбираются по ним, а на глаз по одному номеру
 // понять, почему плитка определилась не так, невозможно.
 static volatile uint16_t    g_cr, g_cg, g_cb, g_cc;
+// Время последнего удачного чтения APDS9960 - флаг свежести цвета.
+static volatile int64_t     g_color_ok_us;
+// Сколько "Z" применено (по модулю 256) - растёт ПОСЛЕ обнуления энкодеров,
+// так что пакет с новым значением заведомо несёт одометрию после "Z".
+static volatile uint8_t     g_z_cnt;
+// Сколько строк от RPi отвергнуто: нет/не та CRC, не разобралась, NaN,
+// слишком длинная.
+static volatile uint16_t    g_cmd_err;
+// Случайное при каждом старте: RPi по его смене видит ребут ESP.
+static uint16_t             g_boot_id;
+
+// Флаги свежести (см. robot_link.h): гироскоп - счётчик сэмплов BNO085
+// (1 кГц) рос за последние столько; цвет - удачное чтение не старше этого
+// (опрос 30 Гц).
+#define GYRO_FRESH_US   50000
+#define COLOR_FRESH_US 150000
 
 // Моторами командуют две задачи - cmd_task и btn_task (пауза). Без общего
 // замка cmd_task мог проверить g_run_state == RUNNING, тут же BTN_1 ставил
@@ -95,6 +113,7 @@ static void motor_unlock(void) { xSemaphoreGive(g_motor_lock); }
 typedef struct __attribute__((packed)) {
     uint8_t magic[2];
     uint8_t ver;     // TELEM_VER - см. robot_link.h, зачем он нужен
+    uint8_t seq;     // +1 на каждый пакет - RPi считает пропуски
     float   yaw;
     float   yaw_rate;
     float   pitch;
@@ -106,15 +125,38 @@ typedef struct __attribute__((packed)) {
     float   right_cm;
     uint8_t status;
     uint8_t flags;
-    uint8_t crc;
+    uint8_t  z_cnt;     // g_z_cnt
+    uint16_t boot_id;   // g_boot_id
+    uint16_t cmd_err;   // g_cmd_err
+    uint16_t crc;       // CRC-16/CCITT-FALSE по байтам [2 .. crc)
 } telem_t;
+_Static_assert(sizeof(telem_t) == 58, "telem_t: раскладка разошлась с robot_link.h и FMT на RPi");
 
-static uint8_t telem_crc(const telem_t *p)
+// CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, без отражений и xorout.
+// На RPi это binascii.crc_hqx(data, 0xFFFF).
+static uint16_t crc16_ccitt(const uint8_t *b, size_t n)
 {
-    const uint8_t *b = (const uint8_t *)p + 2;
-    uint8_t crc = 0;
-    for (size_t i = 0; i < sizeof(telem_t) - 3; i++) crc ^= b[i];
+    uint16_t crc = 0xFFFF;
+    while (n--) {
+        crc ^= (uint16_t)(*b++) << 8;
+        for (int i = 0; i < 8; i++)
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+    }
     return crc;
+}
+
+// Строка команды "<текст>*XXXX": XXXX - CRC-16 текста до '*' в hex. true -
+// сумма сошлась, и line обрезана до самого текста.
+static bool cmd_crc_ok(char *line)
+{
+    char *star = strrchr(line, '*');
+    if (!star || strlen(star + 1) != 4) return false;
+    char *end;
+    unsigned long want = strtoul(star + 1, &end, 16);
+    if (*end != '\0') return false;
+    if (crc16_ccitt((const uint8_t *)line, (size_t)(star - line)) != want) return false;
+    *star = '\0';
+    return true;
 }
 
 static void uart_init_port(void)
@@ -144,6 +186,7 @@ static void color_task(void *arg)
             if (apds9960_read_color_data(APDS9960_I2C_PORT, &r, &g, &b, &c) == ESP_OK) {
                 g_cr = r; g_cg = g; g_cb = b; g_cc = c;
                 g_color = apds9960_detect_color(r, g, b, c);
+                g_color_ok_us = esp_timer_get_time();
             }
         }
         vTaskDelayUntil(&last, pdMS_TO_TICKS(1000 / COLOR_POLL_HZ));
@@ -152,12 +195,25 @@ static void color_task(void *arg)
 
 static void telem_task(void *arg)
 {
-    telem_t pkt = {.magic = {0xAA, 0x55}, .ver = TELEM_VER};
+    telem_t pkt = {.magic = {0xAA, 0x55}, .ver = TELEM_VER, .boot_id = g_boot_id};
     TickType_t last = xTaskGetTickCount();
     esp_task_wdt_add(NULL);   // см. robot_link_run() про TWDT
+    uint32_t gyro_n = gyro_sample_count();
+    int64_t  gyro_t = 0;      // когда счётчик сэмплов последний раз рос
 
     for (;;) {
         esp_task_wdt_reset();
+        // z_cnt - ДО одометрии: если он уже новый, обнуление уже сделано, и
+        // расстояния ниже - после "Z" (cmd_task растит его после обнуления).
+        pkt.z_cnt = g_z_cnt;
+        int64_t now = esp_timer_get_time();
+        uint32_t n = gyro_sample_count();
+        if (n != gyro_n) {
+            gyro_n = n;
+            gyro_t = now;
+        }
+        bool gyro_fresh  = gyro_t && now - gyro_t < GYRO_FRESH_US;
+        bool color_fresh = g_color_ok_us && now - g_color_ok_us < COLOR_FRESH_US;
         float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
         gyro_get_angles(&yaw, &pitch, &roll);
 
@@ -192,10 +248,14 @@ static void telem_task(void *arg)
                      | (button_pressed(CLICKER_2) ? 2 : 0)
                      | (isnan(lmm) ? 0 : 4)
                      | (isnan(rmm) ? 0 : 8)
-                     | (button_pressed(BTN_1) ? 16 : 0);
-        pkt.crc      = telem_crc(&pkt);
+                     | (button_pressed(BTN_1) ? 16 : 0)
+                     | (gyro_fresh  ? 32 : 0)
+                     | (color_fresh ? 64 : 0);
+        pkt.cmd_err  = g_cmd_err;
+        pkt.crc      = crc16_ccitt((const uint8_t *)&pkt + 2, sizeof(pkt) - 4);
 
         uart_write_bytes(LINK_PORT, (const char *)&pkt, sizeof(pkt));
+        pkt.seq++;
         vTaskDelayUntil(&last, pdMS_TO_TICKS(1000 / TELEM_HZ));
     }
 }
@@ -217,6 +277,12 @@ static void cmd_task(void *arg)
             if (byte == '\n' || byte == '\r') {
                 line[len] = '\0';
                 float l = 0.0f, r = 0.0f, cap = 0.0f;
+                // Без CRC или с неверной - в счётчик, а дальше по цепочке как
+                // пустая строка (её, "\r\n", ошибкой не считаем).
+                if (len > 0 && !cmd_crc_ok(line)) {
+                    g_cmd_err++;
+                    line[0] = '\0';
+                }
                 // "K:" держит задачу ~1.3с на ходу серво - не под замком,
                 // иначе BTN_1 всё это время не смог бы поставить паузу.
                 bool motor_cmd = strncmp(line, "K:", 2) != 0;
@@ -269,6 +335,7 @@ static void cmd_task(void *arg)
                 } else if (line[0] == 'Z') {
                     last_cmd_us = esp_timer_get_time();
                     motor_zero_encoders();
+                    g_z_cnt++;     // строго после обнуления - см. telem_task
                 } else if (line[0] == 'R') {
                     // Снять паузу BTN_1 - см. btn_task().
                     last_cmd_us = esp_timer_get_time();
@@ -284,6 +351,8 @@ static void cmd_task(void *arg)
                     last_cmd_us = esp_timer_get_time();
                     if (line[2] == 'L') servo_dispense_left();
                     else if (line[2] == 'R') servo_dispense_right();
+                } else if (line[0] != '\0') {
+                    g_cmd_err++;   // CRC сошлась, но команда не разобралась (или NaN)
                 }
                 if (motor_cmd) motor_unlock();
                 len = 0;
@@ -291,6 +360,7 @@ static void cmd_task(void *arg)
                 line[len++] = (char)byte;
             } else {
                 len = 0;   // overlong line, resync on the next newline
+                g_cmd_err++;
             }
         }
 
@@ -378,13 +448,14 @@ static void debug_task(void *arg)
         gyro_get_angles(&yaw, &pitch, NULL);
         float l = robot_left_dist_mm(), r = robot_right_dist_mm();
 
-        printf("[%s] yaw=%6.1f pitch=%5.1f  %-6s  B1=%d C1=%d C2=%d  L=%s%.1f R=%s%.1f cm\n",
+        printf("[%s] yaw=%6.1f pitch=%5.1f  %-6s  B1=%d C1=%d C2=%d  L=%s%.1f R=%s%.1f cm  cmd_err=%u\n",
                STATE[g_run_state == RUN_PAUSED ? 1 : 0], yaw, pitch,
                COLOR[g_color < 6 ? g_color : 0],
                button_pressed(BTN_1),
                button_pressed(CLICKER_1), button_pressed(CLICKER_2),
                isnan(l) ? "off/" : "", isnan(l) ? 0.0f : l * 0.1f,
-               isnan(r) ? "off/" : "", isnan(r) ? 0.0f : r * 0.1f);
+               isnan(r) ? "off/" : "", isnan(r) ? 0.0f : r * 0.1f,
+               (unsigned)g_cmd_err);
 
         if (++n >= DEBUG_CAN_EVERY) {
             n = 0;
@@ -401,6 +472,7 @@ void robot_link_run(void)
     servo_init();
     g_motor_lock = xSemaphoreCreateMutex();
     configASSERT(g_motor_lock);
+    g_boot_id = (uint16_t)esp_random();
 
     robot_wake_all();
     robot_set_accel(MOTOR_ACCEL_DPS_S);
@@ -418,8 +490,10 @@ void robot_link_run(void)
     xTaskCreate(btn_task,   "btn",   2560, NULL, 7,  NULL);
     xTaskCreate(debug_task, "debug", 3072, NULL, 2,  NULL);
 
-    ESP_LOGI(TAG, "link up: TX=%d RX=%d @ %d, accel=%d dps/s. Armed - BTN_1 pauses, RPi 'R' resumes.",
-             LINK_TX, LINK_RX, LINK_BAUD, MOTOR_ACCEL_DPS_S);
+    ESP_LOGI(TAG, "link up: TX=%d RX=%d @ %d, accel=%d dps/s, telem v%d %d bytes, boot_id=%04X. "
+             "Armed - BTN_1 pauses, RPi 'R' resumes.",
+             LINK_TX, LINK_RX, LINK_BAUD, MOTOR_ACCEL_DPS_S,
+             TELEM_VER, (int)sizeof(telem_t), g_boot_id);
 
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }

@@ -12,6 +12,7 @@
 Выход - Ctrl+C.
 """
 import argparse
+import binascii
 import struct
 import time
 
@@ -21,8 +22,10 @@ LINK_PORT = "/dev/serial0"
 LINK_BAUD = 921600
 MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c (и с nav.py).
-TELEM_VER = 2
-FMT = "<BfffffffBHHHHffBBB"
+# ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
+# status flags z_cnt boot_id cmd_err crc16
+TELEM_VER = 3
+FMT = "<BBfffffffBHHHHffBBBHHH"
 PKT_SIZE = len(MAGIC) + struct.calcsize(FMT)
 
 COLORS = {0: "?", 1: "WHITE", 2: "BLUE", 3: "BLACK", 4: "MIRROR", 5: "RED"}
@@ -31,7 +34,8 @@ COLORS = {0: "?", 1: "WHITE", 2: "BLUE", 3: "BLACK", 4: "MIRROR", 5: "RED"}
 def flags_str(fl):
     return (f"BTN1={'ДА ' if fl & 16 else 'нет'} "
             f"C1={'ДА ' if fl & 1 else 'нет'} C2={'ДА ' if fl & 2 else 'нет'} "
-            f"encL={'ok' if fl & 4 else '--'} encR={'ok' if fl & 8 else '--'}")
+            f"encL={'ok' if fl & 4 else '--'} encR={'ok' if fl & 8 else '--'} "
+            f"гиро={'ok' if fl & 32 else 'СТОИТ'} цвет={'ok' if fl & 64 else 'СТАРЫЙ'}")
 
 
 def main():
@@ -48,7 +52,8 @@ def main():
     t0 = time.monotonic()
     t_print = 0.0
     t_rate = t0
-    good = bad_crc = 0
+    good = bad_crc = lost = 0
+    last_seq = boot = None
     bad_ver = {}
     rate_cnt = 0
     hz = 0.0
@@ -70,16 +75,23 @@ def main():
                         bad_ver[body[0]] = bad_ver.get(body[0], 0) + 1
                     del buf[0]
                     continue
-                crc = 0
-                for b in body[:-1]:
-                    crc ^= b
-                if crc != body[-1]:
+                # CRC-16/CCITT-FALSE, как в robot_link.c
+                if binascii.crc_hqx(body[:-2], 0xFFFF) != body[-2] | (body[-1] << 8):
                     bad_crc += 1
                     del buf[0]
                     continue
                 del buf[:PKT_SIZE]
-                (_v, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
-                 cr, cg, cb, cc, lcm, rcm, status, fl, _c) = struct.unpack(FMT, body)
+                (_v, seq, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
+                 cr, cg, cb, cc, lcm, rcm, status, fl,
+                 z_cnt, boot_id, cmd_err, _c) = struct.unpack(FMT, body)
+                if boot is not None and boot_id != boot:
+                    print(f">>> ESP ПЕРЕЗАГРУЗИЛСЯ: boot_id {boot:04X} -> {boot_id:04X}",
+                          flush=True)
+                    last_seq = None
+                boot = boot_id
+                if last_seq is not None:
+                    lost += (seq - last_seq - 1) & 0xFF
+                last_seq = seq
                 good += 1
                 rate_cnt += 1
 
@@ -91,7 +103,7 @@ def main():
                     t_rate = now
 
                 st = "PAUSED" if status else "RUN"
-                events = (status, fl & 16, fl & 1, fl & 2)
+                events = (status, fl & 16, fl & 1, fl & 2, fl & 32, fl & 64)
                 if events != last_events:
                     if last_events is not None:
                         print(f">>> {t:7.2f}s  статус={st}  {flags_str(fl)}", flush=True)
@@ -105,13 +117,15 @@ def main():
                           f"acc=({ax:+5.2f},{ay:+5.2f},{az:+5.2f}) "
                           f"цвет={COLORS.get(color, color):6} "
                           f"rgbc=({cr},{cg},{cb},{cc}) "
-                          f"L={lcm:7.1f} R={rcm:7.1f}см  {flags_str(fl)}",
+                          f"L={lcm:7.1f} R={rcm:7.1f}см Z#{z_cnt} "
+                          f"err={cmd_err}  {flags_str(fl)}",
                           flush=True)
     except KeyboardInterrupt:
         pass
     finally:
         link.close()
-        print(f"\nхороших пакетов {good}, битых CRC {bad_crc}", end="")
+        print(f"\nхороших пакетов {good}, битых CRC {bad_crc}, пропущено {lost}",
+              end="")
         if bad_ver:
             print(f", ЧУЖАЯ ВЕРСИЯ {bad_ver} - прошивка ESP и .py разных версий",
                   end="")

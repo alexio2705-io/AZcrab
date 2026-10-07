@@ -30,6 +30,7 @@ apds9960.c устарели. Исправить их всё равно стои�
 
 from __future__ import annotations
 
+import binascii
 import struct
 import sys
 import threading
@@ -42,11 +43,13 @@ LINK_BAUD = 921600
 
 MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c и с FMT в nav.py.
-# ver yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm status flags crc
-TELEM_VER = 2
-FMT = "<BfffffffBHHHHffBBB"
-BODY_SIZE = struct.calcsize(FMT)          # 49
-PKT_SIZE = len(MAGIC) + BODY_SIZE         # 51
+# ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
+# status flags z_cnt boot_id cmd_err crc16
+TELEM_VER = 3
+FMT = "<BBfffffffBHHHHffBBBHHH"
+BODY_SIZE = struct.calcsize(FMT)          # 56
+PKT_SIZE = len(MAGIC) + BODY_SIZE         # 58
+FLAG_COLOR_FRESH = 64                     # см. flags в robot_link.h
 
 # Разборщик чужой версии НЕ замолкает: магия 0xAA55 попадается и внутри
 # данных, а XOR-сумма пропускает ~1 мусорный кадр из 300. При 200 Гц это
@@ -83,6 +86,7 @@ def _reader():
     global _last, _bad_ver
     since = 0
     have_prev = False
+    color_was = True     # о пропаже свежести цвета - один раз
     while True:
         try:
             chunk = _link.read(max(1, min(_link.in_waiting, 4096)))
@@ -123,18 +127,21 @@ def _reader():
                 del buf[0]
                 since = 1
                 continue
-            crc = 0
-            for b in body[:-1]:
-                crc ^= b
-            if crc != body[-1]:
+            # CRC-16/CCITT-FALSE, как в robot_link.c
+            if binascii.crc_hqx(body[:-2], 0xFFFF) != body[-2] | (body[-1] << 8):
                 del buf[0]
                 since = 1
                 continue
             since = PKT_SIZE
             del buf[:PKT_SIZE]
             vals = struct.unpack(FMT, body)
-            # ver + семь float'ов -> color на индексе 8, каналы 9..12
-            color, cr, cg, cb, cc = vals[8], vals[9], vals[10], vals[11], vals[12]
+            # ver, seq + семь float'ов -> color на индексе 9, каналы 10..13
+            color, cr, cg, cb, cc = vals[9], vals[10], vals[11], vals[12], vals[13]
+            fresh = bool(vals[17] & FLAG_COLOR_FRESH)
+            if fresh != color_was:
+                print("\n[WARN] ESP: датчик цвета не читается - числа ниже старые"
+                      if not fresh else "\nESP: датчик цвета снова читается")
+                color_was = fresh
             with _lock:
                 _last = (cr, cg, cb, cc, color)
 

@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import binascii
 import struct
 import sys
 import threading
@@ -39,11 +40,12 @@ LINK_BAUD = 921600
 
 MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
-# ver yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm status flags crc
-TELEM_VER = 2
-FMT = "<BfffffffBHHHHffBBB"
-BODY_SIZE = struct.calcsize(FMT)          # 49
-PKT_SIZE = len(MAGIC) + BODY_SIZE         # 51
+# ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
+# status flags z_cnt boot_id cmd_err crc16
+TELEM_VER = 3
+FMT = "<BBfffffffBHHHHffBBBHHH"
+BODY_SIZE = struct.calcsize(FMT)          # 56
+PKT_SIZE = len(MAGIC) + BODY_SIZE         # 58
 
 # ── ЗЕРКАЛО порогов из nav.py ────────────────────────────────
 # Держать в согласии с nav.py вручную.
@@ -101,16 +103,16 @@ def _reader():
             if body[0] != TELEM_VER:
                 _bad_ver += 1
                 continue
-            crc = 0
-            for b in body[:-1]:
-                crc ^= b
-            if crc != body[-1]:
+            # CRC-16/CCITT-FALSE, как в robot_link.c
+            if binascii.crc_hqx(body[:-2], 0xFFFF) != body[-2] | (body[-1] << 8):
                 continue
             v = struct.unpack(FMT, body)
-            ax, ay, az = v[5], v[6], v[7]
+            # ver, seq, yaw, yaw_rate, pitch(4), roll(5), ax..az(6-8), color,
+            # cr..cc(10-13), lcm(14), rcm(15)
+            ax, ay, az = v[6], v[7], v[8]
             mag = (ax * ax + ay * ay + az * az) ** 0.5
             with _lock:
-                _last = (v[4], v[3], mag, az, v[12], v[13], v[14])
+                _last = (v[5], v[4], mag, az, v[13], v[14], v[15])
 
 
 def link_report():
@@ -184,7 +186,8 @@ class Detector:
 
 
 def _send(cmd):
-    _link.write((cmd + "\n").encode())
+    b = cmd.encode()
+    _link.write(b + b"*%04X\n" % binascii.crc_hqx(b, 0xFFFF))   # CRC - robot_link.h
     _link.flush()
 
 

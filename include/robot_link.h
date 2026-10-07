@@ -5,7 +5,7 @@
 // sends each side's speed. One UART, full duplex - TX=GPIO3 RX=GPIO9 @ 921600,
 // which on the Pi is the stock /dev/serial0 (Pi GPIO15/GPIO14).
 //
-// ESP -> RPi   binary, 51 bytes, little-endian, 200 Hz:
+// ESP -> RPi   binary, 58 bytes, little-endian, 200 Hz:
 //    [0-1]    magic    0xAA 0x55
 //    [2]      ver      uint8    TELEM_VER - ПОДНИМАТЬ ПРИ ЛЮБОМ ИЗМЕНЕНИИ
 //                               РАСКЛАДКИ НИЖЕ. Он здесь не для красоты:
@@ -20,20 +20,21 @@
 //                               отладки "энкодеры не отвечают", другой -
 //                               "датчик цвета сошёл с ума". С этим байтом
 //                               обе стороны говорят об этом прямо.
-//    [3-6]    yaw      float32  deg 0..360, clockwise-positive
-//    [7-10]   yaw_rate float32  deg/s, clockwise-positive - measured, not a
+//    [3]      seq      uint8    +1 на каждый пакет - RPi считает пропуски
+//    [4-7]    yaw      float32  deg 0..360, clockwise-positive
+//    [8-11]   yaw_rate float32  deg/s, clockwise-positive - measured, not a
 //                               difference of headings, so the RPi's heading
 //                               controller can damp on it without amplifying
 //                               sampling noise into steering chatter
-//    [11-14]  pitch    float32  deg, nose up positive
-//    [15-18]  roll     float32  deg, right side down positive. The field only
+//    [12-15]  pitch    float32  deg, nose up positive
+//    [16-19]  roll     float32  deg, right side down positive. The field only
 //                               tilts the robot in pitch (a ramp), so a large
 //                               roll means hands - see the lift detector in
 //                               nav.py, which votes on this, on accel below,
 //                               and on the colour sensor going dark.
-//    [19-22]  ax       float32  linear acceleration, m/s^2, gravity already
-//    [23-26]  ay       float32  removed, in the SENSOR frame. All zero if the
-//    [27-30]  az       float32  BNO085 refused the report.
+//    [20-23]  ax       float32  linear acceleration, m/s^2, gravity already
+//    [24-27]  ay       float32  removed, in the SENSOR frame. All zero if the
+//    [28-31]  az       float32  BNO085 refused the report.
 //                               az is the yaw axis, i.e. vertical while the
 //                               robot is roughly level. It is sent as three
 //                               components rather than a magnitude because
@@ -43,32 +44,48 @@
 //                               SUSTAINED NET RISE, which only shows up once
 //                               the vertical axis is separated out and
 //                               integrated - see the lift detector in nav.py.
-//    [31]     color    uint8    1=WHITE 2=BLUE 3=BLACK 4=MIRROR 5=RED. Never
+//    [32]     color    uint8    1=WHITE 2=BLUE 3=BLACK 4=MIRROR 5=RED. Never
 //                               0 - a 0 here means the packet was misparsed.
-//    [32-33]  cr       uint16   APDS9960 red,   raw
-//    [34-35]  cg       uint16   APDS9960 green, raw
-//    [36-37]  cb       uint16   APDS9960 blue,  raw
-//    [38-39]  cc       uint16   APDS9960 clear, raw. All four are 0..10250
+//    [33-34]  cr       uint16   APDS9960 red,   raw
+//    [35-36]  cg       uint16   APDS9960 green, raw
+//    [37-38]  cb       uint16   APDS9960 blue,  raw
+//    [39-40]  cc       uint16   APDS9960 clear, raw. All four are 0..10250
 //                               (ATIME=0xF6, ~28ms, gain 16x) - 10250 means
 //                               saturated, and the thresholds are tuned on
 //                               these numbers, not on the colour byte above.
-//    [40-43]  left_cm  float32  signed, since the last 'Z'
-//    [44-47]  right_cm float32  signed, since the last 'Z'
-//    [48]     status   uint8    0=running 1=paused
-//    [49]     flags    uint8    bit0 clicker1, bit1 clicker2,
+//    [41-44]  left_cm  float32  signed, since the last 'Z'
+//    [45-48]  right_cm float32  signed, since the last 'Z'
+//    [49]     status   uint8    0=running 1=paused
+//    [50]     flags    uint8    bit0 clicker1, bit1 clicker2,
 //                               bit2 left odometry live, bit3 right odometry live,
-//                               bit4 BTN_1 held (GPIO47, debounced)
-//    [50]     crc      uint8    XOR of bytes [2..49]
+//                               bit4 BTN_1 held (GPIO47, debounced),
+//                               bit5 гироскоп свежий (счётчик сэмплов BNO085
+//                               рос за последние 50мс; 0 - yaw замер, а не 0°),
+//                               bit6 цвет свежий (удачное чтение APDS9960 не
+//                               старше 150мс; 0 - каналы выше старые)
+//    [51]     z_cnt    uint8    сколько "Z" применено (по модулю 256). Растёт
+//                               ПОСЛЕ обнуления энкодеров: пакет с новым
+//                               значением несёт одометрию уже после "Z".
+//    [52-53]  boot_id  uint16   случайное при старте ESP - смена = ребут
+//    [54-55]  cmd_err  uint16   сколько строк от RPi ESP отверг (нет/не та
+//                               CRC, не разобралась, NaN/inf, длиннее 63)
+//    [56-57]  crc      uint16   CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF)
+//                               по байтам [2..55]; на RPi -
+//                               binascii.crc_hqx(pkt[2:56], 0xFFFF). Была XOR
+//                               в 1 байт - пропускала ~1 мусорный кадр из 300.
 //
-// On the packet size and rate: 51 bytes at 200 Hz is 10200 B/s against the
-// 92160 B/s this link carries, i.e. 11% - and one packet occupies the wire for
-// 0.55 ms. The payload has never been what makes telemetry feel slow, so
+// On the packet size and rate: 58 bytes at 200 Hz is 11600 B/s against the
+// 92160 B/s this link carries, i.e. 13% - and one packet occupies the wire for
+// 0.63 ms. The payload has never been what makes telemetry feel slow, so
 // widening the packet to carry roll and acceleration costs nothing, and the
 // rate went 100 -> 200 Hz because the RPi's control loop closes on this
 // odometry (ENC_POLL_HZ in motor.c moved with it). What actually costs
 // latency is the sampling cadence on both ends and the GIL on the RPi.
 //
-// RPi -> ESP   ASCII, newline-terminated:
+// RPi -> ESP   ASCII, newline-terminated, каждая строка с CRC:
+//    "<команда>*XXXX\n", XXXX - CRC-16/CCITT-FALSE (как у телеметрии) текста
+//    до '*', 4 hex-цифры. Строку без '*' или с неверной суммой ESP
+//    отбрасывает и растит cmd_err. Ниже команды - без этого хвоста.
 //    "M:<L>,<R>\n"  set left/right speed, cm/s at the wheel rim (float, signed)
 //    "T:<L>,<R>[,<cap>]\n"  short torque assist, motor IQ amperes
 //                   (software-clamped). cap - потолок скорости колеса, см/с
@@ -101,6 +118,6 @@
 // Bump on every change to the telemetry layout above. Both readers on the RPi
 // (nav.py, color.py) refuse a packet whose version is not this one and say so
 // instead of quietly printing nonsense.
-#define TELEM_VER 2
+#define TELEM_VER 3
 
 void robot_link_run(void);

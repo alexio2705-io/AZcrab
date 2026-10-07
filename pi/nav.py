@@ -65,6 +65,7 @@ N), робот тем же способом - BFS по уже известной
 
 from __future__ import annotations
 
+import binascii
 import json
 import math
 import os
@@ -602,11 +603,18 @@ def time_report(since, wall_s, prefix="  ⏱"):
 
 MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
-# ver yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm status flags crc
-TELEM_VER = 2
-FMT = "<BfffffffBHHHHffBBB"
-BODY_SIZE = struct.calcsize(FMT)          # 49
-PKT_SIZE = len(MAGIC) + BODY_SIZE         # 51
+# ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
+# status flags z_cnt boot_id cmd_err crc16
+TELEM_VER = 3
+FMT = "<BBfffffffBHHHHffBBBHHH"
+BODY_SIZE = struct.calcsize(FMT)          # 56
+PKT_SIZE = len(MAGIC) + BODY_SIZE         # 58
+
+
+def crc16(data):
+    """CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) - как crc16_ccitt() в
+    robot_link.c. Ей закрыт и пакет телеметрии, и каждая команда к ESP."""
+    return binascii.crc_hqx(data, 0xFFFF)
 
 # ── Диагностика рассинхрона версий ───────────────────────────
 # Разборщик чужой версии НЕ замолкает, хотя кажется, что должен: магия 0xAA55
@@ -618,6 +626,11 @@ PKT_SIZE = len(MAGIC) + BODY_SIZE         # 51
 # Мода этих расстояний - НАСТОЯЩИЙ размер пакета, который шлёт ESP.
 _magic_gaps = {}
 _bad_ver = 0
+# Счётчики ошибок линка с нашей стороны (ESP свою - отвергнутые команды -
+# присылает в пакете, см. "esp_cmd_err"): кадры с маркером и нашей версией,
+# но не той CRC, и пакеты, пропущенные по разрыву seq.
+_bad_crc = 0
+_seq_lost = 0
 
 
 def link_report():
@@ -632,6 +645,14 @@ def link_report():
     return (f"ESP шлёт пакеты по {gap} байт ({hits} раз), а этот nav.py ждёт "
             f"{PKT_SIZE} и версию {TELEM_VER}{tail} -> "
             f"ПРОШИВКА И .PY РАЗНЫХ ВЕРСИЙ, перезалей обе стороны")
+
+
+def link_errors():
+    """Счётчики ошибок линка с обеих сторон - одной строкой."""
+    with _lock:
+        cmd_err = _state["esp_cmd_err"]
+    return (f"битых CRC {_bad_crc}, пропущено пакетов {_seq_lost}, "
+            f"ESP отверг команд {cmd_err}")
 
 # ── здоровье линка ───────────────────────────────────────────
 # Пакет старше этого - управлять по нему нельзя: yaw, одометрия и флаг
@@ -916,6 +937,9 @@ _state = {
     "telem_ok": False,
     "enc_left_online": False, "enc_right_online": False,
     "esp_status": 0,    # 0=running 1=paused
+    "z_cnt": 0,         # сколько "Z" ESP применил (mod 256) - см. wait_odo_zeroed()
+    "gyro_fresh": False, "color_fresh": False,   # флаги свежести ESP
+    "esp_cmd_err": 0,   # сколько наших команд ESP отверг
 }
 _esp_running = threading.Event()
 _scan_cnt = 0
@@ -962,10 +986,13 @@ def _link_reopen():
 
 
 def _telem_thread():
-    global _telem_seq, _telem_t, _bad_ver
+    global _telem_seq, _telem_t, _bad_ver, _bad_crc, _seq_lost
     buf = bytearray()
     since = 0            # байт от предыдущего маркера 0xAA55 до текущего
     have_prev = False
+    last_seq = None      # seq прошлого пакета - для счёта пропусков
+    boot_id = None       # boot_id ESP - его смена значит ребут
+    gyro_was = color_was = True   # чтобы сказать о пропаже свежести один раз
     while True:
         try:
             # 4096, а не 256: при TELEM_HZ=200 в 256 байт влезает всего
@@ -1004,17 +1031,34 @@ def _telem_thread():
                 del buf[0]
                 since = 1
                 continue
-            crc = 0
-            for b in body[:-1]:
-                crc ^= b
-            if crc != body[-1]:
+            if crc16(body[:-2]) != body[-2] | (body[-1] << 8):
+                _bad_crc += 1
                 del buf[0]
                 since = 1
                 continue
             since = PKT_SIZE          # столько сейчас будет съедено
             del buf[:PKT_SIZE]
-            (_ver, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
-             cr, cg, cb, cc, lcm, rcm, status, flags, _crc) = struct.unpack(FMT, body)
+            (_ver, seq, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
+             cr, cg, cb, cc, lcm, rcm, status, flags,
+             z_cnt, esp_boot, cmd_err, _crc) = struct.unpack(FMT, body)
+            # Пока только в лог: реакции на поле на эти флаги нет.
+            if boot_id is not None and esp_boot != boot_id:
+                print(f"\n  [WARN] ESP ПЕРЕЗАГРУЗИЛСЯ (boot_id {boot_id:04X} -> "
+                      f"{esp_boot:04X}): одометрия и пауза на ESP сброшены")
+                last_seq = None       # seq тоже начат заново - не пропуск
+            boot_id = esp_boot
+            if last_seq is not None:
+                _seq_lost += (seq - last_seq - 1) & 0xFF
+            last_seq = seq
+            gyro_fresh, color_fresh = bool(flags & 32), bool(flags & 64)
+            if gyro_fresh != gyro_was:
+                print("\n  [WARN] гироскоп ESP замолчал - yaw замер"
+                      if not gyro_fresh else "\n  гироскоп ESP снова идёт")
+                gyro_was = gyro_fresh
+            if color_fresh != color_was:
+                print("\n  [WARN] датчик цвета ESP не читается - цвет старый"
+                      if not color_fresh else "\n  датчик цвета ESP снова читается")
+                color_was = color_fresh
             with _lock:
                 _state["yaw"] = float(yaw)
                 _state["yaw_rate"] = float(yaw_rate)
@@ -1035,6 +1079,10 @@ def _telem_thread():
                 _state["enc_right_online"] = bool(flags & 8)
                 _state["btn1"] = bool(flags & 16)
                 _state["esp_status"] = int(status)
+                _state["z_cnt"] = int(z_cnt)
+                _state["gyro_fresh"] = gyro_fresh
+                _state["color_fresh"] = color_fresh
+                _state["esp_cmd_err"] = int(cmd_err)
                 _state["telem_ok"] = True
             # Вне _lock: у этих двух свой смысл (такт петли и здоровье
             # линка), и читаются они без блокировки, атомарно по GIL.
@@ -1198,6 +1246,25 @@ def wait_telem(last_seq, timeout=TELEM_WAIT_S):
 
 def get_odo():
     with _lock: return _state["lcm"], _state["rcm"]
+
+
+def get_z_cnt():
+    with _lock: return _state["z_cnt"]
+
+
+def wait_odo_zeroed(z0, timeout=0.2):
+    """Ждёт пакет, где ESP уже применил "Z" (z_cnt сменился с z0). Одометрия в
+    _state с этого пакета и дальше - после обнуления: ESP растит z_cnt строго
+    после него, а _state обновляется целым пакетом под _lock. False - не
+    дождались за timeout."""
+    end = time.monotonic() + timeout
+    seq = _telem_seq
+    while get_z_cnt() == z0:
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        seq = wait_telem(seq, left)
+    return True
 
 
 def encoders_online():
@@ -1540,8 +1607,9 @@ def interrupted():
 
 
 def _cmd(s):
+    b = s.encode()
     with _write_lock:
-        _link.write((s + "\n").encode())
+        _link.write(b + b"*%04X\n" % crc16(b))    # CRC - см. robot_link.h
         _link.flush()
 
 
@@ -2502,8 +2570,12 @@ def drive_cells(max_cells, expect_ramp=False):
                          робот уже вернулся в центр исходной клетки
       'bumper_*'       - концевики
     """
+    z0 = get_z_cnt()
     zero_odo()
-    time.sleep(0.04)
+    # Раньше - sleep(0.04) вслепую: пакет с одометрией ДО "Z" брался за базу,
+    # и защита от скачка (только >=100см) пропускала лишнюю клетку.
+    if not wait_odo_zeroed(z0):
+        print("    [WARN] ESP не подтвердил 'Z' за 0.2с - база одометрии без гарантии")
 
     target_yaw = snap_target()
 
@@ -4026,6 +4098,7 @@ def main():
             _lidar_proc.terminate()
         print(f"  лидар: неполных оборотов отброшено {_lidar_dropped}, "
               f"перезапусков процесса {_lidar_restarts}")
+        print("  линк ESP: " + link_errors())
         # Карта не критична для самого заезда, поэтому без долгого ожидания:
         # если процесс не отвечает на SIGTERM за секунду, просто оставляем
         # его - следующий запуск лишь получит [WARN] про занятый порт.

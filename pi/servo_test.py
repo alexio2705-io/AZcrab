@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import binascii
 import os
 import sys
 import time
@@ -52,7 +53,8 @@ def esp_alive(link: serial.Serial, wait_s: float = 1.0) -> int:
 def dispense(link: serial.Serial, side: str) -> None:
     name = "левый" if side == "L" else "правый"
     print(f"  K:{side} - {name} отсек...", end="", flush=True)
-    link.write(f"K:{side}\n".encode())
+    cmd = f"K:{side}".encode()
+    link.write(cmd + b"*%04X\n" % binascii.crc_hqx(cmd, 0xFFFF))   # CRC - robot_link.h
     link.flush()
     time.sleep(DISPENSE_MOVE_S)
     print(" готово")
