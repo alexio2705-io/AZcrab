@@ -121,7 +121,14 @@ class VictimDetector:
         if key in self.scanned:
             return None
         self.scanned.add(key)
+        return self.read_wall(cell_x, cell_y, wall_dir)
 
+    def read_wall(self, cell_x: int, cell_y: int, wall_dir=None):
+        """То же чтение, что в scan(), но без дедупа по (клетка, стена): по
+        сигналу наблюдателя на ходу стену исходной клетки читаем ещё раз -
+        стоя в центре её уже смотрели, но метка была вне кадра. В результате
+        дополнительно 'box_y' - (y1, y2) рамки в долях высоты кадра, по нему
+        nav.py считает, где метка вдоль стены (дедуп по положению)."""
         # ── Проход 1: обычный кадр — по нему решаем, что за метка ──
         # (модель обучена на таких кадрах; на снимке 500 мс она может,
         # например, принять крупную Ω за когнитивную цель)
@@ -215,6 +222,7 @@ class VictimDetector:
             'blink':    blink,
             'rings':    rings,      # цвета колец от центра наружу (когнитивная) или None
             'checksum': checksum,
+            'box_y':    (round(xyxy[1] / still.shape[0], 4), round(xyxy[3] / still.shape[0], 4)),
         }
         self.log.append(result)
         tag = '★ ЖЕРТВА' if blink else '○ МЕТКА (без мигания)'
@@ -223,6 +231,21 @@ class VictimDetector:
               f'клетка=({cell_x},{cell_y})  класс={cls_name}  conf={conf:.2f}{rings_str}'
               f'  [{shot}, {dt:.1f}с]')
         return result
+
+    def best_fast(self):
+        """Стоя, после остановки по сигналу наблюдателя: свежий кадр 320,
+        лучшая рамка conf >= CONF_FAST не мельче MIN_BOX_PX. Возвращает
+        (класс, уверенность, (y1, y2) в долях высоты кадра) или None."""
+        self.cam.latest()                  # сброс кадра, снятого ещё на ходу
+        frame = self.cam.latest()
+        found = self._best(frame, CONF_FAST)
+        if found is None:
+            return None
+        cls_name, conf, box = found
+        if max(box[2] - box[0], box[3] - box[1]) < MIN_BOX_PX:
+            return None
+        h = frame.shape[0]
+        return cls_name, conf, (box[1] / h, box[3] / h)
 
     def close(self):
         self.cam.close()
