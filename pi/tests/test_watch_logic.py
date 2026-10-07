@@ -93,5 +93,84 @@ class TestGeometry(unittest.TestCase):
         self.assertEqual(wl.attribute((0, 0), (0, 1), 0, "left", 10.0), ((0, 0), 3))
 
 
+class TestRegistry(unittest.TestCase):
+    def setUp(self):
+        self.reg = wl.MarkRegistry()
+        self.key = (1, 0, 0)
+        self.reg.add(self.key, 205.0, "read")
+
+    def test_near_within_15cm(self):
+        self.assertEqual(self.reg.near(self.key, 354.9), (self.key, 205.0, "read"))
+
+    def test_not_near_at_15cm(self):
+        self.assertIsNone(self.reg.near(self.key, 355.0))
+
+    def test_other_wall_is_not_near(self):
+        self.assertIsNone(self.reg.near((3, 1, 0), 205.0))
+
+    def test_nearest_wins(self):
+        self.reg.add(self.key, 300.0, "rejected")
+        self.assertEqual(self.reg.near(self.key, 290.0)[2], "rejected")
+
+
+class TestDecideStop(unittest.TestCase):
+    def setUp(self):
+        self.reg = wl.MarkRegistry()
+        self.key = (1, 0, 0)
+
+    def decide(self, conf=0.6, side_px=60, along=500.0, busy=False):
+        return wl.decide_stop(conf, side_px, self.key, along, self.reg, busy, 0.25, 40)
+
+    def test_stop(self):
+        self.assertEqual(self.decide(), (True, "стоп"))
+
+    def test_low_conf(self):
+        self.assertEqual(self.decide(conf=0.2), (False, "conf"))
+
+    def test_small_box(self):
+        self.assertEqual(self.decide(side_px=39), (False, "мелкая"))
+
+    def test_busy(self):
+        self.assertEqual(self.decide(busy=True), (False, "уже стоим"))
+
+    def test_duplicate_of_read(self):
+        self.reg.add(self.key, 450.0, "read")
+        self.assertEqual(self.decide(), (False, "дубль"))
+
+    def test_duplicate_of_rejected(self):
+        self.reg.add(self.key, 560.0, "rejected")
+        self.assertEqual(self.decide(), (False, "отбракована раньше"))
+
+
+class TestStopAndCreep(unittest.TestCase):
+    def test_stop_point(self):
+        self.assertAlmostEqual(wl.stop_point_cm(10.0, 55.0, 300.0), 10.0 + 3025.0 / 600.0)
+
+    def test_stop_point_standing(self):
+        self.assertAlmostEqual(wl.stop_point_cm(12.0, 0.0, 300.0), 12.0)
+
+    def test_creep_box_centered_no_move(self):
+        self.assertEqual(wl.creep_to_mark((0.45, 0.55), 999.0, 15.0), (0.0, "рамка"))
+
+    def test_creep_box_above_center_goes_forward(self):
+        mm, src = wl.creep_to_mark((0.2, 0.4), 0.0, 15.0)
+        self.assertEqual(src, "рамка")
+        assert mm is not None
+        self.assertAlmostEqual(mm, 31.0, delta=0.5)
+
+    def test_creep_box_cut_by_edge(self):
+        mm, src = wl.creep_to_mark((0.0, 0.2), 0.0, 15.0)
+        self.assertEqual(src, "рамка")
+        assert mm is not None
+        self.assertAlmostEqual(mm, wl.px_to_mm(0.1))
+        self.assertGreater(mm, 0.0)
+
+    def test_creep_by_estimate_backwards(self):
+        self.assertEqual(wl.creep_to_mark(None, -95.0, 15.0), (-95.0, "оценка"))
+
+    def test_creep_too_far_rejected(self):
+        self.assertEqual(wl.creep_to_mark(None, 160.0, 15.0), (None, "оценка"))
+
+
 if __name__ == "__main__":
     unittest.main()

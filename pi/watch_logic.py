@@ -76,3 +76,69 @@ def attribute(cell, next_cell, hdg, side, traveled_mm):
     """Метка, прочитанная на ходу: (клетка, стена). Клетка - по одометрии
     робота (см. ATTRIB_MM), стена - сбоку, со стороны камеры."""
     return (cell if traveled_mm < ATTRIB_MM else next_cell), wall_of(hdg, side)
+
+
+DEDUP_MM = 150.0       # повтор ближе этого на той же стене - та же метка
+CREEP_MAX_MM = 150.0   # подъезд к метке дальше этого - оценке не верим
+EDGE_MARGIN = 0.10     # "рамка целиком в кадре" - с таким полем от краёв
+
+
+class MarkRegistry:
+    """Где на стенах уже есть метки: 'read' - прочитана (на ходу или стоя),
+    'rejected' - наблюдатель сработал, а стоя ничего не подтвердилось. Ни
+    то, ни другое больше не останавливает робота (каждая лишняя остановка -
+    ~2с), а прочитанная ещё и не репортится второй раз."""
+
+    def __init__(self, dedup_mm=DEDUP_MM):
+        self.dedup_mm = dedup_mm
+        self.marks = []          # (ключ стены, мм вдоль неё, вид)
+
+    def add(self, key, along, kind):
+        self.marks.append((key, along, kind))
+
+    def near(self, key, along):
+        """Ближайшая запись на той же стене ближе dedup_mm или None."""
+        best = None
+        for k, a, kind in self.marks:
+            d = abs(a - along)
+            if k == key and d < self.dedup_mm and (best is None or d < abs(best[1] - along)):
+                best = (k, a, kind)
+        return best
+
+
+def decide_stop(conf, side_px, key, along, registry, busy, conf_min, min_box_px):
+    """Тормозить ли ради рамки наблюдателя: (да/нет, причина для лога).
+    min_box_px - тот же фильтр дальних стен, что в VictimDetector.scan()."""
+    if conf < conf_min:
+        return False, "conf"
+    if side_px < min_box_px:
+        return False, "мелкая"
+    if busy:
+        return False, "уже стоим"
+    dup = registry.near(key, along)
+    if dup is not None:
+        return False, "дубль" if dup[2] == "read" else "отбракована раньше"
+    return True, "стоп"
+
+
+def stop_point_cm(traveled_cm, v_cms, decel_cms2):
+    """Где встанет робот, если тормозить с v_cms с постоянным замедлением."""
+    return traveled_cm + v_cms * v_cms / (2.0 * decel_cms2)
+
+
+def creep_to_mark(box_y, est_mm, tol_mm, max_mm=CREEP_MAX_MM):
+    """Сколько подъехать, чтобы метка встала в центр кадра: (мм или None,
+    если такому подъезду не верим; источник). box_y - (y1, y2) рамки со
+    стоячего кадра в долях высоты или None (метки в кадре уже нет - обычно
+    робот проехал её на тормозном пути); тогда est_mm - оценка по
+    координате, запомненной на ходу."""
+    if box_y is not None:
+        y1, y2 = box_y
+        off = px_to_mm((y1 + y2) / 2.0)
+        inside = y1 >= EDGE_MARGIN and y2 <= 1.0 - EDGE_MARGIN
+        mm, src = (0.0 if inside and abs(off) < tol_mm else off), "рамка"
+    else:
+        mm, src = est_mm, "оценка"
+    if abs(mm) > max_mm:
+        return None, src
+    return mm, src
