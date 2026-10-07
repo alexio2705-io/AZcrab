@@ -84,7 +84,8 @@ import RPi.GPIO as GPIO
 from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
 from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH
 import tile_classify
-from victim_detect import VictimDetector
+import watch_logic
+from victim_detect import VictimDetector, CONF_FAST, MIN_BOX_PX, YOLO_MODEL_PATH, SAVE_DIR
 from leds import NeoPixels, blink_pink, blink_return, RED, SLEEP, VICTIM_STOP_S, MARGIN_S
 
 LINK_PORT = "/dev/serial0"
@@ -610,6 +611,12 @@ def time_report(since, wall_s, prefix="  ⏱"):
     return f"{prefix} {wall_s:.1f}с: " + ", ".join(parts)
 
 
+def tick_report():
+    """Такт drive_cells с наблюдателем меток и без - см. _tick_ms."""
+    return "  ⏱ такт drive_cells, мс: " + "; ".join(
+        f"наблюдатель {k}: {s.fmt()}" for k, s in _tick_ms.items())
+
+
 MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
 # ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
@@ -921,6 +928,16 @@ _victim_log = []
 # индицировали второй раз (в логе: (0,-1007) стена N - правой, потом левой),
 # а пустую стену просто сканировали дважды.
 _scanned_walls = set()
+
+# Наблюдатель меток на ходу (victim_watch.py): None при --no-vision, если не
+# поднялся или умер. _marks - где на стенах уже прочитаны (или отбракованы)
+# метки: повтор ближе 15см не останавливает робота и не репортится ни на
+# ходу, ни при скане стоя (см. watch_logic.MarkRegistry).
+_watcher = None
+_marks = watch_logic.MarkRegistry()
+# Интервал между тактами drive_cells, мс - с наблюдателем и без: им видно,
+# мешает ли инференс петле управления (итог - в конце заезда).
+_tick_ms = {"вкл": watch_logic.Stats(), "выкл": watch_logic.Stats()}
 
 # Снимок карты/меток для веб-страницы. Пишется маленьким JSON-файлом в
 # редкие моменты (приезд в клетку, находка метки), а не каждый тик петли
@@ -1880,7 +1897,7 @@ def record_ramp(cx, cy, d, info, measure=None):
 
 def level_of(cy):
     """Этаж клетки по её cy - см. LEVEL_STRIDE."""
-    return int(math.floor((cy + LEVEL_STRIDE / 2) / LEVEL_STRIDE))
+    return watch_logic.level_of(cy, LEVEL_STRIDE)
 
 
 def _set_wall(cx, cy, d, present):
@@ -2567,7 +2584,21 @@ STATUS_PERIOD_S = 0.1     # строка статуса в drive_cells не ча
 
 
 @_timed("ход")
-def drive_cells(max_cells, expect_ramp=False):
+def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None):
+    """См. _drive_cells. cell, hdg - клетка, из которой едем, и курс по карте:
+    без них наблюдатель меток на ходу не включается (victim_watch.py). Что бы
+    ни остановило поездку, наблюдатель после неё выключен."""
+    try:
+        return _drive_cells(max_cells, expect_ramp, cell, hdg)
+    finally:
+        if _watcher is not None:
+            _watcher.arm(set())
+            line = _watcher.take_stats()
+            if line:
+                print(line)
+
+
+def _drive_cells(max_cells, expect_ramp, cell, hdg):
     """Едет вперёд, пересекая границы клеток БЕЗ остановки, пока очередная
     клетка не потребует поворота (справа открылось или спереди стена), пока
     не кончится лимит клеток, или пока не вмешается бампер/авария/пауза.
@@ -2686,6 +2717,7 @@ def drive_cells(max_cells, expect_ramp=False):
 
     print(f"    движение  курс={target_yaw:.0f}°")
 
+    watch_armed = False
     t0 = time.monotonic()
     t_cell = time.monotonic()    # таймаут считаем на клетку, а не на весь прогон
     while True:
@@ -2719,6 +2751,7 @@ def drive_cells(max_cells, expect_ramp=False):
         last_l, last_r = cl, cr
 
         now_m = time.monotonic()
+        _tick_ms["вкл" if watch_armed else "выкл"].add((now_m - last_loop_t) * 1000.0)
         loop_dt = min(0.05, now_m - last_loop_t)
         last_loop_t = now_m
         odo_hist.append((now_m, traveled_cm))
@@ -3687,7 +3720,8 @@ def flood_fill_run(max_cells):
             if replan:
                 continue
 
-        n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps)
+        n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps,
+                                cell=(cx, cy), hdg=hdg)
         if n > 0:
             if reason != "ramp":
                 open_edge(cx, cy, hdg)   # проехали - значит, проход (горку пишет record_ramp)
@@ -3857,7 +3891,8 @@ def return_to_start(cx, cy, hdg, checkpoint):
             hdg = d
             _write_state(cx, cy, hdg, checkpoint, "returning")
 
-        n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps)
+        n, reason = drive_cells(1, expect_ramp=(cx, cy, hdg) in _ramps,
+                                cell=(cx, cy), hdg=hdg)
         if n > 0:
             if reason != "ramp":
                 open_edge(cx, cy, hdg)
@@ -4139,6 +4174,7 @@ def main():
         print("\nОстановлено.")
     finally:
         print(time_report({}, time.monotonic() - t_run, prefix="⏱ весь заезд"))
+        print(tick_report())
         # Ошибка порта не должна обрывать остальную уборку ниже.
         try:
             brake()
