@@ -786,6 +786,11 @@ BLACK_FRACTION = 0.15
 # под этот порог, то есть стала бы "не знаю" вместо "нельзя". 8 даёт 3.4x.
 TILE_MIN_C = 8             # ниже - датчик ничего не видит, не гадаем
 
+# Датчик цвета стоит на переднем бампере по центру - на 9 см впереди центра
+# робота. Плитка, которую он видит, - под ним, а не под центром: на ходу он
+# заезжает на следующую клетку на 9 см раньше центра (см. black_retreat).
+COLOR_SENSOR_FWD_CM = 9.0
+
 # Когда передние колёса заезжают на препятствие, нос поднимается и датчик
 # цвета отдаляется от пола. Малый C в этот момент — не чёрная плитка.
 # После возврата в горизонт даём подвеске/датчику короткое время опуститься.
@@ -922,6 +927,13 @@ _blocked = set()   # клетки за рёбрами, которые оказа
 WALL_VOTE_CAP = 3
 _wall_votes = {}
 _edge_fixed = {}
+# Запреты двух сортов. Чёрная плитка - настоящая яма, туда нельзя никогда
+# (_black_cells). Всё остальное, закрытое "по факту" (бампер, препятствие,
+# застряли, стена вплотную), - мягкое (_soft_edges): если путь к старту
+# иначе не находится, BFS попробует и через них (см. find_home_path). Заезд
+# кончается только на старте - сдаваться по карте нельзя.
+_black_cells = set()
+_soft_edges = set()
 # Горки: (cx, cy, d) -> (bx, by, плиток, +1 вверх/-1 вниз). Ребро из клетки
 # у подножия (или гребня) по направлению d ведёт не в соседа, а сразу в
 # клетку на другом конце горки, на другом этаже (см. LEVEL_STRIDE). Сами
@@ -952,6 +964,16 @@ _marks = watch_logic.MarkRegistry()
 # Интервал между тактами drive_cells, мс - с наблюдателем и без: им видно,
 # мешает ли инференс петле управления (итог - в конце заезда).
 _tick_ms = {"вкл": watch_logic.Stats(), "выкл": watch_logic.Stats()}
+
+# Для пульта (live.py / dash_web.py): поза и фаза с последнего _write_state,
+# ход drive_cells (обновляется вместе со строкой статуса, ≤10 Гц), начало
+# заезда. Только простые присваивания - поток пульта их лишь читает.
+_live = {"cx": 0, "cy": 0, "hdg": 0, "cp": (0, 0, 0), "phase": "boot", "map_ver": 0}
+_drive_live = None          # {"cell", "rem_mm", "spd", "steer", "mode", "t"} или None
+_t_run = None               # time.monotonic() старта заезда
+_tile_last = None           # последний результат tile_color()
+_live_pub = None
+_live_tee = None
 
 # Снимок карты/меток для веб-страницы. Пишется маленьким JSON-файлом в
 # редкие моменты (приезд в клетку, находка метки), а не каждый тик петли
@@ -1366,6 +1388,12 @@ def black_threshold():
 
 def tile_color():
     """Цвет плитки под роботом по сырым каналам APDS9960."""
+    global _tile_last
+    _tile_last = _tile_color()
+    return _tile_last
+
+
+def _tile_color():
     global _color_ignore_until
     if not USE_COLOR_SENSOR:
         return TILE_UNKNOWN
@@ -1970,9 +1998,13 @@ def vote_wall(cx, cy, d, present):
     _set_wall(cx, cy, d, new)
 
 
-def close_edge(cx, cy, d):
-    """Ребро непроезжее по факту (упёрлись) - навсегда, голоса не в счёт."""
-    _edge_fixed[_edge_key(cx, cy, d)] = True
+def close_edge(cx, cy, d, soft=True):
+    """Ребро непроезжее по факту (упёрлись) - голоса больше не в счёт.
+    soft - закрыто не чёрной плиткой: открыть его снова может проезд."""
+    key = _edge_key(cx, cy, d)
+    _edge_fixed[key] = True
+    if soft:
+        _soft_edges.add(key)
     _set_wall(cx, cy, d, True)
 
 
@@ -1981,7 +2013,14 @@ def open_edge(cx, cy, d):
     оно уже было закрыто по факту, это сильнее: туда упирались."""
     key = _edge_key(cx, cy, d)
     if _edge_fixed.get(key) is True:
-        return
+        if key not in _soft_edges:
+            return
+        # Мягкий запрет, а мы проехали (BFS повёл через него, когда иначе
+        # пути не было) - значит, проход: бампер/застревание были случайностью.
+        _soft_edges.discard(key)
+        n = _next_cell(cx, cy, d)
+        if n not in _black_cells:
+            _blocked.discard(n)
     _edge_fixed[key] = False
     _set_wall(cx, cy, d, False)
 
@@ -1996,13 +2035,17 @@ def set_cell_walls(cx, cy, hdg, walls_rel):
         vote_wall(cx, cy, rel_to_abs[rel], present)
 
 
-def block_direction(cx, cy, d):
+def block_direction(cx, cy, d, black=False):
     """Считать ребро (cx,cy)->d непроезжим, хотя лидар мог видеть его как
     открытое - для случаев, которые лидар не предсказывает (чёрная плитка,
     непреодолённое препятствие, бампер вплотную). BFS будет обходить его
-    так же, как настоящую стену."""
-    close_edge(cx, cy, d)
-    _blocked.add(_next_cell(cx, cy, d))
+    так же, как настоящую стену. black - за ребром чёрная: запрет жёсткий,
+    остальные мягкие (см. _soft_edges)."""
+    close_edge(cx, cy, d, soft=not black)
+    n = _next_cell(cx, cy, d)
+    _blocked.add(n)
+    if black:
+        _black_cells.add(n)
 
 
 def open_dirs(cx, cy):
@@ -2031,11 +2074,79 @@ def find_path_bfs(start, goal_test, hdg=0):
                             SIDE_ORDER[_side_pref])
 
 
+def _open_dirs_relaxed(level):
+    """open_dirs() с ослабленными запретами: level 1 - мягко закрытые рёбра
+    (бампер, препятствие, застревание) и клетки за ними тоже проезжие;
+    level 2 - ещё и рёбра, про которые ничего не известно. Чёрные - никогда."""
+    def dirs(cx, cy):
+        cell = _maze.get((cx, cy))
+        if cell is None:
+            return []
+        out = []
+        for d in range(4):
+            n = _next_cell(cx, cy, d)
+            if n in _black_cells:
+                continue
+            ok = (cell[d] is False
+                  or (_edge_key(cx, cy, d) in _soft_edges)
+                  or (level >= 2 and cell[d] is None))
+            if ok:
+                out.append(d)
+        return out
+    return dirs
+
+
+def find_home_path(cx, cy, hdg):
+    """Путь на старт: обычный BFS, а если по карте его нет - с ослабленными
+    запретами. Настоящий лабиринт связный, и раскладку чёрных судьи проверяют
+    на проходимость - значит, "старт недостижим" - это ошибка в карте (мягкий
+    запрет, недомер), а не повод прекращать заезд. None - не нашлось и так."""
+    goal = lambda c: c == (0, 0)     # noqa: E731
+    path = find_path_bfs((cx, cy), goal, hdg)
+    if path is not None:
+        return path
+    for level, why in ((1, "через мягко закрытые рёбра"), (2, "и через неизвестные рёбра")):
+        path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level), _next_cell, goal,
+                                SIDE_ORDER[_side_pref])
+        if path is not None:
+            print(f"  [WARN] по карте старт недостижим - пробую путь {why}")
+            return path
+    return None
+
+
 def find_frontier_path(cx, cy, hdg=0):
     """Путь до ближайшей ещё не посещённой клетки - см. find_path_bfs().
     None означает, что разведанная часть лабиринта исчерпана: из текущей
     клетки по известным открытым рёбрам больше некуда идти."""
     return find_path_bfs((cx, cy), lambda c: c not in _visited, hdg)
+
+
+def _map_dict(cx, cy, hdg, checkpoint, phase):
+    """Карта + метки одним словарём - для state.json и для пульта. Читается
+    и из потока пульта, пока главный поток карту меняет: list() над dict/set
+    в CPython проходит под GIL целиком, так что копии согласованы."""
+    return {
+        "ts": time.strftime("%H:%M:%S"),
+        "phase": phase,
+        "robot": {"cx": cx, "cy": cy, "hdg": hdg, "dir": _DIR_NAME[hdg]},
+        "checkpoint": {"cx": checkpoint[0], "cy": checkpoint[1],
+                       "hdg": checkpoint[2]},
+        # "x,y" вместо кортежа - ключи JSON обязаны быть строками.
+        "maze": {f"{x},{y}": list(walls) for (x, y), walls in list(_maze.items())},
+        "visited": [[x, y] for x, y in list(_visited)],
+        "blocked": [[x, y] for x, y in list(_blocked)],
+        "blue_done": [[x, y] for x, y in list(_blue_cells)],
+        "level_stride": LEVEL_STRIDE,
+        "ramps": [[x, y, d, bx, by, n, sgn]
+                  for (x, y, d), (bx, by, n, sgn) in list(_ramps.items()) if sgn > 0],
+        "victims": list(_victim_log),
+    }
+
+
+def _note_state(cx, cy, hdg, checkpoint, phase):
+    """Поза и фаза для пульта (live.py) - в памяти, без I/O."""
+    _live.update(cx=cx, cy=cy, hdg=hdg, cp=tuple(checkpoint), phase=phase,
+                 map_ver=_live["map_ver"] + 1)
 
 
 def _write_state(cx, cy, hdg, checkpoint, phase):
@@ -2046,23 +2157,9 @@ def _write_state(cx, cy, hdg, checkpoint, phase):
     записанный JSON, даже если откроет файл ровно в момент записи.
     Ошибки диска/прав не должны ронять заезд - лог и молча пропускаем.
     """
+    _note_state(cx, cy, hdg, checkpoint, phase)
     try:
-        data = {
-            "ts": time.strftime("%H:%M:%S"),
-            "phase": phase,
-            "robot": {"cx": cx, "cy": cy, "hdg": hdg, "dir": _DIR_NAME[hdg]},
-            "checkpoint": {"cx": checkpoint[0], "cy": checkpoint[1],
-                           "hdg": checkpoint[2]},
-            # "x,y" вместо кортежа - ключи JSON обязаны быть строками.
-            "maze": {f"{x},{y}": walls for (x, y), walls in _maze.items()},
-            "visited": [[x, y] for x, y in _visited],
-            "blocked": [[x, y] for x, y in _blocked],
-            "blue_done": [[x, y] for x, y in _blue_cells],
-            "level_stride": LEVEL_STRIDE,
-            "ramps": [[x, y, d, bx, by, n, sgn]
-                      for (x, y, d), (bx, by, n, sgn) in _ramps.items() if sgn > 0],
-            "victims": _victim_log,
-        }
+        data = _map_dict(cx, cy, hdg, checkpoint, phase)
         tmp = STATE_PATH + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f)
@@ -2608,9 +2705,11 @@ def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None):
     ("прямо или стоп", по стенам впереди из corridor.py), а не прежнее
     "справа открыто или спереди стена"; проеханные клетки план сам заносит в
     карту. Без plan - прежнее поведение."""
+    global _drive_live
     try:
         return _drive_cells(max_cells, expect_ramp, cell, hdg, plan)
     finally:
+        _drive_live = None
         if _watcher is not None:
             _watcher.arm(set())
             line = _watcher.take_stats()
@@ -2695,7 +2794,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
     #            тормозить у границы клетки уже нельзя - вдруг это горка
     #   'on'   - горка: едем без цели по одометрии, передний лидар не слушаем
     #   'exit' - снова ровно, цель - центр первой клетки после гребня
-    global _last_ramp
+    global _last_ramp, _drive_live
     _last_ramp = None
     ramp_state = None
     ramp_sign = 0
@@ -2874,13 +2973,16 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
             # Назад - в центр клетки перед чёрной. Без остановок чёрная бывает
             # и над клеткой, которую план уже засчитал пройденной.
             cells, black_back_cm = runplan.black_retreat(traveled_cm, boundary_cm,
-                                                         cells, cell_cm)
+                                                         cells, cell_cm,
+                                                         COLOR_SENSOR_FWD_CM)
             print(f"\n    ЧЁРНАЯ (C={get_rgbc()[3]}) на {traveled_cm*10:.0f}мм - "
                   f"откат {black_back_cm*10:.0f}мм")
             break
         if plan is not None and tile != TILE_UNKNOWN:
-            # Над какой клеткой датчик: N - уже за её границей (+15мм).
-            k_under = cells + 1 if traveled_cm >= boundary_cm - cell_cm / 2.0 + 1.5 else cells
+            # Над какой клеткой датчик (он на бампере, впереди центра): N -
+            # уже за её границей (+15мм).
+            k_under = runplan.sensor_cell(traveled_cm, boundary_cm, cells, cell_cm,
+                                          COLOR_SENSOR_FWD_CM)
             tiles.setdefault(k_under, set()).add(tile)
             if (tile == TILE_BLUE and k_under == cells >= 1 and not stopping
                     and traveled_cm < boundary_cm - cell_cm - 3.0):
@@ -3151,6 +3253,13 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                           False if fn >= 2 and fn > fv else None)
                 if TILE_BLUE in tiles.get(kN, ()):
                     print(f"\n    → кл.{kN}: синяя - стоп в её центре")
+                    go, walls_rel = False, {}
+                elif USE_COLOR_SENSOR and not tiles.get(kN):
+                    # Над клеткой датчик ни разу не прочитал цвет - он был
+                    # слеп (нос задран на бугорке, PITCH_COLOR_GUARD_DEG). Это
+                    # может быть синяя (нужна стоянка) или чёрная - прямо не
+                    # едем, встаём в центре и смотрим стоя (arrive()).
+                    print(f"\n    → кл.{kN}: цвет не прочитан (датчик был слеп) - стоп")
                     go, walls_rel = False, {}
                 else:
                     go, walls_rel = plan.decide(kN, res, (f_wall, fv, fn))
@@ -3438,6 +3547,10 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
         # Статус ≤10 Гц: на 200 Гц забитый pipe SSH тормозил бы сам цикл.
         if time.monotonic() - last_status_t >= STATUS_PERIOD_S:
             last_status_t = time.monotonic()
+            _drive_live = {"cell": cells + 1, "rem_mm": round(rem * 10), "spd": round(fwd, 1),
+                           "steer": round(steer, 1), "wall_e": round(wall_e),
+                           "head_off": round(head_off, 1), "mode": assist_mode,
+                           "t": last_status_t}
             sys.stdout.write(f"\r    кл.{cells + 1} ост.{rem*10:4.0f}мм  "
                              f"yaw={yaw:.1f}°(e={axis_e:+.1f})  "
                              f"we={wall_e:+.0f}→{head_off:+.1f}°  spd={fwd:.0f}   ")
@@ -3467,6 +3580,25 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
         stop()
     else:
         settle_brake(0.06)
+
+    # Связь или моторы пропали посреди поездки (выключили питание моторов,
+    # отошёл провод) - это не конец заезда. Ждём их здесь же, а потом
+    # ставим робота в центр ближайшей засчитанной клетки: стоит он там, где
+    # его застал обрыв, а вызывающий считает от центра клетки. Энкодеры живы,
+    # но одометрия не росла - не сюда: это застревание, его разбирает
+    # вызывающий (отъезд и закрытое ребро).
+    if reason in ("odo_fault", "link_lost") and not _lifted.is_set():
+        c0 = cell if cell is not None else (_live["cx"], _live["cy"])
+        h0 = hdg if hdg is not None else _live["hdg"]
+        if wait_for_robot(c0[0], c0[1], h0, _live["cp"], _live["phase"]):
+            k = cells + 1 - int(round((boundary_cm - traveled_cm) / cell_cm))
+            k = max(0, min(cells, k))
+            off_cm = traveled_cm - (boundary_cm - (cells + 1 - k) * cell_cm)
+            print(f"    продолжаю: в центр клетки {k} поездки ({-off_cm*10:+.0f}мм)")
+            if abs(off_cm) > 0.5:
+                creep_mm(-off_cm * 10.0, target_yaw,
+                         timeout_s=2.0 + 1.5 * abs(off_cm) / ALIGN_SPEED_CMS)
+            cells, reason = k, "resumed"
 
     if reason == "ramp_stall":
         # Скатываемся задом ровно на пройденное - обратно в центр клетки, из
@@ -4036,6 +4168,33 @@ class _DrivePlan:
             self.on_checkpoint(self.cell(k))
 
 
+def wait_for_robot(cx, cy, hdg, checkpoint, phase):
+    """Нет связи с ESP или моторы молчат (энкодеры не отвечают по CAN) - это
+    не конец заезда: моторы просто выключили (или отошёл провод), их включат.
+    Ждём сколько угодно, на пульте - фаза wait_link / wait_motors. Вернулось -
+    фаза снова phase. True - ждали (вызывающему стоит заново оценить, где он)."""
+    def why():
+        return ("wait_link" if not telem_fresh() else
+                "wait_motors" if not encoders_online() else None)
+    w = why()
+    if w is None:
+        return False
+    t0 = time.monotonic()
+    shown = None
+    while w is not None:
+        if w != shown:
+            shown = w
+            print("  [WAIT] " + ("нет связи с ESP" if w == "wait_link" else
+                                 "моторы не отвечают (выключены?)") + " - жду, заезд продолжится")
+            _write_state(cx, cy, hdg, checkpoint, w)
+        time.sleep(0.2)
+        w = why()
+    print(f"  связь и моторы снова в порядке (ждали {time.monotonic() - t0:.1f}с)")
+    time.sleep(0.5)          # пакеты и одометрия успокоились
+    _write_state(cx, cy, hdg, checkpoint, phase)
+    return True
+
+
 def _arrived_cell(cx, cy, hdg, reason):
     """Где робот оказался после drive_cells(), проехавшего одну клетку."""
     if reason == "ramp":
@@ -4060,8 +4219,9 @@ def flood_fill_run(max_cells):
     ищет кратчайший путь по известным открытым рёбрам до ближайшей ещё не
     посещённой клетки и едет туда. Останавливается сама, когда такой клетки
     не остаётся - возвращает (cx, cy, hdg, checkpoint, status), status:
-    'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells),
-    'fatal' (связь/одометрия/полный затор - дальше ехать нельзя)."""
+    'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells). Аварийного
+    выхода нет: связь/моторы - ждём (wait_for_robot), затор - перемеряем и
+    пробуем дальше; заезд кончается только на старте."""
     cx, cy, hdg = 0, 0, 0
     checkpoint = (cx, cy, hdg)
     stalls = 0
@@ -4074,7 +4234,7 @@ def flood_fill_run(max_cells):
         сканируем обе боковые камеры; в любом случае проверяем плитку.
         Курс может измениться: после выдачи аптечек робот остаётся спиной
         к метке (см. report_victim)."""
-        nonlocal checkpoint, hdg
+        nonlocal checkpoint, hdg, cx, cy
         # Позицию - на веб сразу по приезде, не дожидаясь замера стен, синей
         # стоянки и камер: иначе робот на карте отставал на всё это время.
         _write_state(cx, cy, hdg, checkpoint, "exploring")
@@ -4082,13 +4242,27 @@ def flood_fill_run(max_cells):
         # (см. vote_wall), и ошибка первого приезда исправляется сама.
         walls_rel = _measure_cell(hdg)
         set_cell_walls(cx, cy, hdg, walls_rel)
+        if get_esp_paused():
+            return      # спим - ни синей стоянки, ни сканов; разберётся цикл
+        # Цвет - после замера стен: к этому времени датчик уже не слеп после
+        # бугорка (COLOR_RECOVER_S), а стоя он над этой же клеткой (бампер
+        # на 9 см впереди центра, до границы 15).
+        tile = tile_color()
+        if tile == TILE_BLACK and (cx, cy) != (0, 0):
+            # Въехали на чёрную, пока датчик был слеп (бугорок у её края).
+            # Приехали сюда прямо по hdg - назад ровно на клетку туда же, а
+            # эту клетку - непроезжей, как если бы чёрную увидели на ходу.
+            back = _next_cell(cx, cy, (hdg + 2) % 4)
+            print(f"  ■ ЧЁРНАЯ под роботом ({cx},{cy}) - назад в {back}")
+            creep_mm(-float(CELL_MM), snap_target(), timeout_s=4.0)
+            block_direction(back[0], back[1], hdg, black=True)
+            cx, cy = back
+            _write_state(cx, cy, hdg, checkpoint, "exploring")
+            return
         if new_cell:
             _visited.add((cx, cy))
         _write_state(cx, cy, hdg, checkpoint, "exploring")   # стены
 
-        if get_esp_paused():
-            return      # спим - ни синей стоянки, ни сканов; разберётся цикл
-        tile = tile_color()
         # Живое распознавание ИЛИ клетка уже когда-то была признана синей -
         # см. blue_stop()/_blue_cells: однажды подтверждённому факту доверяем
         # больше, чем одному текущему замеру датчика цвета.
@@ -4126,15 +4300,7 @@ def flood_fill_run(max_cells):
             _write_state(cx, cy, hdg, checkpoint, "exploring")
             continue
 
-        if not telem_fresh():
-            print(f"\n  [WARN] телеметрия молчит {telem_age():.1f}с - жду ESP...")
-            t_wait = time.time()
-            while not telem_fresh():
-                if time.time() - t_wait > 5.0:
-                    print("  [FATAL] Связь с ESP потеряна — заезд прекращён")
-                    _write_state(cx, cy, hdg, checkpoint, "fatal")
-                    return cx, cy, hdg, checkpoint, "fatal"
-                time.sleep(0.05)
+        if wait_for_robot(cx, cy, hdg, checkpoint, "exploring"):
             continue
 
         path = find_frontier_path(cx, cy, hdg)
@@ -4225,9 +4391,15 @@ def flood_fill_run(max_cells):
             continue      # разбирается в начале следующей итерации
 
         if reason == "odo_fault":
-            print("  [FATAL] Нет надёжной одометрии — заезд прекращён")
-            _write_state(cx, cy, hdg, checkpoint, "fatal")
-            return cx, cy, hdg, checkpoint, "fatal"
+            # Одометрия не растёт. Энкодеры молчат - моторы выключены: ждём.
+            # Отвечают - колёса крутить не может, то есть застряли: отъехать
+            # и считать ребро (мягко) закрытым, как непреодолённое препятствие.
+            if wait_for_robot(cx, cy, hdg, checkpoint, "exploring"):
+                continue
+            print("    одометрия не растёт при живых энкодерах - застряли, ребро закрыто")
+            creep_mm(-OBSTACLE_BACKOFF_MM, snap_target())
+            block_direction(cx, cy, hdg)
+            continue
 
         if reason in ("obstacle_stall", "ramp_stall"):
             # НЕ фатально: это «не взял препятствие», а не отказ одометрии.
@@ -4273,7 +4445,7 @@ def flood_fill_run(max_cells):
             # Ребро в чёрную клетку непроезжее - BFS обойдёт его сам, без
             # жёстко зашитого разворота на 180.
             print("    чёрная клетка - ребро непроезжее")
-            block_direction(cx, cy, hdg)
+            block_direction(cx, cy, hdg, black=True)
             stalls = 0
             continue
 
@@ -4317,9 +4489,12 @@ def flood_fill_run(max_cells):
         # бессмысленно - что-то системно не так.
         stalls = stalls + 1 if n == 0 else 0
         if stalls >= MAX_STALLS:
-            print("  [WARN] застряли - прекращаю разведку")
-            _write_state(cx, cy, hdg, checkpoint, "fatal")
-            return cx, cy, hdg, checkpoint, "fatal"
+            # Раньше здесь заезд прекращался. Теперь - заново перемерить
+            # клетку (карта могла соврать) и пробовать дальше.
+            print("  [WARN] несколько попыток без продвижения - перемеряю клетку")
+            if not get_esp_paused():
+                set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
+            stalls = 0
 
     print(f"  [WARN] потолок клеток ({max_cells}) исчерпан - прекращаю разведку")
     _write_state(cx, cy, hdg, checkpoint, "cap")
@@ -4352,21 +4527,21 @@ def return_to_start(cx, cy, hdg, checkpoint):
             _write_state(cx, cy, hdg, checkpoint, "returning")
             continue
 
-        if not telem_fresh():
-            t_wait = time.time()
-            while not telem_fresh():
-                if time.time() - t_wait > 5.0:
-                    print("  [FATAL] Связь с ESP потеряна во время возврата")
-                    _write_state(cx, cy, hdg, checkpoint, "fatal")
-                    return cx, cy, hdg
-                time.sleep(0.05)
+        if wait_for_robot(cx, cy, hdg, checkpoint, "returning"):
+            continue
             continue
 
-        path = find_path_bfs((cx, cy), lambda c: c == (0, 0), hdg)
+        path = find_home_path(cx, cy, hdg)
         if path is None:
-            print("  [FATAL] Старт недостижим по известной карте — возврат прерван")
-            _write_state(cx, cy, hdg, checkpoint, "fatal")
-            return cx, cy, hdg
+            # Не нашлось даже с ослабленными запретами - карта вокруг врёт.
+            # Перемерить клетку и пробовать снова: заезд кончается только
+            # на старте.
+            print("  [WARN] путь на старт не найден - перемеряю клетку и ищу снова")
+            _write_state(cx, cy, hdg, checkpoint, "returning")
+            if not get_esp_paused():
+                set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
+            time.sleep(0.5)
+            continue
 
         d = path[0]
         delta = DIR_DELTA[(d - hdg) % 4]
@@ -4404,9 +4579,11 @@ def return_to_start(cx, cy, hdg, checkpoint):
         if reason in ("paused", "lifted", "link_lost"):
             continue
         if reason == "odo_fault":
-            print("  [FATAL] Нет надёжной одометрии во время возврата")
-            _write_state(cx, cy, hdg, checkpoint, "fatal")
-            return cx, cy, hdg
+            if wait_for_robot(cx, cy, hdg, checkpoint, "returning"):
+                continue
+            creep_mm(-OBSTACLE_BACKOFF_MM, snap_target())
+            block_direction(cx, cy, hdg)
+            continue
 
         # Карта уже известна, но реальность может разойтись с ней (стену
         # чуть подвинули, лидар ошибся при разведке) - те же реакции, что и
@@ -4417,7 +4594,7 @@ def return_to_start(cx, cy, hdg, checkpoint):
             block_direction(cx, cy, hdg)
             continue
         if reason == "black":
-            block_direction(cx, cy, hdg)
+            block_direction(cx, cy, hdg, black=True)
             continue
         if reason == "front_obstacle":
             close_edge(cx, cy, hdg)          # см. то же место в flood_fill_run
@@ -4498,6 +4675,111 @@ def start_map_web():
 
 
 # ══════════════════════════════════════════════════════════════
+#  Пульт: живой снимок для dash_web.py (см. live.py)
+# ══════════════════════════════════════════════════════════════
+DASH_WEB_PORT = 8888     # см. dash_web.py
+_live_sent = {"map_ver": -1, "victims": -1}
+
+
+def _r(v, nd=1):
+    return None if v is None else round(v, nd)
+
+
+def _live_snapshot(n):
+    """Снимок для пульта - из потока live.py, 10 раз в секунду. Только
+    читает: копии под _lock, остальное - атомарные чтения глобалов. Карта
+    целиком - раз в секунду и сразу, как только поменялась."""
+    now = time.monotonic()
+    with _lock:
+        st = dict(_state)
+    lv = dict(_live)
+    scan = _scan_pts[-1] if _scan_pts else None
+    try:
+        act = _tstack[-1][0] if _tstack else None
+    except IndexError:
+        act = None
+    tick = {}
+    for k, s in _tick_ms.items():
+        v = s.v[-200:]
+        if v:
+            v = sorted(v)
+            tick[k] = [round(v[len(v) // 2], 2), round(v[-1], 2)]
+    d = {
+        "t": round(now, 3),
+        "run_s": None if _t_run is None else round(now - _t_run, 2),
+        "phase": lv["phase"],
+        "act": act,
+        "pose": {"cx": lv["cx"], "cy": lv["cy"], "hdg": lv["hdg"], "cp": list(lv["cp"]),
+                 "level": level_of(lv["cy"])},
+        "drive": _drive_live,
+        "imu": {"yaw": _r((st["yaw"] - YAW_ORIGIN) % 360.0, 2), "rate": _r(st["yaw_rate"]),
+                "pitch": _r(st["pitch"], 2), "roll": _r(st["roll"], 2), "az": _r(st["az"], 3)},
+        "odo": [_r(st["lcm"]), _r(st["rcm"])],
+        "enc": [st["enc_left_online"], st["enc_right_online"]],
+        "tile": _tile_last,
+        "rgbc": list(st["rgbc"]),
+        "walls": {k: _r(v) for k, v in st["wall"].items()},
+        "wall_n": st["wall_n"],
+        "scan": scan[3] if scan else [],
+        "scan_n": _scan_cnt,
+        "bump": [st["clicker1"], st["clicker2"]],
+        "btn1": st["btn1"],
+        "esp": st["esp_status"],
+        "fresh": [st["gyro_fresh"], st["color_fresh"]],
+        "telem_n": _telem_seq,
+        "telem_age_ms": round((now - _telem_t) * 1000) if _telem_t else None,
+        "link": {"crc": _bad_crc, "lost": _seq_lost, "ver": _bad_ver,
+                 "cmd_err": st["esp_cmd_err"]},
+        "lidar": {"dropped": _lidar_dropped, "restarts": _lidar_restarts},
+        "kits": {s: KITS_PER_COLUMN - u for s, u in _kits_used.items()},
+        "tick_ms": tick,
+        "cams": _watcher.live_info() if _watcher is not None else None,
+        "victims_n": len(_victim_log),
+        "map_ver": lv["map_ver"],
+        "color_on": USE_COLOR_SENSOR,
+        "sim": lv.get("sim"),
+        "thr": [WALL_THRESH, SIDE_THRESH, BACK_THRESH],
+    }
+    if (n % 10 == 0 or lv["map_ver"] != _live_sent["map_ver"]
+            or len(_victim_log) != _live_sent["victims"]):
+        d["map"] = _map_dict(lv["cx"], lv["cy"], lv["hdg"], lv["cp"], lv["phase"])
+        _live_sent["map_ver"], _live_sent["victims"] = lv["map_ver"], len(_victim_log)
+    return d
+
+
+def start_live():
+    """Поток публикации снимков для пульта + перехват stdout для его консоли.
+    Не поднялся (порт занят прошлым nav.py) - заезд от этого не зависит."""
+    global _live_pub, _live_tee
+    import live
+    if _live_tee is None:
+        _live_tee = live.LogTee(sys.stdout)
+        sys.stdout = _live_tee
+    try:
+        _live_pub = live.LivePublisher(_live_snapshot, tee=_live_tee)
+    except OSError as e:
+        print(f"  [WARN] пульт: порт {live.LIVE_PORT} занят ({e}) - живых данных не будет")
+        _live_pub = None
+    return _live_pub
+
+
+def start_dash_web():
+    """dash_web.py отдельным процессом - как start_map_web()."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_web.py")
+    log_path = os.path.expanduser("~/maze/dash_web.log")
+    try:
+        log_f = open(log_path, "w")
+        proc = subprocess.Popen([sys.executable, script],
+                                stdout=log_f, stderr=subprocess.STDOUT)
+        log_f.close()
+    except OSError as e:
+        print(f"  [WARN] пульт не запущен: {e} (лог: {log_path})")
+        return None
+    print(f"  Пульт: http://{_local_ip()}:{DASH_WEB_PORT}/  (лог: {log_path})")
+    return proc
+
+
+# ══════════════════════════════════════════════════════════════
 HUP_LOG = os.path.expanduser("~/maze/nav_hup.log")
 
 
@@ -4511,7 +4793,7 @@ def _on_hangup(_signum, _frame):
 
 
 def main():
-    global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds, _watcher
+    global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds, _watcher, _t_run
     signal.signal(signal.SIGHUP, _on_hangup)
 
     global PER_CELL_STOP, CHECKPOINT_TILE, USE_COLOR_SENSOR
@@ -4543,6 +4825,11 @@ def main():
     # остального boot'а. --no-web выключает совсем (например, при
     # тестовых заездах без сети).
     map_web_proc = start_map_web() if use_web else None
+    # Пульт: поток снимков поднимается всегда (без клиента он ничего не
+    # делает), сама страница - только с вебом.
+    start_live()
+    if use_web:
+        start_dash_web()
 
     try:
         _link = serial.Serial(LINK_PORT, LINK_BAUD, timeout=0.1)
@@ -4557,11 +4844,13 @@ def main():
 
     print("Ожидание телеметрии ESP...")
     t0 = time.time()
+    warned = False
     while not _state["telem_ok"]:
-        if time.time() - t0 > 5:
-            print("[FATAL] Нет телеметрии с ESP")
-            print("        " + link_report())
-            sys.exit(1)
+        # Не выход: ESP могли ещё не включить - ждём, пульт показывает фазу.
+        if not warned and time.time() - t0 > 5:
+            warned = True
+            print("  [WAIT] нет телеметрии с ESP - жду (" + link_report() + ")")
+            _write_state(0, 0, 0, (0, 0, 0), "wait_link")
         time.sleep(0.05)
 
     # Реально достигнутая частота, а не заявленная. Измерять до того, как
@@ -4648,8 +4937,11 @@ def main():
     print("Ожидание лидара...")
     wait_scan(3, timeout=5.0)
     if _scan_cnt == 0:
-        print("[FATAL] Лидар молчит")
-        sys.exit(1)
+        # Процесс лидара сам перезапускается (_lidar_thread) - ждём оборотов.
+        print("  [WAIT] лидар молчит - жду (кабель, питание мотора лидара?)")
+        _write_state(0, 0, 0, (0, 0, 0), "wait_lidar")
+        while _scan_cnt == 0:
+            wait_scan(1, timeout=1.0)
     w0 = get_walls()
 
     def _f(v): return f"{v:.0f}" if v is not None else "—"
@@ -4672,17 +4964,17 @@ def main():
     _lifted.clear()
 
     cx, cy, hdg = 0, 0, 0
-    t_run = time.monotonic()
+    t_run = _t_run = time.monotonic()
     try:
         cx, cy, hdg, checkpoint, status = flood_fill_run(cells)
         print(time_report({}, time.monotonic() - t_run, prefix="⏱ разведка"))
         print(f"  статус разведки: {status}  позиция ({cx},{cy}) курс={_DIR_NAME[hdg]}")
-        if status != "fatal":
-            cx, cy, hdg = return_to_start(cx, cy, hdg, checkpoint)
-            if (cx, cy) == (0, 0):
-                _write_state(cx, cy, hdg, checkpoint, "blinking")
-                blink_start_return()
-                _write_state(cx, cy, hdg, checkpoint, "done")
+        # Заезд кончается только на старте: return_to_start не возвращается,
+        # пока не доедет (ждёт моторы, ищет путь с ослабленными запретами).
+        cx, cy, hdg = return_to_start(cx, cy, hdg, checkpoint)
+        _write_state(cx, cy, hdg, checkpoint, "blinking")
+        blink_start_return()
+        _write_state(cx, cy, hdg, checkpoint, "done")
     except KeyboardInterrupt:
         print("\nОстановлено.")
     finally:
@@ -4706,6 +4998,9 @@ def main():
         # Карта не критична для самого заезда, поэтому без долгого ожидания:
         # если процесс не отвечает на SIGTERM за секунду, просто оставляем
         # его - следующий запуск лишь получит [WARN] про занятый порт.
+        # Пульт НЕ гасим: после заезда на нём смотрят итог и
+        # запись, а следующий nav.py он подхватит сам. Второй экземпляр,
+        # который поднимет следующий запуск, упрётся в занятый порт и выйдет.
         if map_web_proc is not None:
             map_web_proc.terminate()
             try:

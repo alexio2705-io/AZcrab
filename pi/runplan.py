@@ -53,12 +53,25 @@ def go_straight(start, hdg, open_dirs, next_cell, goal_test, side_order):
     return bool(path) and path[0] == hdg
 
 
-def black_retreat(traveled_cm, boundary_cm, cells, cell_cm):
+def sensor_cell(traveled_cm, boundary_cm, cells, cell_cm, sensor_fwd_cm=0.0, margin_cm=1.5):
+    """Над какой клеткой поездки датчик цвета: cells (засчитана последней)
+    или cells + 1 - уже за её границей с запасом margin_cm. boundary_cm -
+    центр следующей клетки. sensor_fwd_cm - датчик впереди центра робота."""
+    if traveled_cm + sensor_fwd_cm >= boundary_cm - cell_cm / 2.0 + margin_cm:
+        return cells + 1
+    return cells
+
+
+def black_retreat(traveled_cm, boundary_cm, cells, cell_cm, sensor_fwd_cm=0.0):
     """Чёрная плитка под датчиком на ходу: (сколько клеток считать
     пройденными, на сколько см откатиться назад - в центр клетки перед
     чёрной). boundary_cm - центр следующей клетки; после решения "прямо"
     через клетку она уже клетка дальше, поэтому чёрная бывает и над
-    клеткой, засчитанной пройденной: её тогда из пройденных убираем."""
-    k_black = cells + 1 if traveled_cm >= boundary_cm - cell_cm / 2.0 else max(cells, 1)
+    клеткой, засчитанной пройденной: её тогда из пройденных убираем.
+    sensor_fwd_cm - датчик впереди центра робота: чёрная - клетка под
+    датчиком, а не под центром (датчик на бампере видит следующую клетку,
+    пока центр ещё в предыдущей)."""
+    k_black = (cells + 1 if traveled_cm + sensor_fwd_cm >= boundary_cm - cell_cm / 2.0
+               else max(cells, 1))
     center_before = boundary_cm - (cells + 2 - k_black) * cell_cm
     return k_black - 1, traveled_cm - center_before

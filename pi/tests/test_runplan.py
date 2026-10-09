@@ -78,6 +78,30 @@ class TestBlackRetreat(unittest.TestCase):
     def test_black_in_next_cell_before_decision(self):
         self.assertEqual(rp.black_retreat(48.0, 60.0, 1, 30.0), (1, 18.0))
 
+    def test_sensor_ahead_sees_next_cell_first(self):
+        # Датчик на бампере, 9см впереди центра (ночной прогон, поле 22):
+        # прямо через клетку 1, центр робота на 38.8см - ещё над клеткой 1,
+        # а датчик (47.8см) уже за её границей (45см), над клеткой 2. Чёрная -
+        # клетка 2: пройдена одна клетка, откат 8.8см в центр клетки 1, а не
+        # на всю поездку назад с пометкой клетки 1 чёрной.
+        self.assertEqual(rp.black_retreat(38.8, 60.0, 1, 30.0, sensor_fwd_cm=9.0),
+                         (1, 38.8 - 30.0))
+
+
+class TestSensorCell(unittest.TestCase):
+    def test_center_based_by_default(self):
+        # без смещения - как было: клетка дальше, только когда центр робота
+        # на 1.5см за границей
+        self.assertEqual(rp.sensor_cell(38.8, 60.0, 1, 30.0), 1)
+        self.assertEqual(rp.sensor_cell(46.6, 60.0, 1, 30.0), 2)
+
+    def test_sensor_ahead_is_over_next_cell(self):
+        # поле 6 ночного прогона: синяя (2,0), за ней серебро (3,0). Центр на
+        # 38.8см (клетка 1), датчик на бампере +9см = 47.8см - уже над
+        # клеткой 2: серебро - её, а не клетки 1
+        self.assertEqual(rp.sensor_cell(38.8, 60.0, 1, 30.0, sensor_fwd_cm=9.0), 2)
+        self.assertEqual(rp.sensor_cell(36.0, 60.0, 1, 30.0, sensor_fwd_cm=9.0), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
