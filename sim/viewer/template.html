@@ -53,6 +53,8 @@ main{display:grid;gap:8px;padding:8px;min-height:0;
 .panel>h2{margin:0;padding:5px 10px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);
   display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
 .panel>h2 .sp{flex:1}
+#mapinfo{text-transform:none;letter-spacing:0;font-weight:400;text-align:right}
+#floors{display:flex;gap:3px}
 .panel>h2 button{padding:0 7px;font-size:11px;text-transform:none;letter-spacing:0}
 .cv{flex:1;min-height:0;position:relative}
 .cv canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -124,7 +126,7 @@ main{display:grid;gap:8px;padding:8px;min-height:0;
   </section>
   <div id="side">
     <section class="panel" id="mappanel">
-      <h2>карта глазами робота<span class="sp" id="mapinfo"></span><span id="floors"></span></h2>
+      <h2>карта nav<span class="sp" id="mapinfo"></span><span id="floors" title="этаж"></span></h2>
       <div class="cv"><canvas id="mapcv"></canvas></div>
       <div id="maplegend"></div>
     </section>
@@ -687,10 +689,242 @@ const view3d = (() => {
 })();
 
 // ═══ карта, профиль, графики, консоль ════════════════════════════════
-function drawMap() {}
-function drawProfile() {}
-function drawCharts() {}
-function syncLog() {}
+// карта, как её видит nav (последний снимок _write_state), против правды мира
+const TRUTH = {};
+for (const r of T.truth) TRUTH[r[0] + "," + r[1]] = r.slice(2);
+const FLOORS = [...new Set(T.truth.map(r => levelOf(r[1])).concat([0]))].sort((a, b) => a - b);
+let mapFloor = "auto";
+{
+  const box = document.getElementById("floors");
+  const opts = ["auto"].concat(FLOORS);
+  for (const f of opts) {
+    const b = document.createElement("button");
+    b.textContent = f === "auto" ? "авто" : String(f);
+    b.title = f === "auto" ? "этаж робота" : "этаж " + f;
+    b.classList.toggle("on", f === mapFloor);
+    b.onclick = () => { mapFloor = f; box.querySelectorAll("button").forEach((x, i) => x.classList.toggle("on", opts[i] === f)); st.dirty = true; };
+    box.appendChild(b);
+  }
+  document.getElementById("maplegend").innerHTML = [
+    ["fg", "solid", "стена (совпадает)"], ["stop", "solid", "лишняя у nav"], ["warn", "dashed", "nav не видит"],
+    ["mut", "dotted", "неизвестно"], ["assist", "solid", "закрыто по факту"], ["line", "solid", "стена мира"],
+  ].map(([c, s, t]) => `<span><i style="border-top-color:var(--${c});border-top-style:${s}"></i>${t}</span>`).join("") +
+    `<span><b style="color:var(--ramp)">➜</b> горка</span>`;
+}
+const mapcv = document.getElementById("mapcv");
+function drawMap(pose) {
+  const {ctx, w, h} = fitCanvas(mapcv);
+  ctx.fillStyle = C.panel; ctx.fillRect(0, 0, w, h);
+  const snap = mapAt(st.t), fl = mapFloor === "auto" ? floorAt(st.t) : mapFloor, base = fl * STRIDE;
+  const rows = T.truth.filter(r => levelOf(r[1]) === fl);
+  const info = document.getElementById("mapinfo");
+  if (!rows.length) { info.textContent = ""; ctx.fillStyle = C.mut; ctx.fillText(`на этаже ${fl} клеток нет`, 12, 20); return; }
+  const xs = rows.map(r => r[0]), ys = rows.map(r => r[1] - base);
+  const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+  const s = Math.min(70, (w - 30) / (maxx - minx + 1), (h - 24) / (maxy - miny + 1));
+  const ox = (w - s * (maxx - minx + 1)) / 2, oy = (h - s * (maxy - miny + 1)) / 2;
+  const CX = cx => ox + (cx - minx) * s, CY = wy => oy + (maxy - wy) * s;      // левый верх клетки
+  const edge = (cx, wy, d) => {                  // отрезок ребра d клетки в пикселях
+    const x = CX(cx), y = CY(wy);
+    return [[x, y, x + s, y], [x + s, y, x + s, y + s], [x, y + s, x + s, y + s], [x, y, x, y + s]][d];
+  };
+  const line = (seg, color, width, dash) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []);
+    ctx.beginPath(); ctx.moveTo(seg[0], seg[1]); ctx.lineTo(seg[2], seg[3]); ctx.stroke(); ctx.setLineDash([]);
+  };
+  const vis = new Set(snap ? snap.visited.map(c => c.join(",")) : []), blk = new Set(snap ? snap.blocked.map(c => c.join(",")) : []);
+  for (const r of rows) {
+    const x = CX(r[0]), y = CY(r[1] - base), key = r[0] + "," + r[1];
+    ctx.fillStyle = vis.has(key) ? C.cur : C.floor; ctx.fillRect(x + 1, y + 1, s - 2, s - 2);
+    if (blk.has(key)) {
+      ctx.save(); ctx.beginPath(); ctx.rect(x, y, s, s); ctx.clip(); ctx.strokeStyle = C.stop; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
+      for (let d = -s; d < s; d += 7) { ctx.moveTo(x + d, y + s); ctx.lineTo(x + d + s, y); }
+      ctx.stroke(); ctx.restore();
+    }
+    if (s > 34) { ctx.fillStyle = C.mut; ctx.font = "9px -apple-system,sans-serif"; ctx.fillText(`${r[0]},${r[1]}`, x + 4, y + 11); }
+    for (let d = 0; d < 4; d++) if (r[2 + d]) line(edge(r[0], r[1] - base, d), C.line, 2);
+  }
+  let err = 0;
+  if (snap) {
+    const fixed = new Set(snap.fixed.map(f => f.join(",")));
+    for (const m of snap.maze) {
+      if (levelOf(m[1]) !== fl) continue;
+      const tv = TRUTH[m[0] + "," + m[1]];
+      for (let d = 0; d < 4; d++) {
+        const mv = m[2 + d], t = tv ? tv[d] : null, seg = edge(m[0], m[1] - base, d);
+        if (mv === 1 && fixed.has(`${m[0]},${m[1]},${d}`)) line(seg, C.assist, 3.5);
+        else if (mv === null) line(seg, C.mut, 1.2, [2, 3]);
+        else if (mv === 1 && t === 0) { line(seg, C.stop, 4); err++; }
+        else if (mv === 0 && t === 1) { line(seg, C.warn, 4, [6, 4]); err++; }
+        else if (mv === 1) line(seg, C.fg, 3);
+      }
+    }
+    for (const r of snap.ramps) {
+      if (levelOf(r[1]) !== fl) continue;
+      const x = CX(r[0]) + s / 2, y = CY(r[1] - base) + s / 2;
+      arrow(ctx, x + [0, 1, 0, -1][r[2]] * s * 0.28, y + [-1, 0, 1, 0][r[2]] * s * 0.28, r[2] * 90, s * 0.5, C.ramp);
+      ctx.fillStyle = C.ramp; ctx.font = "10px -apple-system,sans-serif";
+      ctx.fillText(`→(${r[3]},${r[4]})`, x - s * 0.45, y + s * 0.42);
+    }
+  }
+  info.textContent = snap ? `${snap.phase} · ошибок ${err}` : "карты ещё нет";
+  if (floorAt(st.t) === fl) {                    // робот в координатах клеток
+    const rx = ox + (pose.x / CELL - minx + 0.5) * s, ry = oy + (maxy - pose.y / CELL + 0.5) * s;
+    ctx.save(); ctx.translate(rx, ry); ctx.rotate(pose.th * Math.PI / 180);
+    ctx.fillStyle = C.robot; ctx.beginPath(); ctx.moveTo(0, -s * 0.3); ctx.lineTo(s * 0.2, s * 0.22); ctx.lineTo(-s * 0.2, s * 0.22); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// профиль высоты вдоль пройденного пути
+const profcv = document.getElementById("profcv");
+const ZMAX = Math.max(60, ...P.z) + 30, SMAX = S[NP - 1] || 1;
+const PROF = {l: 40, r: 10, t: 10, b: 20};
+function drawProfile(pose) {
+  const {ctx, w, h} = fitCanvas(profcv), pw = w - PROF.l - PROF.r, ph = h - PROF.t - PROF.b;
+  const X = s => PROF.l + pw * s / SMAX, Y = z => PROF.t + ph * (1 - z / ZMAX);
+  ctx.fillStyle = C.panel; ctx.fillRect(0, 0, w, h);
+  ctx.font = "10px -apple-system,sans-serif"; ctx.lineWidth = 1;
+  for (let z = 0; z <= ZMAX; z += 50) {
+    ctx.strokeStyle = C.grid; ctx.beginPath(); ctx.moveTo(PROF.l, Y(z)); ctx.lineTo(w - PROF.r, Y(z)); ctx.stroke();
+    ctx.fillStyle = C.mut; ctx.fillText(z + " мм", 2, Y(z) + 3);
+  }
+  for (let m = 0; m <= SMAX / 1000; m++) { ctx.fillStyle = C.mut; ctx.fillText(m + " м", X(m * 1000) - 6, h - 5); }
+  ctx.strokeStyle = C.line; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let i = 0; i < NP; i++) (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(S[i]), Y(P.z[i]));
+  ctx.stroke();
+  ctx.fillStyle = C.cur; ctx.beginPath(); ctx.moveTo(X(0), Y(0));
+  for (let i = 0; i <= pose.i; i++) ctx.lineTo(X(S[i]), Y(P.z[i]));
+  ctx.lineTo(X(S[pose.i]), Y(0)); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = C.robot; ctx.lineWidth = 2; ctx.beginPath();
+  for (let i = 0; i <= pose.i; i++) (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(S[i]), Y(P.z[i]));
+  ctx.stroke();
+  ctx.fillStyle = C.robot; ctx.beginPath(); ctx.arc(X(pose.s), Y(pose.z), 4, 0, 7); ctx.fill();
+  ctx.fillStyle = C.fg; ctx.fillText(`${(pose.s / 1000).toFixed(2)} м, z ${pose.z.toFixed(0)} мм, наклон ${pose.p.toFixed(1)}°`, PROF.l + 4, PROF.t + 10);
+}
+{
+  let down = false;
+  const go = e => { const r = profcv.getBoundingClientRect(), s = (e.clientX - r.left - PROF.l) / (r.width - PROF.l - PROF.r) * SMAX;
+                    seek(P.t[Math.max(0, bsearch(S, s))], true); };
+  profcv.addEventListener("pointerdown", e => { down = true; profcv.setPointerCapture(e.pointerId); go(e); });
+  profcv.addEventListener("pointermove", e => down && go(e));
+  profcv.addEventListener("pointerup", () => down = false);
+}
+
+// графики по времени: скорость, наклон, режим, передняя стена
+const chartcv = document.getElementById("chartcv");
+const CH = {l: 46, r: 10, t: 4, b: 16};
+const STRIPS = [
+  {name: "скорость, см/с", frac: 0.34, lo: -15, hi: 65, step: 20},
+  {name: "наклон, °", frac: 0.24, lo: -30, hi: 30, step: 15},
+  {name: "режим", frac: 0.10},
+  {name: "стена впереди, мм", frac: 0.32, lo: 0, hi: 1500, step: 500},
+];
+function chartWindow() {
+  const win = +document.getElementById("win").value;
+  if (!win || win >= TEND) return [0, TEND];
+  const a = Math.max(0, Math.min(TEND - win, st.t - win / 2));
+  return [a, a + win];
+}
+document.getElementById("win").onchange = () => st.dirty = true;
+function drawCharts(pose) {
+  const {ctx, w, h} = fitCanvas(chartcv), [t0, t1] = chartWindow();
+  const pw = w - CH.l - CH.r, X = t => CH.l + pw * (t - t0) / (t1 - t0);
+  ctx.fillStyle = C.panel; ctx.fillRect(0, 0, w, h);
+  ctx.font = "10px -apple-system,sans-serif";
+  const i0 = Math.max(0, bsearch(P.t, t0) - 1), i1 = Math.min(NP - 1, bsearch(P.t, t1) + 1);
+  let y = CH.t;
+  const H = h - CH.t - CH.b;
+  for (const sp of STRIPS) {
+    const sh = H * sp.frac, top = y, Y = v => top + 3 + (sh - 8) * (1 - (v - sp.lo) / (sp.hi - sp.lo));
+    ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(CH.l, top + sh - 0.5); ctx.lineTo(w - CH.r, top + sh - 0.5); ctx.stroke();
+    const series = (get, color, width, dash) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.beginPath();
+      let pen = false;
+      for (let i = i0; i <= i1; i++) {
+        const v = get(i);
+        if (v == null) { pen = false; continue; }
+        const yy = Y(Math.max(sp.lo, Math.min(sp.hi, v)));
+        pen ? ctx.lineTo(X(P.t[i]), yy) : ctx.moveTo(X(P.t[i]), yy); pen = true;
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+    };
+    if (sp.lo !== undefined) {
+      for (let v = sp.lo - (sp.lo % sp.step); v <= sp.hi; v += sp.step) {
+        if (v < sp.lo) continue;
+        ctx.strokeStyle = v === 0 ? C.line : C.grid; ctx.beginPath(); ctx.moveTo(CH.l, Y(v)); ctx.lineTo(w - CH.r, Y(v)); ctx.stroke();
+        ctx.fillStyle = C.mut; ctx.fillText(String(v), CH.l - 26, Y(v) + 3);
+      }
+    }
+    ctx.fillStyle = C.mut; ctx.fillText(sp.name, CH.l + 4, top + 11);
+    if (sp.name.startsWith("скорость")) {
+      for (const e of DECIDES) if (e.t >= t0 && e.t <= t1) { ctx.fillStyle = e.straight ? C.ok : C.stop; ctx.fillRect(X(e.t) - 1, top, 2, sh); }
+      series(i => (P.sl[i] + P.sr[i]) / 2, C.mut, 1, [4, 3]);
+      series(i => P.vl[i], C.post, 1); series(i => P.vr[i], C.ramp, 1); series(i => V[i], C.fg, 1.8);
+      ctx.fillStyle = C.fg; ctx.textAlign = "right";
+      ctx.fillText(`v ${pose.v.toFixed(0)}  L ${pose.vl.toFixed(0)}  R ${pose.vr.toFixed(0)}  уставка ${((pose.sl + pose.sr) / 2).toFixed(0)}`, w - CH.r - 4, top + 11);
+      ctx.textAlign = "left";
+    } else if (sp.name.startsWith("наклон")) {
+      series(i => P.p[i], C.ramp, 1.6);
+      ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(`${pose.p.toFixed(1)}°`, w - CH.r - 4, top + 11); ctx.textAlign = "left";
+    } else if (sp.name === "режим") {
+      const col = {M: C.grid, T: C.assist, B: C.warn};
+      for (let i = i0; i < i1; i++) { ctx.fillStyle = col[P.m[i]]; ctx.fillRect(X(P.t[i]), top + 2, X(P.t[i + 1]) - X(P.t[i]) + 0.5, sh - 4); }
+      ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(`${pose.m}   M скорость · T момент · B стоп`, w - CH.r - 4, top + sh / 2 + 3); ctx.textAlign = "left";
+    } else {
+      series(i => P.f[i], C.post, 1.6);
+      for (let i = i0; i <= i1; i++) if (P.b[i]) { ctx.fillStyle = C.stop; ctx.fillRect(X(P.t[i]) - 1, top, 3, sh); }
+      ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(pose.f == null ? "—" : `${pose.f.toFixed(0)} мм`, w - CH.r - 4, top + 11); ctx.textAlign = "left";
+    }
+    y += sh;
+  }
+  for (let s = Math.ceil(t0); s <= t1; s += (t1 - t0) > 12 ? 2 : 1) { ctx.fillStyle = C.mut; ctx.fillText(s + "с", X(s) - 6, h - 4); }
+  ctx.fillStyle = C.robot; ctx.fillRect(X(st.t) - 1, CH.t, 2, H);
+}
+{
+  let down = false;
+  const go = e => { const r = chartcv.getBoundingClientRect(), [t0, t1] = chartWindow();
+                    seek(t0 + (e.clientX - r.left - CH.l) / (r.width - CH.l - CH.r) * (t1 - t0), true); };
+  chartcv.addEventListener("pointerdown", e => { down = true; chartcv.setPointerCapture(e.pointerId); go(e); });
+  chartcv.addEventListener("pointermove", e => down && go(e));
+  chartcv.addEventListener("pointerup", () => down = false);
+}
+
+// консоль лога: строка - событие; текущая подсвечена, клик - перемотка
+const logEl = document.getElementById("log"), LOG_ROWS = [];
+{
+  const group = t => /^ramp_|^not_ramp$/.test(t) ? "ramp" : t === "ramp_detect" ? "ramp" : t;
+  const frag = document.createDocumentFragment();
+  for (const e of EV) {
+    const row = document.createElement("div");
+    row.className = `l ${group(e.type)}${e.type === "decide" ? (e.straight ? " go" : " stop") : ""}${e.type === "progress" ? " progress" : ""}`;
+    const t = document.createElement("span"); t.className = "t"; t.textContent = e.t.toFixed(2);
+    const x = document.createElement("span"); x.className = "x"; x.textContent = e.text;
+    row.append(t, x); row.onclick = () => seek(e.t, true);
+    frag.appendChild(row); LOG_ROWS.push(row);
+  }
+  logEl.appendChild(frag);
+  document.getElementById("showprog").onchange = e => { logEl.classList.toggle("noprog", !e.target.checked); lastLog = -2; st.dirty = true; };
+}
+let lastLog = -2;
+function syncLog() {
+  const noprog = logEl.classList.contains("noprog");
+  let idx = bsearch(EV_T, st.t + 1e-6);
+  while (idx >= 0 && noprog && EV[idx].type === "progress") idx--;
+  if (idx === lastLog) return;
+  const lo = Math.min(idx, lastLog), hi = Math.max(idx, lastLog);
+  if (lastLog === -2) LOG_ROWS.forEach((r, i) => r.classList.toggle("future", i > idx));
+  else for (let i = Math.max(0, lo + 1); i <= hi; i++) LOG_ROWS[i].classList.toggle("future", i > idx);
+  if (lastLog >= 0) LOG_ROWS[lastLog].classList.remove("cur");
+  lastLog = idx;
+  if (idx < 0) return;
+  const row = LOG_ROWS[idx];
+  row.classList.add("cur");
+  if (document.getElementById("logfollow").checked) {
+    const top = row.offsetTop - logEl.offsetTop;
+    if (top < logEl.scrollTop + 20 || top > logEl.scrollTop + logEl.clientHeight - 40) logEl.scrollTop = top - logEl.clientHeight / 2;
+  }
+}
 
 // ═══ цикл ════════════════════════════════════════════════════════════
 let lastFrame = performance.now(), lastScan = null;
