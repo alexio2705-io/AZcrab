@@ -146,6 +146,7 @@ main{display:grid;gap:8px;padding:8px;min-height:0;
 <script id="names" type="application/json">__SCENARIOS__</script>
 <script id="trace" type="application/json">__TRACE__</script>
 <script src="vendor/three.min.js"></script>
+<script src="vendor/robot3d.js"></script>
 <script>
 "use strict";
 // ═══ данные ═══════════════════════════════════════════════════════════
@@ -554,7 +555,7 @@ const view3d = (() => {
   const cam = {yaw: 0, elev: 30, dist: 1100, free: false, absYaw: 0};
   const lam = c => new THREE.MeshLambertMaterial({color: new THREE.Color(c)});
   const box = (w, h, d, c) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), lam(c));
-  let rayW, rayF, trail, lastScanT = null;
+  let rayW, rayF, trail, lastScanT = null, robot3d = null;
 
   function slopeMesh(r) {
     const [x0, y0, x1, y1] = r.rect, {h0, h1} = r;
@@ -615,14 +616,16 @@ const view3d = (() => {
       l.frustumCulled = false; world.add(l); return l;
     };
     rayW = rayLines(C.hitW, 0.45); rayF = rayLines(C.mut, 0.25); lastScanT = null;
-    // робот: корпус 193×125, нос, 4 колеса, лидар на 130 мм; вперёд - -z
-    const hull = box(ROBOT_W, 55, ROBOT_L, C.robot); hull.position.y = 57; body.add(hull);
-    const nose = box(ROBOT_W - 30, 22, 26, C.nose); nose.position.set(0, 74, -ROBOT_L / 2 + 13); body.add(nose);
-    const wg = new THREE.CylinderGeometry(30, 30, 18, 24); wg.rotateZ(Math.PI / 2);
-    for (const ax of [-AXLE, AXLE]) for (const sd of [-1, 1]) {
-      const wm = new THREE.Mesh(wg, lam(C.wheel)); wm.position.set(sd * (ROBOT_W / 2 + 9), 30, ax); body.add(wm);
+    // робот: мультяшная модель AZcrab (vendor/robot3d.js, общая с пультом);
+    // вперёд - -z. Нет файла - прежняя коробка 193×125 с лидаром на 130 мм.
+    if (window.makeRobot3D) {
+      robot3d = window.makeRobot3D(THREE);
+      body.add(robot3d.group);
+    } else {
+      robot3d = null;
+      const hull = box(ROBOT_W, 55, ROBOT_L, C.robot); hull.position.y = 57; body.add(hull);
+      const lid = new THREE.Mesh(new THREE.CylinderGeometry(36, 36, 26, 24), lam(C.mut)); lid.position.y = LIDAR_Z; body.add(lid);
     }
-    const lid = new THREE.Mesh(new THREE.CylinderGeometry(36, 36, 26, 24), lam(C.mut)); lid.position.y = LIDAR_Z; body.add(lid);
     st.dirty = true;
   }
 
@@ -642,6 +645,7 @@ const view3d = (() => {
     camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
     robot.position.set(pose.x, pose.z, -pose.y);
     robot.rotation.set(pose.p * Math.PI / 180, -pose.th * Math.PI / 180, 0, "YXZ");
+    if (robot3d) robot3d.spin(pose.s);     // колёса крутятся по пройденному пути
     trail.geometry.setDrawRange(0, st.layers.trail ? pose.i + 1 : 0);
     rayW.visible = rayF.visible = !!(scan && st.layers.rays);
     if (scan && scan.t !== lastScanT) {

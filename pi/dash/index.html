@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пульт AZcrab</title>
+<link rel="stylesheet" href="/dash/dash.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">AZ</span>
+    <div class="brand-t"><b>AZcrab</b><small>пульт · rescue maze</small></div>
+  </div>
+  <div class="src" id="src"><i class="dot"></i><span id="srcText">нет связи</span></div>
+  <div class="chips" id="chips"></div>
+  <div class="actions">
+    <span class="rec" id="rec" hidden><i></i><span id="recText"></span></span>
+    <button type="button" id="btnRuns" class="btn">Записи</button>
+    <button type="button" id="btnFull" class="btn icon" title="Во весь экран" aria-label="Во весь экран">⤢</button>
+  </div>
+</header>
+
+<section class="hero" aria-live="polite">
+  <div class="timer">
+    <div class="big num" id="tRun">--:--.--</div>
+    <div class="tbar"><i id="tBar"></i></div>
+    <div class="sub" id="tSub">ожидание старта</div>
+  </div>
+  <div class="status">
+    <div class="phase" id="phase"><i></i><span>—</span></div>
+    <div class="line" id="statusLine">… ожидание nav.py …</div>
+    <div class="raw num" id="rawStatus"></div>
+  </div>
+  <div class="counts" id="counts"></div>
+</section>
+
+<main class="grid">
+  <section class="card cam" id="cam-left">
+    <h2>Левая камера <span class="meta num"></span></h2>
+    <div class="frame"><img alt=""><svg viewBox="0 0 320 320" preserveAspectRatio="none"></svg><div class="ph"></div></div>
+  </section>
+  <section class="card cam" id="cam-right">
+    <h2>Правая камера <span class="meta num"></span></h2>
+    <div class="frame"><img alt=""><svg viewBox="0 0 320 320" preserveAspectRatio="none"></svg><div class="ph"></div></div>
+  </section>
+  <section class="card radar">
+    <h2>Лидар <span class="meta num" id="radarMeta"></span></h2>
+    <div class="cv"><canvas id="radar"></canvas></div>
+  </section>
+  <section class="card model">
+    <h2>Робот <span class="meta num" id="modelMeta"></span></h2>
+    <div class="cv" id="model"><div class="model-hint">тяни, чтобы повернуть вид</div></div>
+  </section>
+
+  <section class="card map">
+    <h2>Карта <span class="meta" id="mapMeta"></span></h2>
+    <div class="map-wrap"><svg id="map" role="img" aria-label="Карта лабиринта"></svg><div class="empty" id="mapEmpty">карты ещё нет</div></div>
+    <div class="legend" id="mapLegend"></div>
+  </section>
+  <section class="card sensors">
+    <h2>Датчики</h2>
+    <div class="sgrid" id="sensors"></div>
+  </section>
+  <section class="card victims">
+    <h2>Метки <span class="meta num" id="vCount">0</span></h2>
+    <div class="vlist" id="victims"><div class="empty">пока ни одной</div></div>
+  </section>
+  <section class="card charts">
+    <h2>Последние 30 с <span class="meta" id="chartsMeta"></span></h2>
+    <div class="clist" id="charts"></div>
+  </section>
+
+  <section class="card log">
+    <h2>Лог nav.py
+      <span class="tools">
+        <input id="logFilter" type="search" placeholder="фильтр" aria-label="Фильтр лога">
+        <label><input type="checkbox" id="logWarn"> только WARN</label>
+        <label><input type="checkbox" id="logFollow" checked> за концом</label>
+      </span>
+    </h2>
+    <div class="logbox num" id="log"></div>
+  </section>
+</main>
+
+<div class="replay" id="replayBar" hidden>
+  <button type="button" class="btn icon" id="rpPlay" aria-label="Пуск/пауза">▶</button>
+  <span class="num" id="rpTime">0:00.0</span>
+  <input type="range" id="rpRange" min="0" max="0" value="0" aria-label="Время записи">
+  <span class="num" id="rpEnd">0:00.0</span>
+  <select id="rpSpeed" aria-label="Скорость">
+    <option value="0.25">×0.25</option><option value="0.5">×0.5</option>
+    <option value="1" selected>×1</option><option value="2">×2</option><option value="4">×4</option>
+  </select>
+  <span class="rp-name" id="rpName"></span>
+  <button type="button" class="btn" id="rpLive">Назад к живому</button>
+</div>
+
+<dialog id="runsDlg">
+  <form method="dialog">
+    <h3>Записи заездов</h3>
+    <div id="runsList" class="runs"></div>
+    <div class="dlg-actions"><button class="btn" value="close">Закрыть</button></div>
+  </form>
+</dialog>
+
+<script src="/dash/vendor/three.min.js"></script>
+<script src="/dash/robot3d.js"></script>
+<script src="/dash/dash.js"></script>
+</body>
+</html>

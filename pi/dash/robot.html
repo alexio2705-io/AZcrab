@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Модель AZcrab</title>
+<style>
+  :root { color-scheme: dark; --bg: #111110; --fg: #f2f2ee; --mut: #85847c; --line: rgba(255,255,255,.16); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; overflow: hidden; }
+  #v { position: fixed; inset: 0; }
+  .bar { position: fixed; left: 16px; top: 16px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
+  button { background: #222220; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  button.on { border-color: #f2a900; }
+  .hint { position: fixed; left: 16px; bottom: 12px; color: var(--mut); }
+</style>
+</head>
+<body>
+<div id="v"></div>
+<div class="bar" id="bar"></div>
+<div class="hint">витрина модели робота (robot3d.js) · тяни - повернуть, колесо - приблизить</div>
+<script src="/dash/vendor/three.min.js"></script>
+<script src="/dash/robot3d.js"></script>
+<script>
+'use strict';
+const T = THREE, host = document.getElementById('v');
+const renderer = new T.WebGLRenderer({antialias: true});
+renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1));
+host.appendChild(renderer.domElement);
+const scene = new T.Scene();
+scene.background = new T.Color(0x161615);
+const cam = new T.PerspectiveCamera(30, 1, 10, 6000);
+scene.add(new T.HemisphereLight(0xffffff, 0x505050, 0.75));
+const sun = new T.DirectionalLight(0xffffff, 0.9); sun.position.set(-250, 500, 300); scene.add(sun);
+scene.add(new T.GridHelper(900, 3, 0x55554f, 0x2c2c29));
+const r = makeRobot3D(T);
+scene.add(r.group);
+const front = new T.Mesh(new T.ConeGeometry(10, 26, 3), new T.MeshBasicMaterial({color: 0xf2a900}));
+front.rotation.x = -Math.PI / 2; front.position.set(0, 1, -150); scene.add(front);
+
+let az = 2.45, el = 0.35, dist = 640, spinOn = true, path = 0;
+const views = {'3/4': [2.45, 0.35], 'спереди': [Math.PI, 0.12], 'сбоку': [Math.PI / 2, 0.08], 'сзади': [0, 0.12], 'сверху': [Math.PI, 1.5]};
+const bar = document.getElementById('bar');
+for (const [name, [a, e]] of Object.entries(views)) {
+  const b = document.createElement('button'); b.textContent = name;
+  b.onclick = () => { az = a; el = e; spinOn = false; turn.classList.remove('on'); };
+  bar.appendChild(b);
+}
+const turn = document.createElement('button'); turn.textContent = 'вращать'; turn.className = 'on';
+turn.onclick = () => { spinOn = !spinOn; turn.classList.toggle('on', spinOn); };
+bar.appendChild(turn);
+let drag = null;
+host.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY, az, el]; spinOn = false; turn.classList.remove('on'); });
+addEventListener('pointermove', e => { if (drag) { az = drag[2] - (e.clientX - drag[0]) * 0.01; el = Math.max(-0.1, Math.min(1.55, drag[3] + (e.clientY - drag[1]) * 0.01)); } });
+addEventListener('pointerup', () => { drag = null; });
+host.addEventListener('wheel', e => { e.preventDefault(); dist = Math.max(250, Math.min(2000, dist * (1 + Math.sign(e.deltaY) * 0.08))); }, {passive: false});
+// в виде из "фронта" камера на -z: az=π -> позиция (0, ., -dist)
+function frame() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
+  if (spinOn) az += 0.004;
+  path += 0.6; r.spin(path);
+  cam.position.set(Math.sin(az) * Math.cos(el) * dist, Math.sin(el) * dist + 60, Math.cos(az) * Math.cos(el) * dist);
+  cam.lookAt(0, 65, 0);
+  renderer.render(scene, cam);
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>

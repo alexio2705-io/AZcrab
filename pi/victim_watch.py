@@ -88,6 +88,9 @@ class VictimWatcher:
         self.latency = Stats()
         self.infer = Stats()
         self._t_start = time.monotonic()
+        # Для пульта (dash_web.py читает кадр прямо из общей памяти по имени):
+        # номер и время последнего кадра в слоте и последние рамки стороны.
+        self._live = {s: {"fid": 0, "t": None, "boxes": [], "bt": None} for s in self.cams}
 
         nbytes = int(np.prod(FRAME_SHAPE))
         self._shm = {s: shared_memory.SharedMemory(create=True, size=nbytes) for s in self.cams}
@@ -185,6 +188,15 @@ class VictimWatcher:
         return (f"    [VW] {', '.join(parts)}; кадр→рамки {lat.fmt()} мс; "
                 f"инференс {inf.fmt()} мс")
 
+    def live_info(self):
+        """Для пульта: по стороне - имя общей памяти (кадр 320x320 BGR),
+        включена ли, номер/время кадра и рамки последнего ответа воркера."""
+        with self._lock:
+            return {s: {"shm": self._shm[s].name, "armed": self._armed[s],
+                        "failed": s in self._failed, "dead": self.dead,
+                        "ready": self.ready.is_set(), **self._live[s]}
+                    for s in self.cams}
+
     def close(self):
         self._closing = True
         self.arm(set())
@@ -275,6 +287,9 @@ class VictimWatcher:
                               tuple(b["xyxy"]), t_frame, msg.get("img"))
                      for b in msg.get("boxes", [])]
             self._out.append((arm_id, t_frame, boxes))
+            self._live[side]["boxes"] = [[b.cls, round(b.conf, 2), [round(v) for v in b.xyxy]]
+                                         for b in boxes]
+            self._live[side]["bt"] = t_frame
         self._free[side].set()
 
     def _cam_loop(self, side):
@@ -337,6 +352,8 @@ class VictimWatcher:
                 self._pending[side] = (fid, t_frame, arm_id, time.monotonic())
                 self._free[side].clear()
                 self._frames_n[side] += 1
+                lv = self._live[side]
+                lv["fid"], lv["t"] = fid, t_frame
             try:
                 stdin = self._proc.stdin
                 assert stdin is not None

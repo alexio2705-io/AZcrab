@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,9 +71,20 @@ def index_html(rows):
             f"{body}</table></body></html>")
 
 
+ROBOT3D_SRC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "pi", "dash", "robot3d.js")
+
+
+def copy_robot3d(out_dir):
+    """Модель робота - одна на пульт и просмотрщик: исходник в pi/dash,
+    сюда - копия рядом с three.js."""
+    os.makedirs(os.path.join(out_dir, "vendor"), exist_ok=True)
+    shutil.copyfile(ROBOT3D_SRC, os.path.join(out_dir, "vendor", "robot3d.js"))
+
+
 def write_site(out_dir, traces, template=None):
     """traces {имя: трасса} -> data/<имя>.json, <имя>.html, index.html;
     возвращает путь к index.html."""
+    copy_robot3d(out_dir)
     if template is None:
         with open(os.path.join(HERE, "template.html"), encoding="utf-8") as f:
             template = f.read()
