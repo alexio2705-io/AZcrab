@@ -158,7 +158,10 @@ def run(name, trace=False):
         with contextlib.redirect_stdout(buf):
             ms.setup(sim)
             if rec is not None:
-                nav._write_state = lambda cx, cy, hdg, cp, phase: rec.on_state(phase)
+                def _ws(cx, cy, hdg, cp, phase):
+                    nav._note_state(cx, cy, hdg, cp, phase)
+                    rec.on_state(phase)
+                nav._write_state = _ws
             cx, cy, hdg, cp, status = nav.flood_fill_run(cap)
             if status != "fatal":
                 cx, cy, hdg = nav.return_to_start(cx, cy, hdg, cp)
