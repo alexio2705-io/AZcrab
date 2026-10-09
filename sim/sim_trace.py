@@ -183,6 +183,24 @@ def world_json(walls, pieces):
             "terrain": [sample_terrain(*p) for p in pieces]}
 
 
+ISLAND_MIN_MM = 60.0    # плоский рельеф выше этого - остров верхнего этажа, ниже - бугорок
+
+
+def floor_rise(world):
+    """Высота этажа - по островам мира (world_json); None - верхнего этажа нет."""
+    hs = [t["h"] for t in world["terrain"] if t["kind"] == "flat" and t["h"] >= ISLAND_MIN_MM]
+    return min(hs) if hs else None
+
+
+def pose_floors(zs, rise):
+    """Этаж робота по высоте под ним: по физике, а не по логу - nav пишет
+    про горку только новую, а обратно едет по известным. На горке этаж
+    меняется на середине подъёма."""
+    if not rise:
+        return [0] * len(zs)
+    return [int(math.floor(z / rise + 0.5)) for z in zs]
+
+
 def level_of(cy):
     """Этаж клетки по cy - как nav.level_of."""
     return int((cy + LEVEL_STRIDE / 2) // LEVEL_STRIDE)
@@ -274,11 +292,14 @@ def build_trace(name, world, rec, lines, meta, t0):
     """Всё записанное -> словарь трассы (ключи meta, world, truth, poses,
     scans, events, maps), время - от t0."""
     cells = {(r[0], r[1]) for m in rec.maps for r in m["maze"]}
+    wj = world_json(world.walls, world.pieces)
+    poses = pose_columns(thin_poses(rec.samples, [t for t, _ in lines]), t0)
+    poses["fl"] = pose_floors(poses["z"], floor_rise(wj))
     return {
         "meta": {"name": name, **meta},
-        "world": world_json(world.walls, world.pieces),
+        "world": wj,
         "truth": truth_rows(world.walls, world.height, cells),
-        "poses": pose_columns(thin_poses(rec.samples, [t for t, _ in lines]), t0),
+        "poses": poses,
         "scans": [{**s, "t": round(s["t"] - t0, 3)} for s in rec.scans],
         "events": parse_log(lines, t0),
         "maps": [{**m, "t": round(m["t"] - t0, 3)} for m in rec.maps],

@@ -187,14 +187,9 @@ function poseAt(t) {
 const SCAN_T = T.scans.map(s => s.t), MAP_T = T.maps.map(m => m.t), EV_T = EV.map(e => e.t);
 const scanAt = t => T.scans[bsearch(SCAN_T, t)] || null;
 const mapAt = t => T.maps[bsearch(MAP_T, t)] || null;
-function floorAt(t) {                // этаж робота: последний шаг маршрута или горка
-  for (let i = bsearch(EV_T, t); i >= 0; i--) {
-    const e = EV[i];
-    if (e.type === "step") return levelOf(e.cell[1]);
-    if (e.type === "ramp_done") return levelOf(e.to[1]);
-  }
-  return 0;
-}
+// этаж робота - по высоте под ним (poses.fl, sim_trace.pose_floors): строки
+// лога про горку nav пишет только для новой, обратно едет по известным
+const floorAt = t => P.fl[Math.max(0, bsearch(P.t, t))];
 
 // ═══ цвета (из CSS, перечитываются при смене темы) ═══════════════════
 let C = {};
@@ -916,7 +911,7 @@ function syncLog() {
   while (idx >= 0 && noprog && EV[idx].type === "progress") idx--;
   if (idx === lastLog) return;
   const lo = Math.min(idx, lastLog), hi = Math.max(idx, lastLog);
-  if (lastLog === -2) LOG_ROWS.forEach((r, i) => r.classList.toggle("future", i > idx));
+  if (lastLog === -2) LOG_ROWS.forEach((r, i) => { r.classList.toggle("future", i > idx); r.classList.remove("cur"); });
   else for (let i = Math.max(0, lo + 1); i <= hi; i++) LOG_ROWS[i].classList.toggle("future", i > idx);
   if (lastLog >= 0) LOG_ROWS[lastLog].classList.remove("cur");
   lastLog = idx;

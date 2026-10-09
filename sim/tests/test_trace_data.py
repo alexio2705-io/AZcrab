@@ -6,8 +6,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import run_scenarios as rs  # noqa: E402
-from sim_trace import (edge_truth, map_snapshot, pose_columns, sample_terrain,  # noqa: E402
-                       thin_poses, truth_rows, world_json)
+from sim_trace import (edge_truth, floor_rise, map_snapshot, pose_columns, pose_floors,  # noqa: E402
+                       sample_terrain, thin_poses, truth_rows, world_json)
 
 
 def pose(t, m="M", b=False, **kw):
@@ -61,6 +61,18 @@ class PoseColumnsTest(unittest.TestCase):
         self.assertEqual(cols["m"], "MT")
         self.assertEqual(cols["b"], [1, 0])
         self.assertEqual(cols["f"], [147.0, None])
+
+
+class FloorTest(unittest.TestCase):
+    def test_floor_by_height(self):
+        self.assertEqual(pose_floors([0.0, 60.0, 80.0, 140.0, 139.0, 0.0], 140.0), [0, 0, 1, 1, 1, 0])
+
+    def test_no_upper_floor(self):
+        self.assertEqual(pose_floors([0.0, 25.0], None), [0, 0])
+
+    def test_rise_is_island_height_not_bump(self):
+        self.assertEqual(floor_rise(world_json(rs.ramp_world().walls, rs.ramp_world().pieces)), 140.0)
+        self.assertIsNone(floor_rise(world_json(rs.bigbump_world().walls, rs.bigbump_world().pieces)))
 
 
 class TerrainTest(unittest.TestCase):

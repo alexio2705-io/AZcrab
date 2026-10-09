@@ -43,6 +43,13 @@ class TraceRunTest(unittest.TestCase):
         self.assertGreaterEqual(len(tr["maps"]), 1)
         self.assertTrue(tr["truth"])
 
+    def test_floor_back_to_ground_after_known_ramp(self):
+        _, tr = traced("ramp")          # обратный путь - по уже известной горке
+        fl = tr["poses"]["fl"]
+        self.assertIn(1, fl)
+        self.assertEqual(fl[-1], 0)
+        self.assertEqual(len(fl), len(tr["poses"]["t"]))
+
     def test_times_start_near_zero(self):
         self.assertLess(self.tr["poses"]["t"][0], 1.0)
         self.assertGreaterEqual(self.tr["events"][0]["t"], 0.0)
