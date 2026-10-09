@@ -143,6 +143,8 @@ class Sim:
         self.t = 1000.0
         self.vl = self.vr = 0.0
         self.cmd = ("M", 0.0, 0.0, 0.0)
+        self.cmd_raw = "M"        # M/T/B как пришло от nav (B модель сводит к M 0,0)
+        self.rec = None           # регистратор трассы (sim/trace.Recorder) или None
         self.lcm = self.rcm = 0.0
         self.z_cnt = 0
         self.next_scan = self.t
@@ -156,11 +158,14 @@ class Sim:
         if s.startswith("M:"):
             l, r = (float(v) for v in s[2:].split(","))
             self.cmd = ("M", l, r, 0.0)
+            self.cmd_raw = "M"
         elif s.startswith("T:"):
             l, r, cap = (float(v) for v in s[2:].split(","))
             self.cmd = ("T", l, r, cap)
+            self.cmd_raw = "T"
         elif s == "B":
             self.cmd = ("M", 0.0, 0.0, 0.0)
+            self.cmd_raw = "B"
         elif s == "Z":
             self.lcm = self.rcm = 0.0
             self.z_cnt = (self.z_cnt + 1) % 256
@@ -244,6 +249,8 @@ class Sim:
         self.theta = (self.theta + omega * dt) % 360.0
         self.t += dt
         self._telemetry(p, omega)
+        if self.rec is not None:
+            self.rec.on_step(self, p)
         if self.t >= self.next_scan:
             self.next_scan += 0.1
             self._scan(p)
@@ -316,6 +323,7 @@ class Sim:
         hf, hr = self.axle_heights()
         z = (hf + hr) / 2.0 + LIDAR_Z
         rev = []
+        hits = [] if self.rec is not None else None   # (x, y, z, стена?) концов лучей
         for a in range(360):
             # Стойки, ручки и леска закрывают лучи физически; задняя зона -
             # нет: walls.measure() снимает её маску для задней стены.
@@ -324,10 +332,12 @@ class Sim:
             phi = math.radians(self.theta + a)
             dx, dy = math.sin(phi), math.cos(phi)
             te = math.tan(math.radians(p * math.cos(math.radians(a))))
-            s = self._ray_walls(self.x, self.y, dx, dy, z, te)
-            s = self._ray_terrain(self.x, self.y, dx, dy, z, te, min(s, 1500.0) if s < 4000 else 1500.0)
+            sw = self._ray_walls(self.x, self.y, dx, dy, z, te)
+            s = self._ray_terrain(self.x, self.y, dx, dy, z, te, min(sw, 1500.0) if sw < 4000 else 1500.0)
             if s < 3000.0:
                 rev.append((float(a), s / math.cos(math.atan(te)), 200))
+                if hits is not None:
+                    hits.append((self.x + dx * s, self.y + dy * s, z + s * te, s == sw))
         filt = walls.filtered(rev)
         w = walls.measure(rev, filt)
         with nav._lock:
@@ -340,7 +350,10 @@ class Sim:
         nav._scan_cnt += 1
         # Оборот модели снят мгновенно (с одной позы) - длительность 0, чтобы
         # corridor.point_time не размазывал точки по 100 мс, как у LD19.
-        nav._scan_pts.append((nav._scan_cnt, self.t, 1e-6, corridor.corridor_points(filt[0])))
+        pts = corridor.corridor_points(filt[0])
+        nav._scan_pts.append((nav._scan_cnt, self.t, 1e-6, pts))
+        if hits is not None:
+            self.rec.on_scan(self, hits, pts)
 
 
 def setup(sim):
