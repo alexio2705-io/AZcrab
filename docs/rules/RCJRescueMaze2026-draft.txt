@@ -1,0 +1,1590 @@
+              RoboCupJunior Rescue Maze
+                   Rules 2026 Draft
+                                    RoboCupJunior Rescue Committee 2026
+
+Chair             Diego Garza Rodriguez                                                        Mexico
+
+                  Stefan Zauper                                                                Austria
+
+                  Csaba Aban Jr.                                                               Hungary
+
+                  Joann Patiño                                                                 Panama
+
+                  Mahmoud Madi                                                                 UAE
+
+                  Alexander Jeddeloh                                                           Germany
+
+                  Gonzalo Zabala                                                               Argentina
+
+
+              RoboCupJunior Exec 2026                          Trustees representing RoboCupJunior
+
+Marek Šuppa                        Slovakia              Julia Maurer                  USA
+
+Christian Häußler                  Germany               Roberto Bonilla               USA
+
+Margaux Edwards                    Australia
+
+Tatiana Pazelli                    Brazil
+
+Tom Linnemann                      Germany
+
+William Plummer                    Australia
+
+
+
+Official Resources
+RoboCupJunior Official Website RoboCupJunior Official Forum RCJ Rescue Community Website
+
+
+
+
+    https://junior.robocup.org           https://junior.forum.robocup.org       https://rescue.rcj.cloud
+
+
+                Corrections and clarifications to the rules may be posted on the forum before updating
+               this rule file. It is the responsibility of the teams to review the forum to have a complete
+                vision of these rules.
+
+
+
+
+Last updated: 2026-01-28                                                                           Page 1 of 33
+Before you read the rules
+                Please read through the RoboCupJunior General Rules before proceeding with these
+                rules, as they are the premise for all rules. The English rules published by the
+                RoboCupJunior Rescue Committee are the only official rules for RoboCupJunior Rescue
+               Maze 2026. The translated versions each regional committee can publish are only
+                referenced information for non-English speakers to understand the rules better. It is
+                the responsibility of the teams to read and understand the official rules.
+
+
+
+Scenario
+The land is too dangerous for humans to reach the victims. Your team has been given a difficult task. The
+robot must be able to carry out a rescue mission in a fully autonomous mode with no human assistance.
+The robot must be durable and intelligent enough to navigate treacherous terrain with hills, uneven
+land, and rubble without getting stuck. The robot must search for victims, dispense rescue kits, and
+signal the position of the victims so the humans can take over. Time and technical skills are essential!
+Come prepared to be the most successful rescue team.
+
+
+
+
+Last updated: 2026-01-28                                                                      Page 2 of 33
+Summary
+The robot needs to search through a maze for victims. The maze can contain an area which is called
+"Dangerous Zone". This area is considered more challenging than the rest of the field. The robot is not
+supposed to find the fastest path through the labyrinth; instead, it should explore as much of the maze
+                                                                                           [1]
+as possible. The robot will be awarded 5, 10, 15, or 30 points for each cognitive target         or letter victim
+detected, dependent on its location in the field. Suppose the robot can successfully deliver a rescue kit
+                                                                                         [2]
+close to a victim. In that case, it will earn an additional 10 or 30 points per victim         . The number of
+maximum extra points depends on the type of victim.
+
+        [3]
+ • 30         points for harmed letter victims
+
+ • 10 points for stable letter victims
+
+ • No additional points for an unharmed letter victim
+        [4]                                            [5]
+ • 30         points for a harmed cognitive target
+                                                 [6]
+ • 10 points for a stable cognitive target
+                                                             [7]
+ • No additional points for a unharmed cognitive target
+
+If the robot is stuck in the maze, it can be restarted at the last visited checkpoint. A reflective floor
+indicates checkpoints, so the robot can save the position to a map (if it uses a map) in a non-volatile
+medium and restore it in case of a restart. The robot must also avoid areas with black floors.
+
+If the robot can find its way back to the beginning of the maze after exploring the whole maze, it will
+receive an exit bonus. The robot will also earn a reliability bonus if the robot can exit the maze with a
+minimum number of restarts. Suppose the robot can find its way back to the beginning after exploring
+the maze. In that case, it will receive 10 bonus points per identified victim, 10 bonus points for every
+blue tile which was only visited once, 5 bonus points for each successful stair navigation and 5
+bonus points for each successful ramp navigation as an exit bonus.
+
+The robot can earn additional points by navigating the following hazards:
+
+ • 10 points for going up or down a ramp
+
+ • 10 points for each visited checkpoint
+
+ • 5 points for passing through each tile with speed bumps
+
+ • 10 points for navigating a set of stairs
+
+
+
+
+Last updated: 2026-01-28                                                                              Page 3 of 33
+Changes from the 2025 RoboCupJunior Rescue Maze
+Rules
+ • Deleted "Terms and Definitions"
+
+ • Changed "colored" to "cognitive target"
+
+ • Changed "rescue kit" to "victim"
+
+ • Added "or 30"
+
+ • Changed "20" to "30"
+
+ • Changed "20" to "30"
+
+ • Changed "red-colored victim" to "harmed cognitive target"
+
+ • Changed "yellow-colored victim" to "stable cognitive target"
+
+ • Changed "green-colored victim" to "unharmed cognitive target"
+
+ • Added "10 bonus points for every blue tile which was only visited once, 5 bonus points for each
+   successful stair navigation and 5 bonus points for each successful ramp navigation"
+
+ • Added "The definition of walls also include the support structure on the ends (e.g. item profiles,
+   pillars, …)."
+
+ • Changed "in dimension (±10% variation on the tile size) than a tile due to the nature of placing
+   walls." to "due to the walls not being indefinitely thin. That leads that the pathway between two
+   opposite walls is 28 cm wide."
+
+ • Deleted "for the robot are intended to be of the width of the tile and"
+
+ • Changed "colored victims" to "cognitive targets"
+
+ • Added "or cognitive targets with values that do not represent a health status."
+
+ • Changed "H" to "Φ"
+
+ • Changed "S" to "Ψ"
+
+ • Changed "U" to "Ω"
+
+ • Deleted "Colored victims are printed on or attached to a wall. Their size will be 16 cm² with no more
+   than 6 cm in either dimension. Three colors are used: red, yellow, and green."
+
+ • Added "Cognitive targets have the shape of a circle. The outermost circle has a diameter of 5 cm,
+   consisting of up to 5 concentric rings. The innermost circle has a diameter of 1 cm, and the diameter
+   of each subsequent outer ring increases by 1 cm, resulting in rings with diameters of 1 cm, 2 cm, 3
+   cm, 4 cm, and 5 cm. The rings and the circle can have different colors. The color of the rings and the
+   circle correspond to a numerical value:"
+
+ • Added "Black = -2"
+
+ • Added "Red = -1"
+
+ • Added "Yellow = 0"
+
+ • Added "Green = 1"
+
+
+
+
+Last updated: 2026-01-28                                                                      Page 4 of 33
+ • Added "Blue = 2"
+
+ • Added "The health status of the victims at the cognitive target can be calculated by summing up the
+   value of the 5 rings. Adjacent rings of the same color are not merged. The robot must always
+   consider each of the 5 rings separately and sum the value for all 5 rings, regardless of whether colors
+   repeat. Depending on the sum, the health status can be determined."
+
+ • Added "Harmed victim: sum = 2"
+
+ • Added "Stable victim: sum = 1"
+
+ • Added "Unharmed victim: sum = 0"
+
+ • Changed "12" to "8"
+
+ • Added "Robots are strictly prohibited from intentionally marking any part of the competition field."
+
+ • Changed "colored" to "letter"
+
+ • Changed "letter victims" to "cognitive targets"
+
+ • Changed "colored" to "letter"
+
+ • Changed "letter victims" to "cognitive targets"
+
+ • Changed "per successful rescue kit deployment." to "for one successful rescue kit deployment, while
+   30 points are awarded for two successful rescue kit deployments to the same victim."
+
+ • Changed "H" to "Φ"
+
+ • Changed "20" to "30"
+
+ • Changed "S" to "Ψ"
+
+ • Changed "U" to "Ω"
+
+ • Changed "Colored victims" to "Cognitive targets"
+
+ • Changed "Red" to "Harmed (2)"
+
+ • Changed "20" to "30"
+
+ • Changed "Yellow" to "Stable (1)"
+
+ • Changed "Green" to "Unharmed (0)"
+
+ • Added "Successful blue tile visits (SBV). 30 points are awarded for visiting a blue tile once. Partially
+   successful blue tile visits - if the robot revisits the exact same blue tile, the score for a blue tile is
+   reduced. For every subsequent time the robot visits that exact same tile, the total score awarded for
+   that specific tile will be reduced by 10 points. The score of a single blue tile can not go below 0."
+
+ • Added ", successful blue tile visits (SBV)"
+
+ • Added "+ (SBV) × 10"
+
+ • Changed "10" to "15"
+
+ • Added "10 points for every successful blue tile visits (SBV), 5 points for every successful stair
+   navigation (SSN) and 5 points for every successful ramp navigation (SRN)"
+
+ • Added "+ (SBV) × 10 + (SSN) × 5 + (SRN) × 5"
+
+ • Added "The robot brought to the competition must remain substantially the same robot for the Super
+
+
+Last updated: 2026-01-28                                                                           Page 5 of 33
+   Team Competition."
+
+ • Added "Modifications should maintain the robot’s original functional concept, mechanical layout,
+   and overall design approach. Changes that effectively create a second, entirely different robot are
+   not allowed."
+
+
+
+
+Last updated: 2026-01-28                                                                   Page 6 of 33
+Contents
+1. RoboCupJunior International 2026 General Rules . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+    1.1. Team Requirements . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+    1.2. International Team Qualification Process . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+    1.3. Robot Requirements . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+    1.4. Documentation and Sharing Requirements . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+    1.5. Spirit and Behavior . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+2. Code of Conduct . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+    2.1. Spirit . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+    2.2. Fair Play . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+    2.3. Behavior. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+    2.4. Mentors . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+    2.5. Ethics and Integrity . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+    2.6. Sharing . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+3. Field . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+    3.1. Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+    3.2. Floor . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+    3.3. Path . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+    3.4. Speed Bumps, Obstacles, and Stairs . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+    3.5. Dangerous Zone . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+    3.6. Victims . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+    3.7. Rescue Kits. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+    3.8. Environmental Conditions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+4. Robots. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+           [1]
+    4.1.         Control . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+    4.2. Construction . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22
+    4.3. Team . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22
+    4.4. Inspection . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23
+    4.5. Violations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23
+5. Play . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+    5.1. Pre-game Practice . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+    5.2. Humans . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+    5.3. Start of Game . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+    5.4. Scoring Run . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+    5.5. Lack of Progress . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+    5.6. Scoring . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+    5.7. End of Game . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+6. Competition. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+
+
+
+Last updated: 2026-01-28                                                                                                                                                 Page 7 of 33
+    6.1. Rounds & Scoring. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+    6.2. Technical Challenge . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+    6.3. SuperTeam Challenge . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+7. Open Technical Evaluation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30
+    7.1. Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30
+    7.2. Evaluation Aspects . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30
+    7.3. Documents. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+    7.4. Sharing . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+8. Conflict Resolution . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+    8.1. Referee and Referee Assistant . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+    8.2. Rule Clarification . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+    8.3. Special Circumstances . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+
+
+
+
+Last updated: 2026-01-28                                                                                                                                            Page 8 of 33
+1. RoboCupJunior International 2026 General
+Rules
+These rules apply to the international RoboCupJunior competition. However, regional, SuperRegional,
+and local tournaments may have variations or adaptations to these rules to suit their specific
+competition needs. It is important to check with the organizers of the tournaments you are participating
+in to confirm which exact rules will be in use.
+
+If teams are unsure about any aspects of the General Rules or specific League Rules, they are encouraged
+to inquire via the official RoboCupJunior Forum for clarification: https://junior.forum.robocup.org/
+
+For questions regarding any of the rules or RoboCupJunior in general, teams can also reach out to the
+RoboCupJunior community through the official Discord Server.
+
+
+1.1. Team Requirements
+1.1.1. Team Size
+
+Minimum Team Size: Teams must consist of at least 2 members.
+
+Maximum Team Size:
+
+ • Soccer and Rescue Leagues: 4 members.
+
+ • OnStage League: 5 members.
+
+Regional and SuperRegional competitions may define their own team sizes depending on their venue
+capacity and regional variations. Teams attending the International competition will only be able to
+have the maximum number of registered participants in the qualifying team.
+
+Shared Members and Robots: No team member(s) or robot(s) may be shared between teams.
+
+
+1.1.2. Team Supervision
+
+Junior Mentor Requirement: Each Junior team must have at least one Junior Mentor registered and
+attending with the team.
+
+Mentors and Parent/Chaperones are responsible for supervising their teams and maintain a duty of
+care/well being for their team members, as appropriate for their home region’s regulations. Any
+concerns regarding team member welfare should be brought to the attention of the event organizers
+immediately.
+
+The Junior Mentor is expected to be present during all official competition events with their team. They
+must not interact in an imposing manner with teams, robots, judges, or the judging process. Any
+incident considered inappropriate will be handled by the event organizers and may lead to disciplinary
+actions.
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 9 of 33
+1.1.3. Age Requirements
+
+Junior Student Members: Must be between 14 and 19 years old as of July 1st of the competition year.
+
+Junior Mentors and Parent/Chaperones: Must be 19 years or older as of July 1st of the competition
+year.
+
+
+1.1.4. Team Members
+
+Entry Leagues: RoboCupJunior Entry leagues and other "Primary" divisions (where minimum age may
+vary) are not run at the international competition but feature in many regions and SuperRegional
+tournaments.
+
+Technical Roles: Every team member must have a defined technical role (mechanical/design,
+electrical/sensing, software etc.) and should be able to explain their role during technical judging.
+
+
+1.2. International Team Qualification Process
+ • To qualify for the International competition, each region’s Regional Representative will complete the
+   Slot Allocation Process at the start of the Competition year. Regional Representatives can be found at
+   the Official Website.
+
+ • After the region’s local qualifying tournament, the Regional Representative will assign slots. Once
+   confirmed by the RoboCupJunior organizers, the qualified teams will be invited to register through
+   the official RoboCup Federation registration system.
+
+ • The qualification process differs depending on the size of each region, but slot allocation must
+   strongly reflect results from regional competitions.
+
+ • If a region does not use or releases its allocated slots, Regional Representatives may request
+   additional slots during a later stage of the allocation process.
+
+
+1.3. Robot Requirements
+1.3.1. Robot Communication
+
+Permitted Communication: Communication between robots during gameplay is allowed as long as it
+uses the 2.4GHz spectrum and its power output does not exceed 100 mW EIRP (Effective Isotropic
+Radiated Power) under any circumstances.
+
+Responsibility: Teams are responsible for managing their robot communication. Spectrum availability
+is not guaranteed.
+
+Component Communication: Communication between components of the same robot is permitted.
+
+League Adaptability: Each league may modify the robot communication rules to ensure they meet their
+specific requirements.
+
+
+
+
+Last updated: 2026-01-28                                                                        Page 10 of 33
+1.3.2. Safety and Power Requirements
+
+Electrical Power:
+
+ • Robots must not use mains electricity.
+
+ • Maximum allowed voltage: 48V DC or 25V AC RMS (Root Mean Square).
+
+ • Voltage must be easily measured during inspections, and measuring points must be covered for
+   safety or designed with safety considerations in place.
+
+Battery Safety:
+
+ • Lithium batteries must be stored in safety bags, and charging must be supervised by team members
+   in competition areas.
+
+ • Teams must follow safety protocols, including battery fire handling and evacuation procedures.
+
+Robot Safety Design:
+
+ • Power Management: Secure batteries, safe wiring, and emergency stop functionality.
+
+ • Mechanical Safety: No sharp edges, pinch points, or other hazards. Actuators must be appropriate
+   for the robot’s size and function.
+
+ • Hazardous Behavior: Teams must report potentially dangerous robot behaviors at least two weeks
+   before a RoboCupJunior event.
+
+
+1.4. Documentation and Sharing Requirements
+1.4.1. RoboCupJunior Team Posters
+
+Purpose: Posters are a tool for sharing robot designs and insights with judges, teams, and the public.
+Posters will be hung in public competition areas in the venue and digital copies or photographs will be
+shared by RoboCupJunior after the competition.
+
+Size: Posters must be no larger than A1 size (60 x 84 cm).
+
+Content: Posters should summarize design documents and present the robot’s capabilities in an
+engaging format.
+
+
+1.4.2. Technical Description Video (See League Documentation)
+
+Content:
+
+ • Robotic Demonstration: Show fully functional robot systems to highlight technical aspects.
+
+ • Design Process: Explain design choices and team problem-solving approaches.
+
+ • Presentation: Clear and high-quality, explaining innovative or unusual techniques.
+
+ • Innovation & Sustainability: Highlight new technologies and sustainable practices.
+
+
+
+
+Last updated: 2026-01-28                                                                   Page 11 of 33
+Submission: Guidelines will specify video length and deadlines per league.
+
+
+1.4.3. Sharing Team Resources
+
+Sharing: Materials submitted by teams as part of the documentation submission will be shared on
+GitHub repositories for the leagues: https://github.com/robocup-junior
+
+Credit: Teams must credit creators of external work and adhere to licensing rules. The focus should
+remain on personal growth and learning.
+
+
+1.4.4. Plagiarism Guidelines
+
+External Code Use: Teams are allowed to use external code but must credit the original creators.
+
+Learning Priority: Teams should prioritize learning and not use complete solutions from others. Always
+pay attention to licensing rules.
+
+
+1.4.5. Bill of Materials (BOM)
+
+Submission: Teams must submit a BOM (Bill of Materials) listing major components and materials used.
+
+Details: The BOM must include:
+
+ • Component name/description (e.g., part number).
+
+ • Supplier/source of the component (including PCBs/machined components).
+
+ • Status (new/reused).
+
+ • Kit or custom-built.
+
+ • Price.
+
+Template: A standardized BOM template will be provided with the league documentation submissions
+for the international competition.
+
+
+1.5. Spirit and Behavior
+1.5.1. Behavior
+
+All participants are expected to behave themselves and be considerate and polite especially but not only
+towards other participants, volunteers, referees and organizers of all Junior and Major Leagues as well
+as the host venue.
+
+
+1.5.2. Code of Conduct
+
+All organisers, volunteers, team members, mentors, supporters and visitors must abide by the RoboCup
+Federation Code of Conduct. Any instances where, a situation occurs that does not meet the code of
+conduct must be reported to a RoboCup Federation organisation member and will be investigated.
+
+
+
+
+Last updated: 2026-01-28                                                                    Page 12 of 33
+1.5.3. Mentoring and Onsite Assistance
+
+Support from other teams, mentors, teachers, parents, sponsors, internet communities etc. is a core part
+of how teams learn and grow.
+
+To ensure fair competition and maximize learning it is required that none of the support they receive
+does the work of competing for the team. A good indication is the team’s ability to explain not only what
+their robots' components do but also how they do it.
+
+
+1.5.4. Teams Onsite
+
+ • During the competition, only the official team members (maximum 4/5 depending on league) can
+   represent the team at registration, setup-day, and have access to the competition areas for rounds
+   and interviews.
+
+ • There must be at least 2 team members on-site, unless a team can present evidence of extenuating
+   circumstances, including proof of travel for other team members. Teams where only one participant
+   presents at the venue will be able to compete, but will not be eligible for finals or awards.
+
+ • It is the teams' responsibility to ensure that team member are present at the correct time and
+   location for all scheduled activities.
+
+ • Teams are not allowed to communicate with or receive help virtually from external parties with the
+   intention of impacting the team’s performance during the competition areas. Virtually
+   communicating includes but is not limited to extended phone calls, video calls, remote desktop
+   control etc.
+
+ • Any team found to be in breach of these rules may be subject to disciplinary action.
+
+ • Teams are recommended to seek help from other teams, or organizers if they are struggling with any
+   issues onsite.
+
+
+1.5.5. Violations
+
+Teams, Team Mentors/Supporters or Team Members that repeatedly conduct themselves in an
+unacceptable way or in violation to the General or League Rules may be disqualified from the
+tournament and asked to leave the venue.
+
+
+
+2. Code of Conduct
+2.1. Spirit
+1. It is expected that all participants (students and mentors alike) respect the aims and ideals of
+   RoboCupJunior as set out in our mission statement.
+
+2. The volunteers, referees, and officials will act within the event’s spirit to ensure the competition is
+   competitive, fair, and, most importantly, fun.
+
+3. It is not whether you win or lose but how much you learn that counts!
+
+
+
+
+Last updated: 2026-01-28                                                                           Page 13 of 33
+2.2. Fair Play
+1. Robots that cause deliberate or repeated damage to the field will be disqualified.
+
+2. Humans who cause deliberate interference with robots or damage the field will be disqualified.
+
+3. It is expected that all teams aim to participate fairly.
+
+
+2.3. Behavior
+1. Each team is responsible for verifying the latest version of the rules on the RoboCupJunior Official
+   website and additional clarifications/corrections on the official forum made by the RoboCupJunior
+   Rescue Committee before the competition.
+
+2. Participants should be mindful of other people and their robots when moving around the
+   tournament venue.
+
+3. Participants are not allowed to enter setup areas of other leagues or teams unless explicitly invited to
+   do so by team members.
+
+4. Teams will be responsible for checking updated information (schedules, meetings, announcements,
+   etc.) during the event. The RoboCupJunior Rescue Committee will provide updated information on
+   notice boards in the venue, the local competition website, or the RoboCupJunior website if possible.
+
+5. Participants and their companions who misbehave may be asked to leave the venue and risk being
+   disqualified from the tournament.
+
+6. Referees, officials, tournament organizers, and local law enforcement authorities will enforce these
+   rules equally to all participants.
+
+7. Teams are expected to be at the venue early on the setup day as important activities will occur. These
+   activities include but are not limited to registration, participation raffle, interviews, captains, and
+   mentor’s meetings, among others.
+
+
+2.4. Mentors
+1. Non-team members (mentors, teachers, parents and other family, chaperones, translators, and other
+   adult team members) are not allowed in the student work area.
+
+2. Mentors are not permitted to be involved in building, repairing, or programming their team’s robots
+   before and during the competition.
+
+3. In the first instance, mentor interference with robots or referee decisions will result in a warning. If
+   this behavior recurs, the team could face a possible elimination from the tournament.
+
+4. Robots have to be the work of the students. Any robot that appears identical to another robot may be
+   prompted for re-inspection.
+
+
+2.5. Ethics and Integrity
+1. Fraud and misconduct are not condoned. Fraudulent acts may include the following:
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 14 of 33
+    a. Mentors working on the software or hardware of student’s robot(s) during the competition.
+
+    b. More experienced/advanced groups of students may provide advice but should not do the work
+       for other groups. Otherwise, the team risks being disqualified.
+
+2. RoboCupJunior reserves the right to revoke an award if fraudulent behavior is proven after the
+   award ceremony occurs.
+
+3. Suppose it is evident that a mentor intentionally violates the code of conduct and modifies and
+   works on the student’s robot(s) during the competition. In that case, the mentor will be banned from
+   future participation in RoboCupJunior competitions.
+
+4. Teams that violate the code of conduct can be disqualified from the tournament. Disqualifying a
+   single team member from further participation in the tournament is also possible.
+
+5. Referees, officials, tournament organizers, and local law enforcement authorities will give a team a
+   warning in less severe cases of violations of the code of conduct. A team can be disqualified
+   immediately without warning for severe or repeated violations of the code of conduct.
+
+
+2.6. Sharing
+1. The spirit of world RoboCup competitions is that teams should share technological and curricular
+   developments with other participants after the tournament. Sharing furthers the mission of
+   RoboCupJunior as an educational initiative.
+
+2. The RoboCupJunior Rescue Committee may publish developments on the RoboCupJunior website
+   after the event.
+
+3. Participants are strongly encouraged to ask questions to their fellow competitors to foster a culture
+   of curiosity and exploration in the fields of science and technology.
+
+
+
+3. Field
+3.1. Description
+1. The field layout will consist of a collection of tiles with a horizontal floor, a perimeter wall, ramps,
+   and walls within the field.
+
+2. All tiles are defined as a 30 cm x 30 cm space.
+
+3. All walls used to create the maze are at least 15 cm high from any floor or the peaks of stairs, 30 cm
+   in length, and are mounted on the edges of the tiles.
+
+4. The definition of walls also include the support structure on the ends (e.g. item profiles,
+   pillars, …).
+
+5. Tiles will be used as ramps. They will have an incline with a maximum of 25 degrees from the
+   horizontal and are always straight.
+
+6. Ramps must NOT have a drop-off immediately following a rise section, creating a peak-like structure,
+   or vice versa.
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 15 of 33
+3.2. Floor
+1. Floors may be either smooth or textured (like linoleum or carpet) and may have deviations of up to 3
+   mm in height between the tiles. There may be holes in the floor (approximately 5 mm in diameter)
+   for fastening walls.
+
+2. Colored tiles:
+
+    a. There will be tiles of different colors on the floor of the maze. The meaning of each color is
+       explained below.
+
+    b. Colored tiles will be placed at the start of each game.
+
+     c. The organizers will fix colored tiles to the floor, but teams should be prepared for slight
+       movements of these tiles.
+
+3. Black tiles in the field represent holes, which the robot must avoid.
+
+4. Silver tiles in the field represent checkpoints.
+
+5. Blue tiles:
+
+    a. Blue tiles in the field represent puddles or other hard-to-traverse terrains.
+
+    b. If a robot visits a blue tile, it has to stop for 5 consequent seconds before visiting another tile.
+
+6. Red tiles in the field represent the entrance of the dangerous zone.
+
+7. Robots must be designed to navigate under tiles that form bridges over other tiles. Tiles placed above
+   other tiles will be supported by walls. The minimum height (space between the floor and the ceiling)
+   will be 25 cm.
+
+
+3.3. Path
+1. Tiles that lead to the starting tile consistently following the leftmost or rightmost wall are called
+   'linear tiles'. The tiles that do NOT lead to the starting tile consistently following the leftmost or
+   rightmost wall are called 'floating tiles'.
+
+2. Black tiles will affect the determination of tile type (linear or floating) since they can be considered
+   virtual walls.
+
+
+
+
+Last updated: 2026-01-28                                                                            Page 16 of 33
+3. Teams must prepare for the pathways to be slightly smaller due to the walls not being indefinitely
+                                                                                        [8]
+   thin. That leads that the pathway between two opposite walls is 28 cm wide.
+                [9]
+4. Pathways           may open into foyers more expansive than the pathways.
+
+5. One tile is the starting tile, where a robot should start and exit the run. It can be located anywhere in
+   the field.
+
+6. Walls may be removed, added, or changed just before a scoring run starts to prevent teams from pre-
+   mapping the layout of the fields. Organizers will do their best not to change the maze’s length or
+   difficulty when introducing these changes.
+
+
+3.4. Speed Bumps, Obstacles, and Stairs
+1. Speed bumps are fixed to the floor and have a maximum height of 1 cm.
+
+2. Speed bumps are not allowed to be placed on ramps or stairs.
+
+3. Obstacles:
+
+    a. have a minimum height of 15 cm.
+
+    b. may consist of any large, heavy items.
+
+     c. may be fixed to the floor.
+
+    d. may be any shape.
+
+4. Organizers may place obstacle either:
+
+    a. at least 20 cm from any wall OR
+
+    b. touching any wall and at least 20 cm from the opposite edge of the tile and any other obstacles.
+
+5. Obstacles that are moved or knocked over must remain where they are moved or fall and will not be
+   reset during the scoring run.
+
+6. The width of the stairs is the same as the path. The maximum height is 2 cm. The length of the top of
+   the stairs is at least 15 cm.
+
+7. The incline of stairs (i.e., the angle of a plate to the horizontal when placed on the stairs) will be less
+   than 25 degrees outside the dangerous zone.
+
+
+
+
+Last updated: 2026-01-28                                                                         Page 17 of 33
+8. Stairs may be used to change the level of the floor, similar to a ramp.
+
+9. Stairs will be placed between walls.
+
+
+
+
+3.5. Dangerous Zone
+1. The Dangerous Zone is an area considered more challenging than the rest of the field.
+
+2. The Dangerous Zone is marked by a red tile at the entrance and completly surrounded by walls.
+
+3. The Dangerous Zone does not block the path for completing the entire map. Therefore, the rest of the
+   field can be completed without entering the Dangerous Zone.
+
+4. Speed bumps are allowed to be placed on ramps inside the dangerous zone.
+
+5. The debris is not fixed to the floor and has a maximum height of 1 cm inside the dangerous zone.
+
+6. The incline of stairs (i.e., the angle of a plate to the horizontal when placed on the stairs) will be less
+   than 30 degrees inside the dangerous zone.
+
+7. Speed bumps are fixed to the floor and have a maximum height of 2 cm inside the dangerous zone.
+
+8. The start tile will not be inside the Dangerous Zone.
+
+
+
+
+Last updated: 2026-01-28                                                                         Page 18 of 33
+                The tiles inside the dangerous zone won’t be red (except for the entrance), this is just
+               for illustration purposes.
+
+
+
+3.6. Victims
+                                                                          [10]
+1. There are two types of victims: letter victims and cognitive targets      .
+
+2. Victims are located near the floor of the field (located about 7 cm above the floor, see the figure
+   below).
+
+
+
+
+3. Organizers will never locate victims on walls facing black/silver/blue/red tiles, tiles with
+   obstacles/speedbumps/stairs, and ramps.
+
+4. There may be objects that resemble victims in appearance but are not victims. This includes but is
+   not limited to letters, symbols or colors other than the ones described on this section or cognitive
+   targets with values that do not represent a health status. Such objects should not be identified as
+   victims by robots.
+
+5. Letter victims are uppercase letters printed on or attached to the wall. They are printed in black,
+   using a sans serif typeface such as 'Arial'. They can be rotated, and their height will be 4 cm. The
+   letters represent the health status of the victim.
+                           [11]
+    a. Harmed victim: Φ
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 19 of 33
+                            [12]
+      b. Stable victim: Ψ
+                                   [13]
+      c. Unharmed victim: Ω
+
+
+
+
+     [14]
+6.          Cognitive targets have the shape of a circle. The outermost circle has a diameter of 5 cm,
+     consisting of up to 5 concentric rings. The innermost circle has a diameter of 1 cm, and the
+     diameter of each subsequent outer ring increases by 1 cm, resulting in rings with diameters of
+     1 cm, 2 cm, 3 cm, 4 cm, and 5 cm. The rings and the circle can have different colors. The color of
+     the rings and the circle correspond to a numerical value:
+
+      a. Black = -2
+
+      b. Red = -1
+
+      c. Yellow = 0
+
+      d. Green = 1
+
+      e. Blue = 2
+
+7. The health status of the victims at the cognitive target can be calculated by summing up the
+     value of the 5 rings. Adjacent rings of the same color are not merged. The robot must always
+     consider each of the 5 rings separately and sum the value for all 5 rings, regardless of whether
+     colors repeat. Depending on the sum, the health status can be determined.
+
+      a. Harmed victim: sum = 2
+
+      b. Stable victim: sum = 1
+
+      c. Unharmed victim: sum = 0
+
+
+
+
+                  Example of a cognitive targets. The numbers are from the center outwards.
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 20 of 33
+3.7. Rescue Kits
+1. A rescue kit represents an essential health package distributed to a victim caught in a natural
+   disaster. It symbolizes tools, medical supplies, or devices used in the rescue process, such as GPS
+   transponders or even something as simple as a light source.
+
+2. Because we need to ensure that a rescue kit reaches the victim, it has to stay near the victim after the
+   deployment. For example, it cannot roll away from or bounce away from the victim.
+
+3. Each rescue kit must have a minimum size of 1 cm in each dimension and have a minimum volume
+   of 1 cm³ after deployment.
+                                                        [15]
+4. A robot can only carry a maximum number of 8                rescue kits.
+
+5. Each team is responsible for its rescue kit system, including bringing the rescue kits to the
+   competition. The team captain is responsible for loading the rescue kits onto their robot and
+   collecting it from the field with the referee’s authorization after the end of the run.
+
+6. Deployment of the rescue kit must be very clear to the referee.
+
+
+3.8. Environmental Conditions
+1. The environmental conditions at a tournament may differ from those at home practice fields. Teams
+   must come prepared to adjust their robots to the conditions at the venue.
+
+2. Lighting and magnetic conditions may vary in the rescue field.
+
+3. The field may be affected by magnetic fields (e.g., under-floor wiring and metallic objects). Teams
+   should prepare their robots to handle such interference.
+
+4. The field may be affected by unexpected lighting interference (e.g., camera flash from spectators).
+   Teams should prepare their robots to handle such interference.
+
+5. The RoboCupJunior Rescue Committee will try its best to fasten the walls onto the field floor so that
+   the impact from contact should not affect the robot.
+
+6. All measurements in the rules have a tolerance of ±10%.
+
+7. Objects detected by the robot will be distinguishable from the environment by their color or shape.
+
+
+
+4. Robots
+       [1]
+4.1.         Control
+1. Robots must be controlled autonomously. Using a remote control, manual control, or passing
+   information (by external sensors, cables, wirelessly, etc.) to the robot is not allowed.
+
+2. Robots must be started manually by the team captain.
+
+3. Any pre-mapped type of dead reckoning (movements preprogrammed based on known locations or
+   placement of features in the field) is prohibited.
+
+4. A robot must not damage any part of the field in any way.
+
+
+
+Last updated: 2026-01-28                                                                       Page 21 of 33
+ 5. Robots may utilize various maze navigation algorithms.
+
+
+4.2. Construction
+ 1. Any robot kit or building blocks, either available on the market or built from raw hardware, may be
+   used as long as the design and construction of the robot are primarily and substantially the students'
+   original work.
+
+ 2. Robots like drones or hovercrafts are prohibited in the challenge due to safety reasons.
+
+ 3. Teams are not permitted to use commercially produced robot kits or sensor components specifically
+   designed or marketed to complete any single primary task of RoboCupJunior Rescue. Robots that do
+   not comply will face immediate disqualification from the tournament. If there is any doubt, teams
+   should consult the RoboCupJunior Rescue Committee before the competition.
+
+ 4. Only lasers from classes 1 and 2 are allowed for the safety of participants and spectators. The
+   organizers will check this during the inspection. Teams using lasers must have the datasheet of the
+   laser and submit them before the competition and be able to show them during the competition.
+
+ 5. Robots may incur damage by falling off the field, making contact with another robot, or contacting
+   field elements. The RoboCupJunior Rescue Committee cannot anticipate all potential situations
+   where damage to the robot may occur. Teams should ensure that all active elements on a robot are
+   adequately protected with resistant materials. For example, teams must protect electrical circuits
+   from all human contact and direct contact with other robots and field elements.
+
+ 6. When batteries are transported, moved, or charged, it is strongly recommended that safety bags be
+   used. Reasonable efforts should be made to ensure that robots avoid short circuits and chemical or
+   air leaks.
+
+ 7. Robots must be equipped with a handle that is to be used to pick them up during the scoring
+   run.
+
+ 8. Robots must be equipped with a single physical binary switch/button (with exception of
+   buttons that are a part of commercial controller), clearly visible to the referee, for starting the
+   robot at the beginning of the run and when a lack of progress occurs. The procedure
+   performed after a LoP occurs can only include this button and at most one more switch for
+   cutting the power. Teams have to notify the referee about their LoP procedure before each
+   scoring run, and only this procedure is allowed to be performed after a LoP.
+
+ 9. The height of a robot must not exceed 25 cm.
+
+10. Robots may not have sensors or devices that enable them to 'see' over the walls.
+
+11. The robot must be equipped with one specific LED or display that is dedicated only for identifying
+   victims. The LED or display must be clearly visible to the referee.
+
+12. Robots are strictly prohibited from intentionally marking any part of the competition field.
+
+
+4.3. Team
+ 1. Each team must have only one robot in the field.
+
+ 2. Each team must comply with the RoboCupJunior General Rules regarding the number of members
+
+
+
+Last updated: 2026-01-28                                                                       Page 22 of 33
+   and each member’s age.
+
+3. Each team member must explain their work and have a specific technical role.
+
+4. A student can be registered on only one team across all RoboCupJunior leagues/sub-leagues.
+
+5. A team can only participate in one league/sub-league across all RoboCupJunior leagues/sub-leagues.
+
+6. Mentors/parents are not allowed to be with the students during the competition. The students will
+   have to govern themselves (without a mentor’s supervision or assistance) during the long stretch of
+   hours at the competition.
+
+
+4.4. Inspection
+1. A panel of referees will scrutinize the robots before the start of the tournament and at other times
+   during the competition to ensure that they meet the constraints described in these rules.
+
+2. Using a robot similar to another team’s robot from a previous year or the current year is illegal.
+
+3. The team’s responsibility is to have their robot re-inspected if modified at any time during the
+   tournament.
+
+4. Students will be asked to explain their robot’s operation to verify that its construction and
+   programming are their own work.
+
+5. Students will be asked about their preparation efforts. The RoboCupJunior Rescue Committee may
+   request them to answer surveys and participate in videotaped interviews for research purposes.
+
+6. All teams must complete a web form before the competition to allow referees to prepare better for
+   the interviews. The RoboCupJunior Rescue Committee will provide instructions on submitting the
+   form to the teams at least 4 weeks before the competition.
+
+7. All teams have to submit their source code before the competition. The organizers will not share the
+   source code with other teams without the team’s permission. The organizers will request permission
+   at the registration.
+
+
+4.5. Violations
+1. Any violations of the inspection rules will prevent the offending robot from competing until
+   modifications are made, and the robot passes inspection.
+
+2. Teams must make modifications within the schedule of the tournament, and teams cannot delay
+   tournament play while making modifications.
+
+3. Suppose a robot fails to meet all specifications (even with modifications). In that case, it will be
+   disqualified from that game (but not from the tournament).
+
+4. No mentor assistance is allowed during the competition. (See Section 2, “Code of Conduct”)
+
+5. Any rule violations may be penalized by disqualification from the tournament or the game or result
+   in a loss of points at the discretion of the referees, officials, or RoboCupJunior Rescue Committee.
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 23 of 33
+5. Play
+5.1. Pre-game Practice
+1. When possible, teams will have access to practice fields for calibration and testing throughout the
+   competition.
+
+2. Whenever there are dedicated independent fields for competition and practice, it is at the
+   organizers' discretion if testing is allowed on the competition fields.
+
+
+5.2. Humans
+1. Teams should designate one of their members as 'captain' and another as 'co-captain'. Only these two
+   team members will be allowed access to the competition fields unless directed by a referee. Only the
+   captain can interact with the robot during a scoring run.
+
+2. The captain can move the robot only when they are told to do so by a referee.
+
+3. Other team members (and any spectators) within the vicinity of the competition field must stand at
+   least 150 cm away from the field unless directed by a referee.
+
+4. No one is allowed to touch the fields intentionally during a scoring run.
+
+5. All pre-mapping activities will immediately disqualify the robot for the round. Pre-mapping is the act
+   of humans providing the robot with information about the field (e.g., location of walls, location of
+   black/silver/blue/red tiles, location type of victims, etc.) before the game.
+
+
+5.3. Start of Game
+1. Each team has a maximum of 8 minutes for a game. The game includes the time for calibration and
+   the scoring run.
+
+2. Calibration is defined as taking sensor readings and modifying a robot’s program to accommodate
+   such sensor readings. Calibration does not count as pre-mapping.
+
+3. The scoring run is defined as the time when the robot is moving autonomously to navigate the field,
+   and the referee will record the scores.
+
+4. A game begins at the scheduled starting time, whether or not the team is present or ready. Start
+   times will be posted around the venue.
+
+5. Once the game has begun, the robot is not permitted to leave the competition area.
+
+6. Teams may calibrate their robot in as many locations as desired on the field, but the clock will
+   continue to run. Robots are not permitted to move on their own while calibrating.
+
+7. Before a scoring run begins, the referee will roll a standard 6-sided dice or another method of
+   randomization set by the organizers to determine the location of the black, blue, red and silver tiles.
+   Organizers will not reveal the position of the black, blue, red and silver tiles to the team until they
+   are ready to start a scoring run. Referees will ensure the combination of black tile placements in a
+   field layout is 'solvable' before a robot begins a scoring run.
+
+
+
+Last updated: 2026-01-28                                                                      Page 24 of 33
+ 8. Before a scoring run begins, the referee can change any walls of the field (see Section 3.3, “Path”).
+
+ 9. Once a team is ready to start a scoring run, the team must notify the referee. To start a scoring run,
+   the robot is placed on the start tile of the course, as indicated by the referee. Once a scoring run has
+   begun, no more calibration is permitted, including changing code/code selection.
+
+10. Teams may choose not to calibrate the robot and immediately start the scoring run instead.
+
+11. Once the robot starts moving as the scoring run begins, a referee will place the black, blue, red and
+   silver tiles.
+
+
+5.4. Scoring Run
+ 1. Modifying the robot during a scoring run is prohibited, which includes remounting parts that have
+   fallen off.
+
+ 2. Any parts the robot loses intentionally or unintentionally will be left on the field until the game ends.
+   Team members and referees cannot move or remove elements from the field during a scoring run.
+
+ 3. Teams cannot give their robot any information about the field. A robot is supposed to recognize the
+   field elements by itself.
+
+ 4. A 'visited tile' means that more than half of the robot is inside the tile when looking from above.
+
+
+5.5. Lack of Progress
+ 1. A lack of progress occurs when:
+
+    a. the team captain declares a lack of progress.
+
+    b. a robot visited the black tile. See the definition of visited tile on Section 5.4, “Scoring Run”.
+
+     c. a robot visits another tile without stopping for 5 consequent seconds after visiting a blue tile. See
+       the definition of visited tile on Section 5.4, “Scoring Run”.
+
+    d. a robot damages the field.
+
+    e. a team member touches the field or their robot without permission from a referee.
+
+ 2. In the event of a lack of progress, the robot must return to the last visited checkpoint (or the start tile
+   if it never reached a checkpoint). The robot can be installed in any direction. For the definition of the
+   visited tile (see Section 5.4, “Scoring Run”).
+
+ 3. After a lack of progress, only the LoP procedure explained to the referee before the run start is
+   allowed to be performed (see Section 4.2, “Construction”).
+
+
+5.6. Scoring
+ 1. To successfully identify a victim, the robot must stop within 15 cm of a victim and blink with the
+   specific LED or Display (see Section 4.2, “Construction”) that is cleary visible to the referee for the full
+   5 seconds while stationary. The blink interval (ON: 500ms, OFF: 500ms) must be followed to
+   successfully identify a victim.
+
+ 2. Points are rewarded for each Successful Victim Identification in the field.
+
+
+
+Last updated: 2026-01-28                                                                            Page 25 of 33
+    a. For victims located on a linear tile.
+                            [16]
+            i. For letter          victims: 5 points
+                                               [17]
+        ii. For cognitive targets                 : 10 points
+
+    b. On floating tiles
+                            [18]
+            i. For letter          victims: 15 points
+                                               [19]
+        ii. For cognitive targets                 : 30 points
+
+
+
+
+                      The color in the figure is for illustration only. Some tiles change between floating or
+                      linear depending on the adjacent black tiles. The field designer must remember this
+                     rule when deciding on the location of the black tiles. They can be changed during
+                      the run via a dice roll to keep the maximum score consistent.
+
+
+3. A robot must deploy a rescue kit entirely within 15 cm of the victim to successfully deploy a rescue
+   kit. The deployment point is determined by the location of the rescue kit when the robot moves
+   entirely out of the 15 cm boundary of the victim.
+
+4. No points will be awarded for delivering a rescue kit to a victim that wasn’t successfully identified
+   first.
+
+5. 10 points are awarded for one successful rescue kit deployment, while 30 points are awarded for
+                                                                              [20]
+   two successful rescue kit deployments to the same victim.                         The robot can score the following
+   amount of rescue kits points:
+
+    a. Letter victims:
+                               [21]
+            i. Harmed (Φ              ): two rescue kits per victim. (Maximum points for rescue kit deployment per
+                            [22]
+              victim: 30           points.)
+                            [23]
+        ii. Stable (Ψ              ): one rescue kit per victim. (Maximum points for rescue kit deployment per
+              victim: 10 points.)
+                                    [24]
+        iii. Unharmed (Ω                ): zero rescue kit per victim.
+                                      [25]
+    b. Cognitive targets                   :
+
+
+
+Last updated: 2026-01-28                                                                                   Page 26 of 33
+                               [26]
+         i. Harmed (2)                : two rescue kits per victim. (Maximum points for rescue kit deployment per
+                        [27]
+           victim: 30          points.)
+                           [28]
+        ii. Stable (1)            : one rescue kit per victim. (Maximum points for rescue kit deployment per
+           victim: 10 points.)
+                                   [29]
+        iii. Unharmed (0)               : zero rescue kits per victim.
+
+ 6. Successful blue tile visits (SBV). 30 points are awarded for visiting a blue tile once. Partially
+   successful blue tile visits - if the robot revisits the exact same blue tile, the score for a blue tile
+   is reduced. For every subsequent time the robot visits that exact same tile, the total score
+   awarded for that specific tile will be reduced by 10 points. The score of a single blue tile can
+   not go below 0.
+
+ 7. The Reliability Bonus is a non negative number and consists of the number of successful victim
+   identifications (SVI), successful rescue kit deployments (SRD), successful blue tile visits (SBV) and a
+   deduction for the total number of Lack of Progresses (LoP) as such:
+
+
+      (RELIABILITY BONUS) = (SVI) × 10 + (SRD) × 10 + (SBV) × 10 - (LoP) × 15 [30]
+
+
+ 8. Successful Speed Bump Crossing. For each tile with speed bumps passed, a robot is awarded 5 points.
+
+ 9. Successful Up or Down Ramp Navigation. A robot is awarded 10 points for successfully navigating up
+   or down a ramp (i.e., the robot can score a maximum of 10 points per ramp). The robot has
+   successfully navigated through the ramp when it moves from the bottom to the top tile (or vice-
+   versa) and is entirely within the horizontal tile without toppling over.
+
+10. Successful Up or Down Stair Navigation. A robot is awarded 10 points for successfully navigating up
+   or down the stairs (i.e., the robot can score a maximum of 10 points per stair (up or down)).
+   Successful navigation means the robot moves from the bottom to the top of the stairs (or vice-versa)
+   and is entirely within the horizontal tile without toppling over.
+
+11. Successful Checkpoint Navigation. A robot is awarded 10 points for each visited checkpoint. Refer to
+   Section 5.4, “Scoring Run” for definition of visited tile.
+
+12. Successful Exit Bonus. A robot is awarded 10 points for each victim successfully identified (SVI), 10
+   points for every successful blue tile visits (SBV), 5 points for every successful stair navigation
+   (SSN) and 5 points for every successful ramp navigation (SRN). The 'exit bonus' condition is
+   satisfied when the robot returns to the starting tile. On the starting tile, the robot has to blink (ON: 1s,
+   OFF: 1s) with the same LED or display that is used to identify a victim (see Section 4.2,
+   “Construction”) for at least 10 seconds.
+
+
+      (SUCCESSFUL EXIT BONUS) = (SVI) × 10 + (SBV) × 10 + (SSN) × 5 + (SRN) × 5
+
+
+13. No duplicate rewards. For example, suppose a robot successfully crosses a tile with speed bumps
+   multiple times. In that case, only one successful speed bump crossing will be rewarded per tile. The
+   same result applies to all other scoring rules.
+
+14. Misidentification. If a robot identifies a victim but is outside the 15 cm radius of any victim, 5 points
+   will be deducted. This scenario doesn’t apply to delivering the incorrect number of rescue kits to
+
+
+
+Last updated: 2026-01-28                                                                              Page 27 of 33
+   victims. The total points will never go below zero points.
+
+
+5.7. End of Game
+1. A team may elect to stop the game early at any time. In this case, the team captain must indicate the
+   team’s desire to terminate the game to the referee. The team will be awarded all points earned up to
+   the call for the end of the game. The referee will stop the time at the end of the game, which will be
+   recorded as the game time.
+
+2. The game ends when:
+
+    a. the 8 minutes of allowed game time expires
+
+    b. the team captain calls the end of the game
+
+     c. the robot returns to the start tile and is awarded the exit bonus
+
+
+
+6. Competition
+This chapter outlines the structure of an international RoboCupJunior Rescue competition. The
+competition format and the inclusion of elements like rubrics based scoring, Technical Challenges and
+the SuperTeam Challenge may vary in local, regional and super-regional competitions. Please refer to
+the respective organiser for details.
+
+
+6.1. Rounds & Scoring
+1. The competition will consist of multiple rounds of which the worst one or more will be omitted from
+   the final score. The worst round is defined by the lowest normalized field score of the team.
+
+2. The field score for every round will be normalized with the score of the best team of that round:
+
+
+      (NORMALIZED FIELD SCORE) = (FIELD SCORE) / (BEST FIELD SCORE)
+
+
+3. The normalized field scores will be used to calculate the mean. The worst round(s) will not be
+   considered here:
+
+
+      (MEAN OF NORMALIZED FIELD SCORES) = (SUM OF NORMALIZED FIELD SCORES EXCLUDING OMITTED
+      ROUNDS) / (NUMBER OF ROUNDS - NUMBER OF OMITTED ROUNDS)
+
+
+4. The normalized rubrics score is made up of a sum of normalized scores for the individual rubrics as
+   follows:
+
+
+      (NORMALIZED RUBRICS SCORE) =
+         0.6 x (TDP SCORE) / (BEST TDP SCORE)
+       + 0.2 x (VIDEO SCORE) / (BEST VIDEO SCORE)
+
+
+
+
+Last updated: 2026-01-28                                                                      Page 28 of 33
+       + 0.2 x (POSTER SCORE) / (BEST POSTER SCORE)
+
+
+5. The Rubrics for TDP, Video and Poster will be available on the RoboCupJunior website and the RCJ
+   Rescue Community website.
+
+6. The score from the Technical Challenge will be normalized with the score of the best team:
+
+
+      (NORMALIZED TECHNICAL CHALLENGE SCORE) = (TECHNICAL CHALLENGE SCORE) / (BEST TECHNICAL
+      CHALLENGE SCORE)
+
+
+7. The final score is made up of a weighted sum of normalized scores from the field score, the rubrics
+   and the Technical Challenge as such:
+
+
+      (TOTAL SCORE) =
+         0.6 x (MEAN OF NORMALIZED FIELD SCORES)
+       + 0.2 x (NORMALIZED RUBRICS SCORE)
+       + 0.2 x (NORMALIZED TECHNICAL CHALLENGE SCORE)
+
+
+8. Ties in scoring will be resolved based on the mean of normalized field scores.
+
+
+6.2. Technical Challenge
+The Technical Challenge is an additional part of the competition where each teams' ability to quickly
+modify the bahaviour of their robot will be tested. It consists of one or more mini-tasks with only a
+limited timespan to solve.
+
+1. The Technical Challenge will take place after the scoring runs have ended.
+
+2. The rules of the individual parts of the Technical Challenge will not be announced before the
+   competition. The teams will only have limited time to prepare for the Challenge.
+
+3. The timeframe for the completion of these tasks will be announced alongside the rules and scoring at
+   a team meeting after the scoring runs.
+
+4. The rules will require the teams to reprogram their robot to change its behaviour. There will be no
+   hardware changes required compared to the main scoring runs.
+
+5. The time given will correspond to the difficulty level of the tasks.
+
+6. Any external contact during the Technical Challenge is prohibited; non-team members are not
+   allowed to take place on the competition area or to help the competitors remotely.
+
+
+6.3. SuperTeam Challenge
+The SuperTeam Challenge takes place independantly of the main competition and won’t influence the
+team’s individual score. It has its own award and is focussed on the cooperation between the teams.
+
+1. Each SuperTeam will consist of at least two teams. Teams coming from regions that share a native
+
+
+Last updated: 2026-01-28                                                                    Page 29 of 33
+   language will not be part of the same SuperTeam.
+
+2. The rules of the SuperTeam Challenge will be announced at the competition and require the teams of
+   each SuperTeam to work together.
+
+3. The SuperTeam Challenge will require substantial software changes and may require minor
+   hardware adjustments.
+
+
+                    It is highly recommended that teams bring some kind of communication hardware
+                   or think about a communication mechanism for this challenge.
+
+
+4. The robot brought to the competition must remain substantially the same robot for the Super
+   Team Competition.
+
+5. Modifications should maintain the robot’s original functional concept, mechanical layout, and
+   overall design approach. Changes that effectively create a second, entirely different robot are
+   not allowed.
+
+
+
+7. Open Technical Evaluation
+7.1. Description
+1. The organizers will evaluate your technical innovation during a dedicated time frame. All teams
+   need to prepare for an open display during this time frame.
+
+2. Judges will circulate and interact with the teams. The Open Technical Evaluation is intended to be a
+   casual conversation with a question-and-answer atmosphere.
+
+3. The Open Technical Evaluation’s main objective is to emphasize the innovation’s ingenuity.
+   Innovative may mean technical advances compared to existing knowledge or an out-of-the-ordinary,
+   simple but clever solution to existing tasks.
+
+
+7.2. Evaluation Aspects
+1. A standardized rubric system will be used, focusing on:
+
+     ◦ creativity
+
+     ◦ cleverness
+
+     ◦ simplicity
+
+     ◦ functionality
+
+2. Your 'work' can include (but is not limited to) one of the following aspects:
+
+     ◦ creation of your own sensor instead of a pre-built sensor
+
+     ◦ creation of a 'sensor module' which is comprised of various electronics resulting in a self-
+       contained module to provide a specific functionality
+
+     ◦ creation of a mechanical invention that is functional but out of the ordinary
+
+
+
+
+Last updated: 2026-01-28                                                                   Page 30 of 33
+     ◦ creation of a new software algorithm for a solution
+
+
+7.3. Documents
+1. Teams must provide documents that explain their work. Each invention must be supported by
+   concise but clear documentation. The documents must show precise steps towards the creation of
+   the invention.
+
+2. The deadline for delivering the documents is scheduled for 3 weeks before the first day of the
+   competition through an online form.
+
+3. Documents must include one Technical Description Paper (TDP), one Poster and one Video. Teams
+   should be prepared to explain their work.
+
+4. All teams must submit their TDP before the competition. The TDP is a public document that will be
+   shared with the community. The competition organizer will ask the team to fill out the web form or
+   ask to submit a PDF file. All teams must strictly follow the guidance on the web form or, in the case
+   of PDF submissions, strictly follow the template provided. If a team does not follow this guidance /
+   template (including but not limited to the different sections, fonts, sizes and lengths) the score for the
+   document will be 0 and is not going to be evaluated. A template for the TDP and rubrics are available
+   on the RoboCupJunior Rescue Community Website.
+
+5. All teams must submit a Poster file before the competition and bring a physical Poster to the
+   competition venue. The Poster is a public document that will be shared with the community during
+   the Poster Presentation session at the competiiton venue. The poster should include but is not limited
+   to: the name of the team, country, league, robot description, robot capabilities, controller, the
+   programming language used, sensors included, method of construction, time used for development,
+   cost of materials, and awards won by the team in its country, etc. A guide for the poster format and
+   rubrics are available on the RoboCupJunior Rescue Community Website.
+
+6. All teams must create and submit a Video before the competition. The Video should be short and
+   showcasing the work of the team. These videos will be presented during the competition and should
+   summarize the key aspects of the team’s project, design process, and innovations. A guide for the
+   video format and rubrics are available on the RoboCupJunior Rescue Community Website.
+
+
+7.4. Sharing
+1. Teams are encouraged to review others' posters, TDPs and presentations.
+
+2. Teams awarded certificates must post their documents and presentation online when the
+   RoboCupJunior Rescue Committee asks.
+
+
+
+8. Conflict Resolution
+8.1. Referee and Referee Assistant
+1. All decisions during gameplay are made by the referee or the referee assistant, who are in charge of
+   the field, persons, and objects surrounding them.
+
+
+
+Last updated: 2026-01-28                                                                         Page 31 of 33
+2. During gameplay, the decisions made by the referee or the referee assistant are final.
+
+3. After gameplay, the referee will ask the captain to sign the score sheet. Captains will be given a
+   maximum of 1 minute to review the score sheet and sign it. By signing the score sheet, the captain
+   accepts the final score on behalf of the entire team. In case of further clarification, the team captain
+   should write their comments on the score sheet and sign it.
+
+
+8.2. Rule Clarification
+1. If any rule clarification is needed, please contact the International RoboCupJunior Rescue Committee
+   through the RoboCupJunior Forum.
+
+2. If necessary, even during a tournament, a rule clarification may be made by members of the
+   International RoboCupJunior Rescue Committee.
+
+
+8.3. Special Circumstances
+1. If particular circumstances, such as unforeseen problems or capabilities of a robot occurs, rules may
+   be modified by the RoboCupJunior Rescue Committee Chair in conjunction with available committee
+   members, even during a tournament.
+
+2. Suppose team captains/mentors do not attend the team meetings to discuss problems, and the
+   resulting rule modifications described at 1.. In that case, the organizers will understand that they
+   agreed and were aware of the changes.
+
+
+
+
+Last updated: 2026-01-28                                                                       Page 32 of 33
+[1] In previous version this said "Terms and Definitions"
+[1] Changed from "colored" to "cognitive target"
+[2] Changed from "rescue kit" to "victim"
+[3] Changed from "20" to "30"
+[4] Changed from "20" to "30"
+[5] Changed from "red-colored victim" to "harmed cognitive target"
+[6] Changed from "yellow-colored victim" to "stable cognitive target"
+[7] Changed from "green-colored victim" to "unharmed cognitive target"
+[8] Changed from "in dimension (±10% variation on the tile size) than a tile due to the nature of placing walls." to "due to the walls not
+being indefinitely thin. That leads that the pathway between two opposite walls is 28 cm wide."
+[9] In previous version this said "for the robot are intended to be of the width of the tile and"
+[10] Changed from "colored victims" to "cognitive targets"
+[11] Changed from "H" to "Φ"
+[12] Changed from "S" to "Ψ"
+[13] Changed from "U" to "Ω"
+[14] In previous version this said "Colored victims are printed on or attached to a wall. Their size will be 16 cm² with no more than 6 cm
+in either dimension. Three colors are used: red, yellow, and green."
+[15] Changed from "12" to "8"
+[16] Changed from "colored" to "letter"
+[17] Changed from "letter victims" to "cognitive targets"
+[18] Changed from "colored" to "letter"
+[19] Changed from "letter victims" to "cognitive targets"
+[20] Changed from "per successful rescue kit deployment." to "for one successful rescue kit deployment, while 30 points are awarded for
+two successful rescue kit deployments to the same victim."
+[21] Changed from "H" to "Φ"
+[22] Changed from "20" to "30"
+[23] Changed from "S" to "Ψ"
+[24] Changed from "U" to "Ω"
+[25] Changed from "Colored victims" to "Cognitive targets"
+[26] Changed from "Red" to "Harmed (2)"
+[27] Changed from "20" to "30"
+[28] Changed from "Yellow" to "Stable (1)"
+[29] Changed from "Green" to "Unharmed (0)"
+[30] Changed from "10" to "15"
+
+
+
+Last updated: 2026-01-28                                                                                                   Page 33 of 33
+
