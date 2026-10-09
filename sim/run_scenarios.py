@@ -198,15 +198,6 @@ def run(name, trace=False):
     return not bad, sim_trace.build_trace(name, w, rec, buf.lines, meta, t0)
 
 
-def write_traces(traces):
-    """--html: трассы в sim/viewer/data/<имя>.json."""
-    out = os.path.join(HERE, "viewer", "data")
-    os.makedirs(out, exist_ok=True)
-    for name, tr in traces.items():
-        with open(os.path.join(out, f"{name}.json"), "w") as f:
-            f.write(sim_trace.dump_trace(tr))
-
-
 if __name__ == "__main__":
     html = "--html" in sys.argv[1:]
     names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(SCENARIOS)
@@ -219,7 +210,9 @@ if __name__ == "__main__":
             failed.append(n)
         if tr is not None:
             traces[n] = tr
-    if html:
-        write_traces(traces)
     print("ВСЕ СЦЕНАРИИ ЧИСТЫЕ" if not failed else f"ОШИБКИ: {failed}")
+    if html:
+        sys.path.insert(0, os.path.join(HERE, "viewer"))
+        import build
+        print(f"просмотрщик: {build.write_site(os.path.join(HERE, 'viewer'), traces)}")
     sys.exit(1 if failed else 0)

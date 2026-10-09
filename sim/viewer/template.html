@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__ · симулятор</title>
+<!--
+  Просмотрщик трассы симулятора MAZE2027. Страницу собирает
+  sim/viewer/build.py (python3 sim/run_scenarios.py --html): трасса вставлена
+  в блок #trace. three.js r149 (three.min.js, классический скрипт - модули с
+  file:// Chrome не грузит) - локальная копия в vendor/, источник
+  https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js.
+-->
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#efefea;--panel:#fbfbf8;--fg:#1d1d1b;--mut:#6f6f69;--line:#d8d8d0;--grid:#e6e6de;
+  --floor:#f6f5ef;--island:#d9cfb8;--bump:#e7b97a;--brick:#b5652b;--wallLo:#9a9a92;--wallHi:#1d1d1b;
+  --robot:#1f5fd6;--nose:#e4572e;--wheel:#2a2a28;
+  --ok:#2e7d32;--stop:#d32f2f;--warn:#ef6c00;--assist:#8e24aa;--post:#1565c0;--ramp:#8d6e63;
+  --rayW:rgba(31,95,214,.30);--rayF:rgba(120,120,110,.16);--hitW:#1f5fd6;--hitF:#a8a89c;--corr:#e4572e;
+  --cur:rgba(31,95,214,.12);--hl:#fff3c4;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#141518;--panel:#1b1c20;--fg:#e6e6e0;--mut:#93938c;--line:#2e3036;--grid:#25272c;
+  --floor:#202226;--island:#4a4334;--bump:#8a6a3c;--brick:#c4743a;--wallLo:#6c6d70;--wallHi:#ecece6;
+  --robot:#5b9bff;--nose:#ff7a4d;--wheel:#0c0c0d;
+  --ok:#5cbf62;--stop:#ef5350;--warn:#ffa040;--assist:#ce6ee0;--post:#64a8ff;--ramp:#b39383;
+  --rayW:rgba(91,155,255,.30);--rayF:rgba(160,160,150,.13);--hitW:#5b9bff;--hitF:#5d5e60;--corr:#ff7a4d;
+  --cur:rgba(91,155,255,.16);--hl:#3a3420;
+}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+  display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
+button,select{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 9px;cursor:pointer}
+button:hover,select:hover{border-color:var(--mut)}
+button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+header{padding:8px 12px 6px;border-bottom:1px solid var(--line);background:var(--panel);display:grid;gap:6px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row .sep{width:1px;height:18px;background:var(--line)}
+#title{font-weight:650;font-size:14px}
+#meta{color:var(--mut)}
+#clock{min-width:118px}
+#timeline{width:100%;height:30px;display:block;cursor:pointer}
+main{display:grid;gap:8px;padding:8px;min-height:0;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) 410px;
+  grid-template-rows:minmax(0,1fr) 250px;
+  grid-template-areas:"top d3 side" "bottom bottom side"}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;position:relative;min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.panel>h2{margin:0;padding:5px 10px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);
+  display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
+.panel>h2 .sp{flex:1}
+.panel>h2 button{padding:0 7px;font-size:11px;text-transform:none;letter-spacing:0}
+.cv{flex:1;min-height:0;position:relative}
+.cv canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#top{grid-area:top}#d3{grid-area:d3}#bottom{grid-area:bottom;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2.4fr);gap:8px;min-height:0}
+#side{grid-area:side;display:grid;grid-template-rows:minmax(0,46%) minmax(0,1fr);gap:8px;min-height:0}
+#hud{position:absolute;left:8px;bottom:8px;padding:6px 8px;border-radius:6px;background:color-mix(in srgb,var(--panel) 88%,transparent);
+  border:1px solid var(--line);pointer-events:none;white-space:pre;font-size:12px}
+#tip{position:fixed;z-index:10;pointer-events:none;max-width:460px;padding:6px 8px;border-radius:6px;background:var(--fg);color:var(--bg);
+  font-size:12px;display:none;white-space:pre-wrap}
+#legend{position:absolute;right:8px;top:6px;font-size:11px;color:var(--mut);pointer-events:none;text-align:right}
+#log{flex:1;overflow:auto;font-size:12px;padding:2px 0}
+#log .l{display:grid;grid-template-columns:52px 1fr;gap:6px;padding:1px 8px;cursor:pointer;white-space:pre-wrap;word-break:break-word}
+#log .l:hover{background:var(--cur)}
+#log .l .t{color:var(--mut);text-align:right}
+#log .l.cur{background:var(--hl)}
+#log .l.future{opacity:.45}
+#log.noprog .l.progress{display:none}
+#log .decide.go .x{color:var(--ok);font-weight:600}#log .decide.stop .x{color:var(--stop);font-weight:600}
+#log .step .x{font-weight:650}#log .post .x{color:var(--post)}#log .bumper .x,#log .backoff .x{color:var(--stop);font-weight:600}
+#log .ramp .x{color:var(--ramp);font-weight:600}#log .assist .x,#log .obstacle .x{color:var(--assist)}
+#log .progress .x{color:var(--mut)}#log .brake .x{color:var(--warn)}
+#maplegend{font-size:11px;color:var(--mut);padding:3px 10px 5px;display:flex;flex-wrap:wrap;gap:4px 10px;border-top:1px solid var(--line)}
+#maplegend i{display:inline-block;width:14px;height:0;border-top:3px solid;vertical-align:middle;margin-right:3px}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <span id="title"></span>
+    <select id="scen" title="сценарий"></select>
+    <span id="meta"></span>
+  </div>
+  <div class="row">
+    <button id="play" title="пробел">▶ пуск</button>
+    <select id="speed" title="скорость воспроизведения">
+      <option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="1" selected>1×</option>
+      <option value="2">2×</option><option value="4">4×</option><option value="8">8×</option>
+    </select>
+    <span id="clock" class="mono"></span>
+    <span class="sep"></span>
+    <button id="prev" title="← предыдущее событие">◀ событие</button>
+    <select id="evfilter" title="какие события листать">
+      <option value="decide">решения</option><option value="ramp">горки</option><option value="post">столбики</option>
+      <option value="bumper">бампер</option><option value="assist">ассист</option><option value="step">шаги маршрута</option>
+      <option value="any">все</option>
+    </select>
+    <button id="next" title="→ следующее событие">событие ▶</button>
+    <button id="fstep" title=", / . — кадр назад/вперёд">кадр</button>
+    <span class="sep"></span>
+    <label><input type="checkbox" data-layer="trail" checked>след</label>
+    <label><input type="checkbox" data-layer="future" checked>весь путь</label>
+    <label><input type="checkbox" data-layer="rays" checked>лучи</label>
+    <label><input type="checkbox" data-layer="corr" checked>коридор</label>
+    <label><input type="checkbox" data-layer="decide" checked>решения</label>
+    <label><input type="checkbox" data-layer="marks" checked>метки</label>
+    <label><input type="checkbox" data-layer="grid" checked>сетка</label>
+  </div>
+  <canvas id="timeline"></canvas>
+</header>
+<main>
+  <section class="panel" id="top">
+    <h2>вид сверху<span class="sp"></span><button id="follow" title="F">следить</button><button id="fit">весь полигон</button></h2>
+    <div class="cv" id="topwrap"><canvas id="topcv"></canvas><div id="hud" class="mono"></div>
+      <div id="legend">цвет следа — скорость: <span id="speedkey"></span></div></div>
+  </section>
+  <section class="panel" id="d3">
+    <h2>3D<span class="sp"></span><button id="cam" title="C">камера за роботом</button></h2>
+    <div class="cv" id="d3wrap"></div>
+  </section>
+  <div id="side">
+    <section class="panel" id="mappanel">
+      <h2>карта глазами робота<span class="sp" id="mapinfo"></span><span id="floors"></span></h2>
+      <div class="cv"><canvas id="mapcv"></canvas></div>
+      <div id="maplegend"></div>
+    </section>
+    <section class="panel" id="logpanel">
+      <h2>лог nav<span class="sp"></span><label><input type="checkbox" id="showprog">прогресс</label><label><input type="checkbox" id="logfollow" checked>следить</label></h2>
+      <div id="log" class="mono noprog"></div>
+    </section>
+  </div>
+  <div id="bottom">
+    <section class="panel"><h2>профиль высоты по пути</h2><div class="cv"><canvas id="profcv"></canvas></div></section>
+    <section class="panel"><h2>графики<span class="sp"></span>
+      <select id="win" title="окно по времени"><option value="0">весь прогон</option><option value="10">10 с</option><option value="4">4 с</option></select></h2>
+      <div class="cv"><canvas id="chartcv"></canvas></div></section>
+  </div>
+</main>
+<div id="tip"></div>
+<script id="names" type="application/json">__SCENARIOS__</script>
+<script id="trace" type="application/json">__TRACE__</script>
+<script src="vendor/three.min.js"></script>
+<script>
+"use strict";
+// ═══ данные ═══════════════════════════════════════════════════════════
+const T = JSON.parse(document.getElementById("trace").textContent);
+const NAMES = JSON.parse(document.getElementById("names").textContent);
+const P = T.poses, NP = P.t.length, TEND = P.t[NP - 1];
+const CELL = T.world.cell, STRIDE = 1000;
+const ROBOT_L = 193, ROBOT_W = 125, AXLE = 75, LIDAR_Z = 130;
+const levelOf = cy => Math.floor((cy + STRIDE / 2) / STRIDE);
+const worldCell = (cx, cy) => [cx * CELL, (cy - levelOf(cy) * STRIDE) * CELL];
+const EV = T.events;
+EV.forEach((e, i) => e.i = i);
+
+// производное по позе: скорость, путь, подъёмы режимов
+const V = new Float32Array(NP), S = new Float32Array(NP);
+for (let i = 0; i < NP; i++) {
+  V[i] = (P.vl[i] + P.vr[i]) / 2;
+  if (i) S[i] = S[i - 1] + Math.hypot(P.x[i] - P.x[i - 1], P.y[i] - P.y[i - 1], P.z[i] - P.z[i - 1]);
+}
+// ассист (режим T) и B - псевдособытия начала режима
+const MODE_EV = [];
+for (let i = 1; i < NP; i++) if (P.m[i] !== P.m[i - 1] && P.m[i] !== "M")
+  MODE_EV.push({t: P.t[i], type: P.m[i] === "T" ? "assist" : "hold", i});
+
+// ═══ время и интерполяция ═════════════════════════════════════════════
+function bsearch(arr, t) {           // последний индекс с arr[i] <= t (или -1)
+  let lo = 0, hi = arr.length - 1, r = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m] <= t) { r = m; lo = m + 1; } else hi = m - 1; }
+  return r;
+}
+const angLerp = (a, b, k) => a + ((((b - a) % 360) + 540) % 360 - 180) * k;
+function poseAt(t) {
+  const i = Math.max(0, bsearch(P.t, t)), j = Math.min(NP - 1, i + 1);
+  const k = j > i ? Math.min(1, Math.max(0, (t - P.t[i]) / (P.t[j] - P.t[i]))) : 0;
+  const L = key => P[key][i] + (P[key][j] - P[key][i]) * k;
+  return {i, x: L("x"), y: L("y"), z: L("z"), th: (angLerp(P.th[i], P.th[j], k) + 360) % 360, p: L("p"),
+          vl: P.vl[i], vr: P.vr[i], v: V[i], m: P.m[i], sl: P.sl[i], sr: P.sr[i], cap: P.cap[i], b: P.b[i], f: P.f[i], s: S[i] + (S[j] - S[i]) * k};
+}
+const SCAN_T = T.scans.map(s => s.t), MAP_T = T.maps.map(m => m.t), EV_T = EV.map(e => e.t);
+const scanAt = t => T.scans[bsearch(SCAN_T, t)] || null;
+const mapAt = t => T.maps[bsearch(MAP_T, t)] || null;
+function floorAt(t) {                // этаж робота: последний шаг маршрута или горка
+  for (let i = bsearch(EV_T, t); i >= 0; i--) {
+    const e = EV[i];
+    if (e.type === "step") return levelOf(e.cell[1]);
+    if (e.type === "ramp_done") return levelOf(e.to[1]);
+  }
+  return 0;
+}
+
+// ═══ цвета (из CSS, перечитываются при смене темы) ═══════════════════
+let C = {};
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ["bg","panel","fg","mut","line","grid","floor","island","bump","brick","wallLo","wallHi","robot","nose","wheel",
+                   "ok","stop","warn","assist","post","ramp","rayW","rayF","hitW","hitF","corr","cur"])
+    C[k] = cs.getPropertyValue("--" + k).trim();
+}
+function hex2rgb(h) {
+  const m = h.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  return m ? [1, 2, 3].map(i => parseInt(m[i], 16)) : [128, 128, 128];
+}
+function mix(a, b, k) {
+  const A = hex2rgb(a), B = hex2rgb(b); k = Math.max(0, Math.min(1, k));
+  return "rgb(" + A.map((v, i) => Math.round(v + (B[i] - v) * k)).join(",") + ")";
+}
+// скорость следа: 0 - синий, 60 см/с - красный
+const SPEED_STOPS = [[0, "#3b5bdb"], [0.35, "#1aa59a"], [0.7, "#f2b134"], [1, "#e4572e"]];
+function speedColor(v) {
+  const k = Math.max(0, Math.min(1, Math.abs(v) / 60));
+  for (let n = 1; n < SPEED_STOPS.length; n++) if (k <= SPEED_STOPS[n][0]) {
+    const [k0, c0] = SPEED_STOPS[n - 1], [k1, c1] = SPEED_STOPS[n];
+    return mix(c0, c1, (k - k0) / (k1 - k0));
+  }
+  return SPEED_STOPS[SPEED_STOPS.length - 1][1];
+}
+const wallColor = w => (w[5] <= 80 ? C.brick : mix(C.wallLo, C.wallHi, (w[5] - 100) / 190));
+const MAXH = Math.max(1, ...T.world.terrain.map(r => r.kind === "flat" ? r.h : r.h1));
+const heightColor = h => (h < 40 ? mix(C.floor, C.bump, h / 30) : mix(C.floor, C.island, h / MAXH));
+
+// ═══ состояние ═══════════════════════════════════════════════════════
+const st = {t: 0, playing: false, speed: 1, layers: {}, follow: false, dirty: true};
+document.querySelectorAll("[data-layer]").forEach(cb => {
+  st.layers[cb.dataset.layer] = cb.checked;
+  cb.addEventListener("change", () => { st.layers[cb.dataset.layer] = cb.checked; st.dirty = true; });
+});
+function seek(t, pause) {
+  st.t = Math.max(0, Math.min(TEND, t));
+  if (pause) setPlaying(false);
+  st.dirty = true;
+}
+function setPlaying(on) {
+  if (on && st.t >= TEND) st.t = 0;
+  st.playing = on;
+  document.getElementById("play").textContent = on ? "❚❚ пауза" : "▶ пуск";
+}
+
+// ═══ шапка ═══════════════════════════════════════════════════════════
+const M = T.meta;
+document.getElementById("title").textContent = M.name;
+document.getElementById("meta").textContent =
+  `${M.status} · ${M.sim_time} с · клеток ${M.visited} · max наклон ${M.max_pitch}° · упёрся ${M.crashes}` +
+  ` · горки ${M.ramps.length ? M.ramps.map(r => "(" + r + ")").join(" ") : "нет"} · ошибок карты ${M.map_errors.length}`;
+const scen = document.getElementById("scen");
+NAMES.forEach(n => { const o = new Option(n, n, false, n === M.name); scen.add(o); });
+scen.addEventListener("change", () => location.href = encodeURIComponent(scen.value) + ".html");
+document.getElementById("play").onclick = () => setPlaying(!st.playing);
+document.getElementById("speed").onchange = e => st.speed = +e.target.value;
+
+const FILTERS = {
+  decide: e => e.type === "decide",
+  ramp: e => /^ramp_|^not_ramp$/.test(e.type),
+  post: e => e.type === "post",
+  bumper: e => e.type === "bumper" || e.type === "backoff",
+  assist: e => e.type === "assist" || e.type === "obstacle" || e.type === "ramp_detect",
+  step: e => e.type === "step",
+  any: e => e.type !== "progress" && e.type !== "other",
+};
+const NAV_EV = EV.concat(MODE_EV).sort((a, b) => a.t - b.t);
+function jump(dir) {
+  const f = FILTERS[document.getElementById("evfilter").value];
+  const list = NAV_EV.filter(f);
+  const e = dir > 0 ? list.find(e => e.t > st.t + 1e-4) : list.slice().reverse().find(e => e.t < st.t - 1e-4);
+  if (e) seek(e.t, true);
+}
+document.getElementById("prev").onclick = () => jump(-1);
+document.getElementById("next").onclick = () => jump(1);
+document.getElementById("fstep").onclick = () => frameStep(1);
+function frameStep(d) {
+  const i = bsearch(P.t, st.t + (d > 0 ? 1e-6 : -1e-6));
+  seek(P.t[Math.max(0, Math.min(NP - 1, d > 0 ? i + 1 : i))], true);
+}
+addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey) return;
+  if (e.key === " ") { setPlaying(!st.playing); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { jump(1); e.preventDefault(); }
+  else if (e.key === "ArrowLeft") { jump(-1); e.preventDefault(); }
+  else if (e.key === ".") frameStep(1);
+  else if (e.key === ",") frameStep(-1);
+  else if (e.key === "f" || e.key === "F" || e.key === "а" || e.key === "А") toggleFollow();
+  else if (e.key === "c" || e.key === "C" || e.key === "с" || e.key === "С") view3d.resetCam();
+});
+
+// ═══ холсты ══════════════════════════════════════════════════════════
+function fitCanvas(cv, box) {
+  const r = (box || cv.parentElement).getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {ctx, w: r.width, h: r.height};
+}
+const tip = document.getElementById("tip");
+function showTip(ev, text) {
+  if (!text) { tip.style.display = "none"; return; }
+  tip.textContent = text; tip.style.display = "block";
+  const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px"; tip.style.top = (ev.clientY + 14) + "px";
+}
+
+// ═══ шкала времени ═══════════════════════════════════════════════════
+const tl = document.getElementById("timeline");
+const TL_COLORS = e => ({decide: e.straight ? "ok" : "stop", step: "fg", post: "post", bumper: "stop", backoff: "stop",
+  assist: "assist", obstacle: "assist", ramp_detect: "assist", ramp_up: "ramp", ramp_down: "ramp", ramp_done: "ramp", hold: "mut"})[e.type];
+function drawTimeline() {
+  const {ctx, w, h} = fitCanvas(tl, tl), X = t => 6 + (w - 12) * t / TEND;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = C.grid; ctx.fillRect(6, 11, w - 12, 8);
+  for (let s = 0; s <= TEND; s += 1) {
+    ctx.fillStyle = C.line; ctx.fillRect(X(s), s % 5 ? 19 : 17, 1, s % 5 ? 3 : 6);
+    if (s % 5 === 0) { ctx.fillStyle = C.mut; ctx.font = "10px -apple-system,sans-serif"; ctx.fillText(s + "с", X(s) + 2, 29); }
+  }
+  for (const e of NAV_EV) {
+    const c = TL_COLORS(e); if (!c) continue;
+    const tall = e.type === "decide" || e.type === "bumper" || e.type === "step";
+    ctx.fillStyle = C[c]; ctx.fillRect(X(e.t) - 0.5, tall ? 2 : 6, e.type === "step" ? 1 : 2, tall ? 9 : 5);
+  }
+  ctx.fillStyle = C.cur; ctx.fillRect(6, 11, X(st.t) - 6, 8);
+  ctx.fillStyle = C.robot; ctx.fillRect(X(st.t) - 1, 0, 2, 22);
+}
+let tlDrag = false;
+const tlSeek = e => { const r = tl.getBoundingClientRect(); seek((e.clientX - r.left - 6) / (r.width - 12) * TEND, true); };
+tl.addEventListener("pointerdown", e => { tlDrag = true; tl.setPointerCapture(e.pointerId); tlSeek(e); });
+tl.addEventListener("pointermove", e => {
+  if (tlDrag) return tlSeek(e);
+  const r = tl.getBoundingClientRect(), t = (e.clientX - r.left - 6) / (r.width - 12) * TEND;
+  const near = NAV_EV.filter(x => TL_COLORS(x) && Math.abs(x.t - t) * (r.width - 12) / TEND < 3);
+  showTip(e, near.length ? near.slice(0, 4).map(x => x.t.toFixed(2) + " с  " + (x.text || (x.type === "assist" ? "ассист: режим момента T" : "B: удержание"))).join("\n") : "");
+});
+tl.addEventListener("pointerup", () => tlDrag = false);
+tl.addEventListener("pointerleave", () => showTip(null, ""));
+
+// ═══ вид сверху ══════════════════════════════════════════════════════
+const topcv = document.getElementById("topcv"), hud = document.getElementById("hud");
+const BBOX = (() => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const w of T.world.walls) { x0 = Math.min(x0, w[0]); y0 = Math.min(y0, w[1]); x1 = Math.max(x1, w[2]); y1 = Math.max(y1, w[3]); }
+  return {x0, y0, x1, y1};
+})();
+const view = {k: 0.5, ox: 0, oy: 0};          // экран = (ox + x*k, oy - y*k)
+function fitView() {
+  const r = topcv.parentElement.getBoundingClientRect(), m = 40;
+  view.k = Math.min((r.width - 2 * m) / (BBOX.x1 - BBOX.x0), (r.height - 2 * m) / (BBOX.y1 - BBOX.y0));
+  view.ox = r.width / 2 - (BBOX.x0 + BBOX.x1) / 2 * view.k;
+  view.oy = r.height / 2 + (BBOX.y0 + BBOX.y1) / 2 * view.k;
+  st.dirty = true;
+}
+const SX = x => view.ox + x * view.k, SY = y => view.oy - y * view.k;
+function toggleFollow() { st.follow = !st.follow; document.getElementById("follow").classList.toggle("on", st.follow); st.dirty = true; }
+document.getElementById("follow").onclick = toggleFollow;
+document.getElementById("fit").onclick = () => { if (st.follow) toggleFollow(); fitView(); };
+topcv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = topcv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = Math.exp(-e.deltaY * 0.0015), wx = (mx - view.ox) / view.k, wy = (view.oy - my) / view.k;
+  view.k = Math.max(0.05, Math.min(8, view.k * f));
+  view.ox = mx - wx * view.k; view.oy = my + wy * view.k; st.dirty = true;
+}, {passive: false});
+let panFrom = null;
+topcv.addEventListener("pointerdown", e => {
+  const hit = topHit(e); if (hit) { seek(hit.t, true); return; }
+  panFrom = {x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy}; topcv.setPointerCapture(e.pointerId);
+});
+topcv.addEventListener("pointermove", e => {
+  if (panFrom) {
+    if (st.follow) toggleFollow();
+    view.ox = panFrom.ox + e.clientX - panFrom.x; view.oy = panFrom.oy + e.clientY - panFrom.y; st.dirty = true; return;
+  }
+  const hit = topHit(e);
+  topcv.style.cursor = hit ? "pointer" : "grab";
+  showTip(e, hit ? hit.tip : "");
+});
+topcv.addEventListener("pointerup", () => panFrom = null);
+topcv.addEventListener("pointerleave", () => showTip(null, ""));
+
+// метки на виде сверху: решения - в клетке, остальное - там, где был робот
+const DECIDES = EV.filter(e => e.type === "decide");
+{
+  const seen = {};
+  for (const e of DECIDES) {
+    const key = e.cell.join(","), n = seen[key] = (seen[key] || 0) + 1;
+    const [x, y] = worldCell(e.cell[0], e.cell[1]);
+    e.wx = x + (n - 1) * 34; e.wy = y + (n - 1) * 34;     // повторные решения в клетке - со сдвигом
+  }
+}
+const MARKS = [];
+for (const e of EV.concat(MODE_EV)) {
+  const kind = {post: "post", bumper: "bumper", backoff: "bumper", assist: "assist", obstacle: "assist", ramp_detect: "assist",
+                ramp_up: "ramp", ramp_down: "ramp", not_ramp: "ramp"}[e.type];
+  if (!kind) continue;
+  const p = poseAt(e.t);
+  MARKS.push({t: e.t, kind, x: p.x, y: p.y, text: e.text || "ассист: режим момента (T:) с " + e.t.toFixed(2) + " с"});
+}
+let hitList = [];
+function topHit(e) {
+  const r = topcv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bd = 10;
+  for (const h of hitList) { const d = Math.hypot(h.sx - mx, h.sy - my); if (d < bd) { bd = d; best = h; } }
+  return best;
+}
+
+function arrow(ctx, x, y, ang, len, color) {     // ang - курс, ° по часовой от севера
+  const a = ang * Math.PI / 180, dx = Math.sin(a), dy = -Math.cos(a);
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x - dx * len / 2, y - dy * len / 2); ctx.lineTo(x + dx * len / 2, y + dy * len / 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + dx * len / 2, y + dy * len / 2);
+  ctx.lineTo(x + dx * (len / 2 - 8) - dy * 5, y + dy * (len / 2 - 8) + dx * 5);
+  ctx.lineTo(x + dx * (len / 2 - 8) + dy * 5, y + dy * (len / 2 - 8) - dx * 5); ctx.fill();
+}
+const DIR_ANG = {N: 0, E: 90, S: 180, W: 270};
+
+function drawTop(pose, scan) {
+  const {ctx, w, h} = fitCanvas(topcv), k = view.k;
+  if (st.follow) { view.ox = w / 2 - pose.x * k; view.oy = h / 2 + pose.y * k; }
+  ctx.fillStyle = C.panel; ctx.fillRect(0, 0, w, h);
+  // пол поля и сетка клеток
+  const gx0 = Math.floor(BBOX.x0 / CELL - 0.5) * CELL + CELL / 2, gy0 = Math.floor(BBOX.y0 / CELL - 0.5) * CELL + CELL / 2;
+  ctx.fillStyle = C.floor; ctx.fillRect(SX(BBOX.x0), SY(BBOX.y1), (BBOX.x1 - BBOX.x0) * k, (BBOX.y1 - BBOX.y0) * k);
+  if (st.layers.grid) {
+    ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = gx0; x <= BBOX.x1; x += CELL) { ctx.moveTo(SX(x), SY(BBOX.y0)); ctx.lineTo(SX(x), SY(BBOX.y1)); }
+    for (let y = gy0; y <= BBOX.y1; y += CELL) { ctx.moveTo(SX(BBOX.x0), SY(y)); ctx.lineTo(SX(BBOX.x1), SY(y)); }
+    ctx.stroke();
+  }
+  // рельеф: острова и бугорки - плоские, горки - градиент и стрелка подъёма
+  for (const r of T.world.terrain) {
+    const [x0, y0, x1, y1] = r.rect, X0 = SX(x0), Y0 = SY(y1), W = (x1 - x0) * k, H = (y1 - y0) * k;
+    if (r.kind === "flat") { ctx.fillStyle = heightColor(r.h); ctx.fillRect(X0, Y0, W, H); continue; }
+    const g = {N: [0, H, 0, 0], S: [0, 0, 0, H], E: [0, 0, W, 0], W: [W, 0, 0, 0]}[r.dir];
+    const grad = ctx.createLinearGradient(X0 + g[0], Y0 + g[1], X0 + g[2], Y0 + g[3]);
+    grad.addColorStop(0, heightColor(r.h0)); grad.addColorStop(1, heightColor(r.h1));
+    ctx.fillStyle = grad; ctx.fillRect(X0, Y0, W, H);
+    arrow(ctx, X0 + W / 2, Y0 + H / 2, DIR_ANG[r.dir], Math.min(W, H, 90 * k * 3) * 0.6, C.ramp);
+    if (k > 0.25) {
+      ctx.fillStyle = C.ramp; ctx.font = "11px -apple-system,sans-serif";
+      ctx.fillText(`горка +${Math.round(r.h1 - r.h0)}мм`, X0 + 4, Y0 + 13);
+    }
+  }
+  // стены, тон по высоте; низкие (кирпич) - отдельным цветом
+  for (const wl of T.world.walls) {
+    ctx.fillStyle = wallColor(wl);
+    ctx.fillRect(SX(wl[0]), SY(wl[3]), Math.max(1, (wl[2] - wl[0]) * k), Math.max(1, (wl[3] - wl[1]) * k));
+  }
+  // весь путь (бледно) и пройденный след по скорости
+  if (st.layers.future) {
+    ctx.strokeStyle = C.line; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let i = 0; i < NP; i++) (i ? ctx.lineTo : ctx.moveTo).call(ctx, SX(P.x[i]), SY(P.y[i]));
+    ctx.stroke();
+  }
+  if (st.layers.trail) {
+    ctx.lineCap = "round";
+    for (let i = 1; i <= pose.i; i++) {
+      if (P.m[i] === "T") {      // ассист - подложка
+        ctx.strokeStyle = C.assist; ctx.lineWidth = 7; ctx.globalAlpha = 0.35;
+        ctx.beginPath(); ctx.moveTo(SX(P.x[i - 1]), SY(P.y[i - 1])); ctx.lineTo(SX(P.x[i]), SY(P.y[i])); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      ctx.strokeStyle = speedColor(V[i]); ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(SX(P.x[i - 1]), SY(P.y[i - 1])); ctx.lineTo(SX(P.x[i]), SY(P.y[i])); ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+  }
+  hitList = [];
+  // метки: столбики, ассист, горки, бампер
+  if (st.layers.marks) for (const m of MARKS) {
+    const sx = SX(m.x), sy = SY(m.y), past = m.t <= st.t;
+    ctx.globalAlpha = past ? 1 : 0.3;
+    ctx.fillStyle = C[m.kind === "bumper" ? "stop" : m.kind]; ctx.strokeStyle = C.panel; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (m.kind === "post") { ctx.moveTo(sx, sy - 6); ctx.lineTo(sx + 6, sy); ctx.lineTo(sx, sy + 6); ctx.lineTo(sx - 6, sy); }
+    else if (m.kind === "bumper") { ctx.moveTo(sx, sy - 8); ctx.lineTo(sx + 7, sy + 5); ctx.lineTo(sx - 7, sy + 5); }
+    else if (m.kind === "ramp") ctx.rect(sx - 5, sy - 5, 10, 10);
+    else ctx.arc(sx, sy, 5, 0, 7);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    if (m.kind === "bumper") { ctx.fillStyle = C.panel; ctx.font = "bold 9px sans-serif"; ctx.fillText("!", sx - 1.5, sy + 4); }
+    ctx.globalAlpha = 1;
+    hitList.push({sx, sy, t: m.t, tip: m.t.toFixed(2) + " с\n" + m.text});
+  }
+  // решения в клетках: зелёное - прямо, красное - стоп
+  if (st.layers.decide) for (const e of DECIDES) {
+    const sx = SX(e.wx), sy = SY(e.wy), past = e.t <= st.t;
+    ctx.globalAlpha = past ? 1 : 0.3;
+    ctx.fillStyle = e.straight ? C.ok : C.stop; ctx.strokeStyle = C.panel; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx, sy, 8, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.font = "bold 10px -apple-system,sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(e.straight ? "↑" : "■", sx, sy + 3.5); ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
+    hitList.push({sx, sy, t: e.t, tip: `${e.t.toFixed(2)} с  ${e.straight ? "ПРЯМО" : "СТОП"} (${e.reason})\n${e.text}`});
+  }
+  // лидар: лучи последнего оборота и точки коридора
+  if (scan && st.layers.rays) {
+    const ox = SX(scan.x), oy = SY(scan.y);
+    for (const kind of [0, 1]) {
+      ctx.strokeStyle = kind ? C.rayW : C.rayF; ctx.lineWidth = 1; ctx.beginPath();
+      for (const hpt of scan.hits) if (hpt[3] === kind) { ctx.moveTo(ox, oy); ctx.lineTo(SX(hpt[0]), SY(hpt[1])); }
+      ctx.stroke();
+      ctx.fillStyle = kind ? C.hitW : C.hitF;
+      for (const hpt of scan.hits) if (hpt[3] === kind) ctx.fillRect(SX(hpt[0]) - 1.5, SY(hpt[1]) - 1.5, 3, 3);
+    }
+  }
+  if (scan && st.layers.corr) {
+    ctx.fillStyle = C.corr;
+    for (const c of scan.corr) { ctx.beginPath(); ctx.arc(SX(c[0]), SY(c[1]), 2.6, 0, 7); ctx.fill(); }
+  }
+  // робот 193×125: корпус, колёса, нос
+  ctx.save();
+  ctx.translate(SX(pose.x), SY(pose.y)); ctx.rotate(pose.th * Math.PI / 180); ctx.scale(k, k);
+  ctx.fillStyle = C.wheel;
+  for (const ax of [-AXLE, AXLE]) for (const sd of [-1, 1]) ctx.fillRect(sd * ROBOT_W / 2 - (sd > 0 ? 4 : 14), -ax - 20, 18, 40);
+  ctx.globalAlpha = 0.85; ctx.fillStyle = pose.b ? C.stop : C.robot;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-ROBOT_W / 2, -ROBOT_L / 2, ROBOT_W, ROBOT_L, 14) : ctx.rect(-ROBOT_W / 2, -ROBOT_L / 2, ROBOT_W, ROBOT_L);
+  ctx.fill(); ctx.globalAlpha = 1;
+  ctx.fillStyle = C.nose; ctx.beginPath();
+  ctx.moveTo(0, -ROBOT_L / 2 - 6); ctx.lineTo(30, -ROBOT_L / 2 + 30); ctx.lineTo(-30, -ROBOT_L / 2 + 30); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = C.panel; ctx.beginPath(); ctx.arc(0, 0, 16, 0, 7); ctx.fill();       // лидар
+  ctx.restore();
+  // справка
+  const lastDec = DECIDES[bsearch(DECIDES.map(e => e.t), st.t)];
+  hud.textContent =
+    `t ${st.t.toFixed(2)} с   этаж ${floorAt(st.t)}\n` +
+    `v ${pose.v.toFixed(0).padStart(3)} см/с  (L ${pose.vl.toFixed(0)} R ${pose.vr.toFixed(0)})\n` +
+    `режим ${pose.m}  уставка ${pose.sl.toFixed(0)}/${pose.sr.toFixed(0)}${pose.m === "T" ? "  потолок " + pose.cap.toFixed(0) : ""}\n` +
+    `курс ${pose.th.toFixed(1)}°  наклон ${pose.p.toFixed(1)}°  z ${pose.z.toFixed(0)} мм\n` +
+    `стена впереди ${pose.f == null ? "—" : pose.f.toFixed(0) + " мм"}${pose.b ? "   БАМПЕР" : ""}` +
+    (lastDec ? `\nрешение: (${lastDec.cell}) ${lastDec.straight ? "прямо" : "стоп"} (${lastDec.reason})` : "");
+}
+{
+  const key = document.getElementById("speedkey");
+  key.innerHTML = [0, 15, 30, 45, 60].map(v => `<b style="color:${speedColor(v)}">■</b>${v}`).join(" ") + " см/с";
+}
+
+// ═══ 3D ══════════════════════════════════════════════════════════════
+const view3d = {resetCam() {}, build() {}, draw() {}};
+
+// ═══ карта, профиль, графики, консоль ════════════════════════════════
+function drawMap() {}
+function drawProfile() {}
+function drawCharts() {}
+function syncLog() {}
+
+// ═══ цикл ════════════════════════════════════════════════════════════
+let lastFrame = performance.now(), lastScan = null;
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
+  if (st.playing) {
+    st.t += dt * st.speed;
+    if (st.t >= TEND) { st.t = TEND; setPlaying(false); }
+    st.dirty = true;
+  }
+  if (st.dirty) {
+    st.dirty = false;
+    const pose = poseAt(st.t), scan = scanAt(st.t);
+    document.getElementById("clock").textContent = `${st.t.toFixed(2).padStart(6)} / ${TEND.toFixed(2)} с`;
+    drawTimeline(); drawTop(pose, scan); view3d.draw(pose, scan); drawMap(pose); drawProfile(pose); drawCharts(pose); syncLog();
+    lastScan = scan;
+  }
+  requestAnimationFrame(frame);
+}
+function themeChanged() { readColors(); view3d.build(); st.dirty = true; }
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeChanged);
+new ResizeObserver(() => st.dirty = true).observe(document.querySelector("main"));
+readColors();
+view3d.build();
+requestAnimationFrame(() => { fitView(); requestAnimationFrame(frame); });
+</script>
+</body>
+</html>
