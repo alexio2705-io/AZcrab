@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import os
 import sys
@@ -16,6 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import maze_sim as ms  # noqa: E402
+import sim_trace  # noqa: E402
 from maze_sim import CELL, WALL_H, World, nav  # noqa: E402
 
 RAMP_RISE = 140.0           # один этаж: плитка 300 мм под 25°
@@ -130,17 +132,33 @@ def wall_truth(w, cx, cy, d):
     return any(x0 <= px <= x1 and y0 <= py <= y1 for x0, y0, x1, y1, *_ in w.walls)
 
 
-def run(name):
+def fresh_nav():
+    """Каждый сценарий - с чистым nav: модуль перезагружается на месте."""
+    global nav
+    importlib.reload(ms.nav)
+    ms.nav = nav = sys.modules["nav"]
+
+
+def run(name, trace=False):
+    """Прогон сценария; -> (карта без ошибок, трасса для просмотрщика или None)."""
     make, cap, ramps = SCENARIOS[name]
     w = make()
     sim = ms.Sim(w)
+    t0 = sim.t
     os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
     path = os.path.join(HERE, "logs", f"{name}.log")
-    buf = io.StringIO()
+    rec = None
+    if trace:
+        rec = sim.rec = sim_trace.Recorder(nav, sim)
+        buf = sim_trace.TimedLines(lambda: sim.t)
+    else:
+        buf = io.StringIO()
     status = "?"
     try:
         with contextlib.redirect_stdout(buf):
             ms.setup(sim)
+            if rec is not None:
+                nav._write_state = lambda cx, cy, hdg, cp, phase: rec.on_state(phase)
             cx, cy, hdg, cp, status = nav.flood_fill_run(cap)
             if status != "fatal":
                 cx, cy, hdg = nav.return_to_start(cx, cy, hdg, cp)
@@ -170,20 +188,38 @@ def run(name):
         if got is None or got[:2] != end:
             bad.append(f"горка {edge}: ждали {end}, в карте {None if got is None else got[:2]}")
     print(f"   ошибок карты: {len(bad)} {bad[:6]}")
-    return not bad
-    print(f"   лог: {path}")
+    if rec is None:
+        return not bad, None
+    rec.on_state("end")
+    buf.finish()
+    meta = {"status": status, "ok": not bad, "map_errors": bad, "sim_time": round(sim.t - t0, 2),
+            "visited": len(nav._visited), "crashes": sim.crashes,
+            "max_pitch": round(sim.max_pitch, 1), "ramps": sorted(map(list, nav._ramps))}
+    return not bad, sim_trace.build_trace(name, w, rec, buf.lines, meta, t0)
+
+
+def write_traces(traces):
+    """--html: трассы в sim/viewer/data/<имя>.json."""
+    out = os.path.join(HERE, "viewer", "data")
+    os.makedirs(out, exist_ok=True)
+    for name, tr in traces.items():
+        with open(os.path.join(out, f"{name}.json"), "w") as f:
+            f.write(sim_trace.dump_trace(tr))
 
 
 if __name__ == "__main__":
-    names = sys.argv[1:] or list(SCENARIOS)
+    html = "--html" in sys.argv[1:]
+    names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(SCENARIOS)
     failed = []
+    traces = {}
     for n in names:
-        # каждый сценарий - с чистым nav: модуль перезагружаем
-        import importlib
-        importlib.reload(ms.nav)
-        ms.nav = nav = sys.modules["nav"]
-        globals()["nav"] = nav
-        if not run(n):
+        fresh_nav()
+        ok, tr = run(n, trace=html)
+        if not ok:
             failed.append(n)
+        if tr is not None:
+            traces[n] = tr
+    if html:
+        write_traces(traces)
     print("ВСЕ СЦЕНАРИИ ЧИСТЫЕ" if not failed else f"ОШИБКИ: {failed}")
     sys.exit(1 if failed else 0)

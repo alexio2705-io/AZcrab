@@ -8,6 +8,8 @@ docs/superpowers/specs/2026-10-09-sim-animation-design.md.
 from __future__ import annotations
 
 import io
+import json
+import math
 import re
 
 
@@ -226,3 +228,63 @@ def map_snapshot(maze, visited, ramps, blocked, edge_fixed, phase):
         "fixed": [list(e) for e in sorted({e for k, v in edge_fixed.items() if v is True
                                             for e in k})],
     }
+
+
+# ── регистратор и сборка трассы ────────────────────────────
+class Recorder:
+    """Подключается к модели как Sim.rec и к nav._write_state: копит сырые
+    сэмплы позы (каждый шаг 5 мс), обороты лидара и снимки карты."""
+
+    def __init__(self, nav, sim):
+        self.nav = nav
+        self.sim = sim
+        self.samples = []
+        self.scans = []
+        self.maps = []
+        self._last_map = None
+
+    def on_step(self, sim, pitch):
+        _, a, b, cap = sim.cmd
+        wall = self.nav._state.get("wall") or {}
+        self.samples.append({"t": sim.t, "x": sim.x, "y": sim.y, "z": sim.w.height(sim.x, sim.y),
+                             "th": sim.theta, "p": pitch, "vl": sim.vl, "vr": sim.vr,
+                             "m": sim.cmd_raw, "sl": a, "sr": b, "cap": cap,
+                             "b": sim.bumped, "f": wall.get("front")})
+
+    def on_scan(self, sim, hits, pts):
+        """hits - мировые концы лучей; pts - точки коридора в системе робота
+        (x вперёд, y вправо) -> в мир."""
+        r = math.radians(sim.theta)
+        fx, fy = math.sin(r), math.cos(r)
+        self.scans.append({
+            "t": sim.t, "x": round(sim.x, 1), "y": round(sim.y, 1), "th": round(sim.theta, 2),
+            "hits": [[round(x), round(y), round(z), 1 if wall else 0] for x, y, z, wall in hits],
+            "corr": [[round(sim.x + fx * px + fy * py), round(sim.y + fy * px - fx * py)]
+                     for px, py in pts]})
+
+    def on_state(self, phase):
+        n = self.nav
+        snap = map_snapshot(n._maze, n._visited, n._ramps, n._blocked, n._edge_fixed, phase)
+        if snap != self._last_map:
+            self._last_map = snap
+            self.maps.append({"t": self.sim.t, **snap})
+
+
+def build_trace(name, world, rec, lines, meta, t0):
+    """Всё записанное -> словарь трассы (ключи meta, world, truth, poses,
+    scans, events, maps), время - от t0."""
+    cells = {(r[0], r[1]) for m in rec.maps for r in m["maze"]}
+    return {
+        "meta": {"name": name, **meta},
+        "world": world_json(world.walls, world.pieces),
+        "truth": truth_rows(world.walls, world.height, cells),
+        "poses": pose_columns(thin_poses(rec.samples, [t for t, _ in lines]), t0),
+        "scans": [{**s, "t": round(s["t"] - t0, 3)} for s in rec.scans],
+        "events": parse_log(lines, t0),
+        "maps": [{**m, "t": round(m["t"] - t0, 3)} for m in rec.maps],
+    }
+
+
+def dump_trace(trace):
+    """Детерминированный компактный JSON."""
+    return json.dumps(trace, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
