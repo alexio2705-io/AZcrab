@@ -109,3 +109,120 @@ def parse_line(text):
 def parse_log(lines, t0=0.0):
     """[(t, строка)] -> события с временем от t0 (до 1 мс) и текстом."""
     return [{"t": round(t - t0, 3), "text": s.strip(), **parse_line(s)} for t, s in lines]
+
+
+# ── поза ───────────────────────────────────────────────────
+POSE_DT = 0.02          # 50 Гц
+_POSE_ND = {"x": 1, "y": 1, "z": 1, "th": 2, "p": 2, "vl": 2, "vr": 2,
+            "sl": 2, "sr": 2, "cap": 2, "f": 1}
+
+
+def thin_poses(samples, keep_times=(), dt=POSE_DT):
+    """Сэмплы каждого шага модели (5 мс) -> кадры для анимации: раз в dt,
+    плюс первый и последний, смена режима команды или бампера и первый
+    кадр не раньше каждого из keep_times (строки лога)."""
+    keep = sorted(keep_times)
+    ki = 0
+    out = []
+    last_t = None
+    prev = None
+    for i, s in enumerate(samples):
+        take = (prev is None or i == len(samples) - 1 or s["t"] >= last_t + dt - 1e-9
+                or s["m"] != prev["m"] or s["b"] != prev["b"])
+        while ki < len(keep) and keep[ki] <= s["t"] + 1e-9:
+            take = True
+            ki += 1
+        if take:
+            out.append(s)
+            last_t = s["t"]
+        prev = s
+    return out
+
+
+def pose_columns(poses, t0):
+    """Кадры -> колонки (компактнее в JSON): числа округлены, режим - строка
+    букв M/T/B, бампер - 0/1, передняя стена - мм или None."""
+    cols = {"t": [round(p["t"] - t0, 3) for p in poses],
+            "m": "".join(p["m"] for p in poses),
+            "b": [1 if p["b"] else 0 for p in poses]}
+    for k, nd in _POSE_ND.items():
+        cols[k] = [None if p[k] is None else round(p[k], nd) for p in poses]
+    return cols
+
+
+# ── мир ────────────────────────────────────────────────────
+CELL = 300.0
+LEVEL_STRIDE = 1000     # как nav.LEVEL_STRIDE
+WALL_PROBE_Z = 40.0     # стена ребра должна перекрывать пол клетки + столько
+CLIFF_MM = 50.0         # перепад рельефа на ребре больше этого - тоже стена (уступ острова)
+
+
+def sample_terrain(x0, y0, x1, y1, f, step=10.0):
+    """Кусок рельефа (прямоугольник + функция высоты) -> описание для
+    отрисовки: плоский ({h}) или наклонный ({dir подъёма, h0 низ, h1 верх})."""
+    nx = max(1, int(round((x1 - x0) / step)))
+    ny = max(1, int(round((y1 - y0) / step)))
+    hs = [f(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny)
+          for i in range(nx + 1) for j in range(ny + 1)]
+    rect = [round(v, 1) for v in (x0, y0, x1, y1)]
+    lo, hi = min(hs), max(hs)
+    if hi - lo < 0.5:
+        return {"kind": "flat", "rect": rect, "h": round(hi, 1)}
+    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+    n, e, s, w = f(mx, y1), f(x1, my), f(mx, y0), f(x0, my)
+    rise = [n - s, e - w, s - n, w - e]
+    return {"kind": "slope", "rect": rect, "dir": "NESW"[rise.index(max(rise))],
+            "h0": round(lo, 1), "h1": round(hi, 1)}
+
+
+def world_json(walls, pieces):
+    return {"cell": int(CELL),
+            "walls": [[round(v, 1) for v in w] for w in walls],
+            "terrain": [sample_terrain(*p) for p in pieces]}
+
+
+def level_of(cy):
+    """Этаж клетки по cy - как nav.level_of."""
+    return int((cy + LEVEL_STRIDE / 2) // LEVEL_STRIDE)
+
+
+def edge_truth(walls, height, cx, cy, d):
+    """Есть ли в мире стена на ребре d клетки (cx, cy) карты nav (любой
+    этаж): стена должна закрывать середину ребра на высоте пола клетки +
+    WALL_PROBE_Z; или рельеф на ребре обрывается больше чем на CLIFF_MM
+    (остров сбоку: его стены стоят на нём, снизу стену заменяет уступ)."""
+    wy = cy - level_of(cy) * LEVEL_STRIDE
+    x, y = cx * CELL, wy * CELL
+    h = CELL / 2
+    px, py = ((x, y + h), (x + h, y), (x, y - h), (x - h, y))[d]
+    z = height(x, y) + WALL_PROBE_Z
+    ox, oy = (px - x) / h * 5.0, (py - y) / h * 5.0
+    if abs(height(px - ox, py - oy) - height(px + ox, py + oy)) > CLIFF_MM:
+        return True
+    return any(x0 <= px <= x1 and y0 <= py <= y1 and z0 <= z <= z1
+               for x0, y0, x1, y1, z0, z1 in walls)
+
+
+def truth_rows(walls, height, cells):
+    """[[cx, cy, N, E, S, W]] правды мира (1/0) по клеткам карты."""
+    return [[cx, cy, *(1 if edge_truth(walls, height, cx, cy, d) else 0 for d in range(4))]
+            for cx, cy in sorted(set(cells))]
+
+
+# ── карта nav ──────────────────────────────────────────────
+def _tri(v):
+    return None if v is None else (1 if v else 0)
+
+
+def map_snapshot(maze, visited, ramps, blocked, edge_fixed, phase):
+    """Карта, как её видит nav, -> сортированный JSON-снимок."""
+    return {
+        "phase": phase,
+        "maze": sorted([cx, cy, *(_tri(v) for v in w)] for (cx, cy), w in maze.items()),
+        "visited": sorted([cx, cy] for cx, cy in visited),
+        "ramps": sorted([cx, cy, d, *v[:2], round(v[2], 2), v[3]]
+                        for (cx, cy, d), v in ramps.items()),
+        "blocked": sorted([cx, cy] for cx, cy in blocked),
+        "fixed": [list(e) for e in sorted({e for k, v in edge_fixed.items() if v is True
+                                            for e in k})],
+    }
