@@ -536,7 +536,155 @@ function drawTop(pose, scan) {
 }
 
 // ═══ 3D ══════════════════════════════════════════════════════════════
-const view3d = {resetCam() {}, build() {}, draw() {}};
+// Мир (x восток, y север, z вверх, мм) -> three: (x, z, -y).
+const view3d = (() => {
+  const wrap = document.getElementById("d3wrap"), stub = {resetCam() {}, build() {}, draw() {}};
+  let renderer;
+  try {
+    if (!window.THREE) throw new Error("three.js не загрузился (vendor/three.min.js)");
+    renderer = new THREE.WebGLRenderer({antialias: true});
+  } catch (err) {
+    wrap.textContent = "3D недоступно: " + err.message;
+    return stub;
+  }
+  renderer.setPixelRatio(devicePixelRatio || 1);
+  renderer.domElement.style.cssText = "position:absolute;inset:0;width:100%;height:100%;cursor:grab";
+  wrap.appendChild(renderer.domElement);
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(50, 1, 10, 40000);
+  const world = new THREE.Group(), robot = new THREE.Group(), body = new THREE.Group();
+  scene.add(world, robot);
+  robot.add(body);
+  const cam = {yaw: 0, elev: 30, dist: 1100, free: false, absYaw: 0};
+  const lam = c => new THREE.MeshLambertMaterial({color: new THREE.Color(c)});
+  const box = (w, h, d, c) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), lam(c));
+  let rayW, rayF, trail, lastScanT = null;
+
+  function slopeMesh(r) {
+    const [x0, y0, x1, y1] = r.rect, {h0, h1} = r;
+    const hAt = (x, y) => ({N: h0 + (h1 - h0) * (y - y0) / (y1 - y0), S: h1 - (h1 - h0) * (y - y0) / (y1 - y0),
+                           E: h0 + (h1 - h0) * (x - x0) / (x1 - x0), W: h1 - (h1 - h0) * (x - x0) / (x1 - x0)})[r.dir];
+    const c = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    const top = c.map(([x, y]) => [x, hAt(x, y), -y]), bot = c.map(([x, y]) => [x, 0, -y]);
+    const tri = [];
+    const quad = (a, b, cc, d) => tri.push(...a, ...b, ...cc, ...a, ...cc, ...d);
+    quad(top[0], top[1], top[2], top[3]);
+    for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; quad(bot[i], bot[j], top[j], top[i]); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(tri, 3));
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({color: new THREE.Color(heightColor((h0 + h1) / 2)), side: THREE.DoubleSide}));
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({color: new THREE.Color(C.ramp)}));
+    const grp = new THREE.Group(); grp.add(m, edges);
+    return grp;
+  }
+
+  function build() {
+    world.clear(); body.clear();
+    scene.background = new THREE.Color(C.panel);
+    world.add(new THREE.HemisphereLight(0xffffff, 0x777777, 0.85));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.55); sun.position.set(-1, 2.5, 1.2); world.add(sun);
+    const mx = 600, fw = BBOX.x1 - BBOX.x0 + 2 * mx, fd = BBOX.y1 - BBOX.y0 + 2 * mx;
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(fw, fd), lam(C.floor));
+    floor.rotation.x = -Math.PI / 2; floor.position.set((BBOX.x0 + BBOX.x1) / 2, -0.5, -(BBOX.y0 + BBOX.y1) / 2);
+    world.add(floor);
+    const gl = [], gx0 = Math.floor(BBOX.x0 / CELL - 0.5) * CELL + CELL / 2, gy0 = Math.floor(BBOX.y0 / CELL - 0.5) * CELL + CELL / 2;
+    for (let x = gx0; x <= BBOX.x1; x += CELL) gl.push(x, 0.5, -BBOX.y0, x, 0.5, -BBOX.y1);
+    for (let y = gy0; y <= BBOX.y1; y += CELL) gl.push(BBOX.x0, 0.5, -y, BBOX.x1, 0.5, -y);
+    const gg = new THREE.BufferGeometry(); gg.setAttribute("position", new THREE.Float32BufferAttribute(gl, 3));
+    world.add(new THREE.LineSegments(gg, new THREE.LineBasicMaterial({color: new THREE.Color(C.grid)})));
+    for (const r of T.world.terrain) {
+      if (r.kind === "slope") { world.add(slopeMesh(r)); continue; }
+      const [x0, y0, x1, y1] = r.rect, m = box(x1 - x0, r.h, y1 - y0, heightColor(r.h));
+      m.position.set((x0 + x1) / 2, r.h / 2, -(y0 + y1) / 2); world.add(m);
+    }
+    for (const wl of T.world.walls) {
+      const m = box(wl[2] - wl[0], wl[5] - wl[4], wl[3] - wl[1], wallColor(wl));
+      Object.assign(m.material, {transparent: true, opacity: 0.6});   // робот виден сквозь стены
+      m.position.set((wl[0] + wl[2]) / 2, (wl[4] + wl[5]) / 2, -(wl[1] + wl[3]) / 2); world.add(m);
+    }
+    // путь робота: цвет по скорости, рисуется до текущего кадра
+    const tp = new Float32Array(NP * 3), tc = new Float32Array(NP * 3), col = new THREE.Color();
+    for (let i = 0; i < NP; i++) {
+      tp.set([P.x[i], P.z[i] + 4, -P.y[i]], i * 3);
+      col.setStyle(speedColor(V[i])); tc.set([col.r, col.g, col.b], i * 3);
+    }
+    const tg = new THREE.BufferGeometry();
+    tg.setAttribute("position", new THREE.BufferAttribute(tp, 3)); tg.setAttribute("color", new THREE.BufferAttribute(tc, 3));
+    trail = new THREE.Line(tg, new THREE.LineBasicMaterial({vertexColors: true})); world.add(trail);
+    // лучи последнего оборота: до стен и до пола/рельефа
+    const rayLines = (c, op) => {
+      const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(720 * 3), 3));
+      const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({color: new THREE.Color(c), transparent: true, opacity: op}));
+      l.frustumCulled = false; world.add(l); return l;
+    };
+    rayW = rayLines(C.hitW, 0.45); rayF = rayLines(C.mut, 0.25); lastScanT = null;
+    // робот: корпус 193×125, нос, 4 колеса, лидар на 130 мм; вперёд - -z
+    const hull = box(ROBOT_W, 55, ROBOT_L, C.robot); hull.position.y = 57; body.add(hull);
+    const nose = box(ROBOT_W - 30, 22, 26, C.nose); nose.position.set(0, 74, -ROBOT_L / 2 + 13); body.add(nose);
+    const wg = new THREE.CylinderGeometry(30, 30, 18, 24); wg.rotateZ(Math.PI / 2);
+    for (const ax of [-AXLE, AXLE]) for (const sd of [-1, 1]) {
+      const wm = new THREE.Mesh(wg, lam(C.wheel)); wm.position.set(sd * (ROBOT_W / 2 + 9), 30, ax); body.add(wm);
+    }
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(36, 36, 26, 24), lam(C.mut)); lid.position.y = LIDAR_Z; body.add(lid);
+    st.dirty = true;
+  }
+
+  function fillRays(line, scan, kind, oz) {
+    const a = line.geometry.attributes.position, arr = a.array;
+    let n = 0;
+    for (const h of scan.hits) if (h[3] === kind) {
+      arr.set([scan.x, oz, -scan.y, h[0], h[2], -h[1]], n * 6); n++;
+    }
+    line.geometry.setDrawRange(0, n * 2); a.needsUpdate = true;
+  }
+
+  function draw(pose, scan) {
+    const r = wrap.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    renderer.setSize(r.width, r.height, false);
+    camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
+    robot.position.set(pose.x, pose.z, -pose.y);
+    robot.rotation.set(pose.p * Math.PI / 180, -pose.th * Math.PI / 180, 0, "YXZ");
+    trail.geometry.setDrawRange(0, st.layers.trail ? pose.i + 1 : 0);
+    rayW.visible = rayF.visible = !!(scan && st.layers.rays);
+    if (scan && scan.t !== lastScanT) {
+      const oz = poseAt(scan.t).z + LIDAR_Z;
+      fillRays(rayW, scan, 1, oz); fillRays(rayF, scan, 0, oz); lastScanT = scan.t;
+    }
+    const yaw = (cam.free ? cam.absYaw : pose.th + cam.yaw) * Math.PI / 180, el = cam.elev * Math.PI / 180;
+    const tgt = new THREE.Vector3(pose.x, pose.z + 60, -pose.y);
+    camera.position.set(tgt.x - Math.sin(yaw) * Math.cos(el) * cam.dist, tgt.y + Math.sin(el) * cam.dist,
+                        tgt.z + Math.cos(yaw) * Math.cos(el) * cam.dist);
+    camera.lookAt(tgt);
+    renderer.render(scene, camera);
+  }
+
+  // облёт мышью: камера перестаёт поворачиваться вместе с роботом, C - вернуть
+  let drag = null;
+  const cv = renderer.domElement;
+  cv.addEventListener("pointerdown", e => {
+    const th = poseAt(st.t).th;
+    if (!cam.free) { cam.free = true; cam.absYaw = th + cam.yaw; }
+    drag = {x: e.clientX, y: e.clientY, yaw: cam.absYaw, elev: cam.elev}; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing";
+    document.getElementById("cam").classList.remove("on");
+  });
+  cv.addEventListener("pointermove", e => {
+    if (!drag) return;
+    cam.absYaw = drag.yaw - (e.clientX - drag.x) * 0.4;
+    cam.elev = Math.max(4, Math.min(88, drag.elev + (e.clientY - drag.y) * 0.3)); st.dirty = true;
+  });
+  cv.addEventListener("pointerup", () => { drag = null; cv.style.cursor = "grab"; });
+  cv.addEventListener("wheel", e => {
+    e.preventDefault(); cam.dist = Math.max(250, Math.min(6000, cam.dist * Math.exp(e.deltaY * 0.0015))); st.dirty = true;
+  }, {passive: false});
+  function resetCam() {
+    Object.assign(cam, {yaw: 0, elev: 30, dist: 1100, free: false});
+    document.getElementById("cam").classList.add("on"); st.dirty = true;
+  }
+  document.getElementById("cam").onclick = resetCam;
+  document.getElementById("cam").classList.add("on");
+  return {resetCam, build, draw};
+})();
 
 // ═══ карта, профиль, графики, консоль ════════════════════════════════
 function drawMap() {}
