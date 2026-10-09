@@ -813,6 +813,11 @@ function drawProfile(pose) {
 
 // графики по времени: скорость, наклон, режим, передняя стена
 const chartcv = document.getElementById("chartcv");
+function readout(ctx, text, x, y) {             // текст справа на подложке
+  const w = ctx.measureText(text).width;
+  ctx.fillStyle = C.panel; ctx.globalAlpha = 0.9; ctx.fillRect(x - w - 4, y - 10, w + 8, 14); ctx.globalAlpha = 1;
+  ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(text, x, y); ctx.textAlign = "left";
+}
 const CH = {l: 46, r: 10, t: 4, b: 16};
 const STRIPS = [
   {name: "скорость, см/с", frac: 0.34, lo: -15, hi: 65, step: 20},
@@ -861,20 +866,18 @@ function drawCharts(pose) {
       for (const e of DECIDES) if (e.t >= t0 && e.t <= t1) { ctx.fillStyle = e.straight ? C.ok : C.stop; ctx.fillRect(X(e.t) - 1, top, 2, sh); }
       series(i => (P.sl[i] + P.sr[i]) / 2, C.mut, 1, [4, 3]);
       series(i => P.vl[i], C.post, 1); series(i => P.vr[i], C.ramp, 1); series(i => V[i], C.fg, 1.8);
-      ctx.fillStyle = C.fg; ctx.textAlign = "right";
-      ctx.fillText(`v ${pose.v.toFixed(0)}  L ${pose.vl.toFixed(0)}  R ${pose.vr.toFixed(0)}  уставка ${((pose.sl + pose.sr) / 2).toFixed(0)}`, w - CH.r - 4, top + 11);
-      ctx.textAlign = "left";
+      readout(ctx, `v ${pose.v.toFixed(0)}  L ${pose.vl.toFixed(0)}  R ${pose.vr.toFixed(0)}  уставка ${((pose.sl + pose.sr) / 2).toFixed(0)}`, w - CH.r - 4, top + 11);
     } else if (sp.name.startsWith("наклон")) {
       series(i => P.p[i], C.ramp, 1.6);
-      ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(`${pose.p.toFixed(1)}°`, w - CH.r - 4, top + 11); ctx.textAlign = "left";
+      readout(ctx, `${pose.p.toFixed(1)}°`, w - CH.r - 4, top + 11);
     } else if (sp.name === "режим") {
       const col = {M: C.grid, T: C.assist, B: C.warn};
       for (let i = i0; i < i1; i++) { ctx.fillStyle = col[P.m[i]]; ctx.fillRect(X(P.t[i]), top + 2, X(P.t[i + 1]) - X(P.t[i]) + 0.5, sh - 4); }
-      ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(`${pose.m}   M скорость · T момент · B стоп`, w - CH.r - 4, top + sh / 2 + 3); ctx.textAlign = "left";
+      readout(ctx, `${pose.m}   M скорость · T момент · B стоп`, w - CH.r - 4, top + sh / 2 + 4);
     } else {
       series(i => P.f[i], C.post, 1.6);
       for (let i = i0; i <= i1; i++) if (P.b[i]) { ctx.fillStyle = C.stop; ctx.fillRect(X(P.t[i]) - 1, top, 3, sh); }
-      ctx.fillStyle = C.fg; ctx.textAlign = "right"; ctx.fillText(pose.f == null ? "—" : `${pose.f.toFixed(0)} мм`, w - CH.r - 4, top + 11); ctx.textAlign = "left";
+      readout(ctx, pose.f == null ? "—" : `${pose.f.toFixed(0)} мм`, w - CH.r - 4, top + 11);
     }
     y += sh;
   }
