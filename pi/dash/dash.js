@@ -19,7 +19,7 @@ const H = {t: 0, spd: 1, pitch: 2, roll: 3, rate: 4, front: 5, left: 6, right: 7
 
 const PHASE = {
   boot: ['запуск', 'off'], waiting: ['ожидание', 'off'], exploring: ['разведка', 'on'],
-  sleep: ['сон', 'att'], explored: ['разведка завершена', 'on'], cap: ['лимит клеток', 'att'],
+  sleep: ['сон', 'att'], explored: ['разведка завершена', 'on'], cap: ['лимит клеток', 'att'], time: ['время - домой', 'att'],
   returning: ['возврат на старт', 'on'], at_start: ['на старте', 'on'], blinking: ['финиш', 'att'],
   done: ['готово', 'att'], fatal: ['авария', 'err'],
   wait_motors: ['моторы выключены — жду', 'err'], wait_link: ['нет связи с ESP — жду', 'err'],

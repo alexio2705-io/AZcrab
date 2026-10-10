@@ -187,6 +187,9 @@ STILL_V_CMS = 0.5          # быстрее - едет (стоянка на си
 STILL_W_DPS = 3.0          # и не крутится на месте
 BUMP_CLEAR_MM = AXLE + 25.0    # колёса обеих осей за бугорком - центр дальше этого
 KIT_BACK_MM = NOSE + 15.0      # комплект падает за задний край, из бокового отсека
+BUMP_PTS = (-HALF_W + 5, -40.0, -20.0, 0.0, 20.0, 40.0, HALF_W - 5)   # точки носа, вправо > 0
+BUMP_DEAD_MM = 10.0            # ближе к центру концевик не достаёт
+BUMP_PRESS_MM = 15.0           # дожим бампера после касания
 KIT_SIDE_MM = 40.0
 
 
@@ -429,8 +432,9 @@ class Sim:
         fx, fy = self.fwd()
         adv = v * 10.0 * dt * math.cos(math.radians(p))   # мм по горизонтали
         nx, ny = self.x + fx * adv, self.y + fy * adv
-        if adv > 0 and self._nose_hits(nx, ny):
-            self.bumped = True
+        hit = self._nose_hits(nx, ny) if adv > 0 else None
+        if hit:
+            self.bumped = hit
             self.vl = self.vr = 0.0
             self.crashes += 1
             adv = 0.0
@@ -478,15 +482,29 @@ class Sim:
             self._pace0 = (now, self.t)
 
     def _nose_hits(self, x, y):
+        """Нос упрётся в стену/препятствие в позе (x, y)? None - нет, иначе
+        (левый концевик, правый): концевики по бокам бампера, каждый - от
+        ~1 см от центра до края корпуса (nav.py, BUMPER_CONFIRM_S). Удар по
+        центру или о ровную стену давит оба; что коснётся в пределах ещё
+        BUMP_PRESS_MM хода - тоже нажато (настоящий робот дожимает бампер
+        за доли секунды)."""
         fx, fy = self.fwd()
         rx, ry = fy, -fx
         zf = self.w.height(x, y) + 40.0
-        for s in (-HALF_W + 5, 0.0, HALF_W - 5):
-            px, py = x + fx * NOSE + rx * s, y + fy * NOSE + ry * s
-            for x0, y0, x1, y1, z0, z1 in self.w.walls:
-                if x0 <= px <= x1 and y0 <= py <= y1 and z0 <= zf <= z1:
-                    return True
-        return False
+        walls, _ = self.w.near(x, y, NOSE + HALF_W + BUMP_PRESS_MM)
+
+        def touch(s, ahead):
+            px = x + fx * (NOSE + ahead) + rx * s
+            py = y + fy * (NOSE + ahead) + ry * s
+            return any(x0 <= px <= x1 and y0 <= py <= y1 and z0 <= zf <= z1
+                       for x0, y0, x1, y1, z0, z1 in walls)
+
+        if not any(touch(s, 0.0) for s in BUMP_PTS):
+            return None
+        pressed = [s for s in BUMP_PTS if touch(s, BUMP_PRESS_MM)]
+        left = any(s <= -BUMP_DEAD_MM for s in pressed) or 0.0 in pressed
+        right = any(s >= BUMP_DEAD_MM for s in pressed) or 0.0 in pressed
+        return (left, right)
 
     def _telemetry(self, p, omega):
         with nav._lock:
@@ -499,7 +517,8 @@ class Sim:
             st["roll"] = 0.0
             st["lcm"], st["rcm"] = self.lcm, self.rcm
             st["z_cnt"] = self.z_cnt
-            st["clicker1"] = st["clicker2"] = self.bumped
+            st["clicker1"] = bool(self.bumped) and self.bumped[0]     # левый
+            st["clicker2"] = bool(self.bumped) and self.bumped[1]     # правый
             st["enc_left_online"] = st["enc_right_online"] = self.motors_on
             st["telem_ok"] = True
             st["gyro_fresh"] = st["color_fresh"] = True

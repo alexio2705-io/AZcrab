@@ -267,7 +267,7 @@ class Recorder:
         self.samples.append({"t": sim.t, "x": sim.x, "y": sim.y, "z": sim.w.height(sim.x, sim.y),
                              "th": sim.theta, "p": pitch, "vl": sim.vl, "vr": sim.vr,
                              "m": sim.cmd_raw, "sl": a, "sr": b, "cap": cap,
-                             "b": sim.bumped, "f": wall.get("front")})
+                             "b": bool(sim.bumped), "f": wall.get("front")})
 
     def on_scan(self, sim, hits, pts):
         """hits - мировые концы лучей; pts - точки коридора в системе робота

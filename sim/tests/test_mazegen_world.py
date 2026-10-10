@@ -162,6 +162,18 @@ class VisitsTest(unittest.TestCase):
         sim.advance(0.05)
         self.assertEqual(len([e for e in sim.events if e[1] == "bump_cross"]), 1)
 
+    def test_bumper_sides(self):
+        """Концевики по бокам бампера: стена - оба, препятствие справа - правый."""
+        w = corridor_world()
+        w.walls.append((40.0, 220.0, 140.0, 240.0, 0.0, 200.0))     # справа по ходу на север
+        sim = ms.Sim(w)
+        self.drive(sim, 20.0, 1.0)
+        self.assertEqual(sim.bumped, (False, True))
+        self.assertTrue(ms.nav._state["clicker2"] and not ms.nav._state["clicker1"])
+        sim2 = ms.Sim(corridor_world(), cell=(0, 3), heading=0.0)
+        self.drive(sim2, 20.0, 1.5)                                  # тупик - ровная стена
+        self.assertEqual(sim2.bumped, (True, True))
+
     def test_kit_lands_behind(self):
         sim = ms.Sim(corridor_world())
         sim.write(b"K:L*")

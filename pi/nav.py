@@ -91,6 +91,7 @@ from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
 from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH, MASKS as _WALLS_MASKS
 import tile_classify
 import corridor
+import manhattan
 import runplan
 import watch_logic
 from victim_watch import VictimWatcher
@@ -812,10 +813,28 @@ COLOR_RECOVER_S = 0.35
 # LoP. Запас как у мигания на метке (VICTIM_STOP_S + MARGIN_S). Отсчёт - с
 # момента, когда робот встал в клетке (замер стен стоя тоже стоянка).
 BLUE_STOP_S = 5.3
-# Повторный заезд на ту же синюю - минус 10 очков (5.6.6) и ещё одна стоянка.
-# Для маршрута это цена шага в неё, в клетках пути: объезд до стольких
-# клеток дешевле. Синюю, которая единственный проход, маршрут всё равно берёт.
-BLUE_REVISIT_COST = 12.0
+# Цена маршрута - время, с (runplan.bfs_path, route_cost). Замеры по логам
+# симулятора: клетка прямо на крейсерской ~0.55 с; поворот на 90° - сам
+# поворот ~1 с плюс торможение, доводка и замер стоя - ~1.8 с; разворот -
+# два поворота со сканом между ними, ~3 с.
+ROUTE_CELL_S = 0.55
+ROUTE_TURN_S = 1.8
+ROUTE_UTURN_S = 3.0
+# Повторный заезд на ту же синюю - минус 10 очков (5.6.6) и ещё стоянка
+# 5.3 с: ~15 с объезда того стоят. Синюю, которая единственный проход,
+# маршрут всё равно берёт.
+BLUE_REVISIT_COST = 15.0
+
+# Лимит заезда (5.3.1): 8 минут на игру вместе с калибровкой. Бонус за выход
+# (5.6.12: 10 за метку, 10 за синюю, 5 за горку) есть, только если робот
+# вернулся на старт и мигнул 10 с. Перед каждой следующей целью разведки:
+# хватит ли времени доехать до неё и потом домой (по цене маршрута, с
+# запасом) - нет, едем домой сейчас. Отсчёт - от старта заезда (_t_run).
+RUN_BUDGET_S = 470.0          # 480 с игры минус старт с кнопки
+HOME_TIME_FACTOR = 1.3        # маршрут дольше оценки: метки, доводки, бугорки
+HOME_MARGIN_S = 15.0
+FINISH_BLINK_S = 10.5         # мигание на старте (leds.blink_return)
+NEW_CELL_S = 2.0              # приезд в новую клетку: замер стен, камеры
 
 # ── Чекпоинт: красная плитка ─────────────────────────────────
 # Красный проверяется ПЕРЕД чёрным, и это не косметика: красная плитка
@@ -952,6 +971,12 @@ _edge_fixed = {}
 # кончается только на старте - сдаваться по карте нельзя.
 _black_cells = set()
 _soft_edges = set()
+# Сколько раз мягкий запрет не пустил на пути домой (ребро -> попыток). Ребро,
+# что не пустило HOME_EDGE_TRIES раз, обходной путь домой больше не берёт,
+# пока есть другие: иначе робот бился в одно место до конца заезда, на
+# каждом откате заезжая на соседнюю плитку (с синей - LoP и повтор).
+_home_fails = {}
+HOME_EDGE_TRIES = 2
 # Горки: (cx, cy, d) -> (bx, by, плиток, +1 вверх/-1 вниз). Ребро из клетки
 # у подножия (или гребня) по направлению d ведёт не в соседа, а сразу в
 # клетку на другом конце горки, на другом этаже (см. LEVEL_STRIDE). Сами
@@ -2081,9 +2106,50 @@ def open_dirs(cx, cy):
 
 
 def route_cost(cell, h, d, nxt):
-    """Цена шага маршрута из cell в nxt (runplan.bfs_path): клетка пути, а
-    синяя, где уже стояли, - ещё BLUE_REVISIT_COST (повтор - минус 10 очков)."""
-    return 1.0 + (BLUE_REVISIT_COST if nxt in _blue_cells else 0.0)
+    """Цена шага маршрута из cell (въехали курсом h) в nxt по направлению d,
+    в секундах (runplan.bfs_path): клетка прямо, поворот перед ней, а синяя,
+    где уже стояли, - ещё BLUE_REVISIT_COST (повтор - минус 10 очков)."""
+    turn_s = (0.0, ROUTE_TURN_S, ROUTE_UTURN_S, ROUTE_TURN_S)[(d - h) % 4]
+    return ROUTE_CELL_S + turn_s + (BLUE_REVISIT_COST if nxt in _blue_cells else 0.0)
+
+
+def path_time(start, hdg, path):
+    """Сколько секунд ехать по path (направления от start курсом hdg): та же
+    цена, что у маршрута, но вместо штрафа за повторную синюю - её стоянка."""
+    t, (cx, cy), h = 0.0, start, hdg
+    for d in path:
+        n = _next_cell(cx, cy, d)
+        t += ROUTE_CELL_S + (0.0, ROUTE_TURN_S, ROUTE_UTURN_S, ROUTE_TURN_S)[(d - h) % 4]
+        if n in _blue_cells:
+            t += BLUE_STOP_S
+        (cx, cy), h = n, d
+    return t
+
+
+def time_left():
+    """Сколько секунд заезда осталось (RUN_BUDGET_S от _t_run); None - не идёт."""
+    if _t_run is None:
+        return None
+    return RUN_BUDGET_S - (time.monotonic() - _t_run)
+
+
+def must_go_home(cx, cy, hdg, path):
+    """Не успеть доехать по path до следующей цели разведки и оттуда домой
+    (с запасом) - пора домой. Возвращает (пора, причина для лога)."""
+    left = time_left()
+    if left is None:
+        return False, ""
+    t_go = path_time((cx, cy), hdg, path)
+    goal, h = (cx, cy), hdg
+    for d in path:
+        goal, h = _next_cell(goal[0], goal[1], d), d
+    home = find_path_bfs(goal, lambda c: c == (0, 0), h)
+    if home is None:              # отсюда по карте - как отсюда же
+        home, goal, h = find_path_bfs((cx, cy), lambda c: c == (0, 0), hdg) or [], (cx, cy), hdg
+    t_home = path_time(goal, h, home)
+    need = (t_go + NEW_CELL_S + t_home) * HOME_TIME_FACTOR + FINISH_BLINK_S + HOME_MARGIN_S
+    return need > left, (f"осталось {left:.0f}с, до цели {t_go:.0f}с + домой оттуда "
+                         f"{t_home:.0f}с, с запасом {need:.0f}с")
 
 
 def find_path_bfs(start, goal_test, hdg=0):
@@ -2102,10 +2168,11 @@ def find_path_bfs(start, goal_test, hdg=0):
                             SIDE_ORDER[_side_pref], route_cost)
 
 
-def _open_dirs_relaxed(level):
+def _open_dirs_relaxed(level, tries=None):
     """open_dirs() с ослабленными запретами: level 1 - мягко закрытые рёбра
     (бампер, препятствие, застревание) и клетки за ними тоже проезжие;
-    level 2 - ещё и рёбра, про которые ничего не известно. Чёрные - никогда."""
+    level 2 - ещё и рёбра, про которые ничего не известно. Чёрные - никогда.
+    tries - мягкие рёбра, что уже столько раз не пустили домой, не берём."""
     def dirs(cx, cy):
         cell = _maze.get((cx, cy))
         if cell is None:
@@ -2115,8 +2182,9 @@ def _open_dirs_relaxed(level):
             n = _next_cell(cx, cy, d)
             if n in _black_cells:
                 continue
+            key = _edge_key(cx, cy, d)
             ok = (cell[d] is False
-                  or (_edge_key(cx, cy, d) in _soft_edges)
+                  or (key in _soft_edges and (tries is None or _home_fails.get(key, 0) < tries))
                   or (level >= 2 and cell[d] is None))
             if ok:
                 out.append(d)
@@ -2133,11 +2201,17 @@ def find_home_path(cx, cy, hdg):
     path = find_path_bfs((cx, cy), goal, hdg)
     if path is not None:
         return path
-    for level, why in ((1, "через мягко закрытые рёбра"), (2, "и через неизвестные рёбра")):
-        path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level), _next_cell, goal,
+    # Сначала - без мягких рёбер, что уже не пустили (_home_fails); не
+    # нашлось - со всеми: попытки по кругу, а не в одно и то же ребро.
+    for level, tries, why in ((1, HOME_EDGE_TRIES, "через мягко закрытые рёбра"),
+                              (2, HOME_EDGE_TRIES, "и через неизвестные рёбра"),
+                              (2, None, "через все мягкие рёбра заново")):
+        path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level, tries), _next_cell, goal,
                                 SIDE_ORDER[_side_pref], route_cost)
         if path is not None:
             print(f"  [WARN] по карте старт недостижим - пробую путь {why}")
+            if tries is None:
+                _home_fails.clear()
             return path
     return None
 
@@ -4112,8 +4186,43 @@ def _measure_cell(hdg):
     YOLO-скана жертвы лидар мог отдать пустой перед просто из-за нагрузки
     на CPU, а верить "открыто" здесь - ехать в стену. Прижатый концевик
     авторитетнее лидара: стена вплотную ближе собственного габарита робота
-    и из замера отфильтрована."""
-    return _walls_rel_map(measure_front_confirmed())
+    и из замера отфильтрована. Заодно - поправка курса по стенам."""
+    w = _walls_rel_map(measure_front_confirmed())
+    wall_heading_fix()
+    return w
+
+
+# Курс по стенам (manhattan.py): стоя в клетке, угол робота к сетке стен по
+# точкам лидара против того же угла по гироскопу; разница - уход гироскопа,
+# YAW_ORIGIN сдвигается на её долю. Главная причина потерь положения в
+# симуляторе при сильном шуме - уход курса, а повороты его только копят.
+WALL_HDG_SCANS = 3          # оборотов лидара стоя - точки вместе
+WALL_HDG_GAIN = 0.5         # доля разницы за одну остановку
+WALL_HDG_MAX_DEG = 8.0      # больше - не уход, а ошибка замера: не трогаем
+_wall_hdg_total = 0.0       # сколько всего поправили за заезд (для лога)
+
+
+def wall_heading_fix():
+    """Поправить YAW_ORIGIN по стенам (стоя). Возвращает поправку, °, или None."""
+    global YAW_ORIGIN, _wall_hdg_total
+    if abs(get_yaw_rate()) > 5.0:
+        return None                 # ещё крутится - точки смазаны
+    pts = [p for sc in list(_scan_pts)[-WALL_HDG_SCANS:] for p in sc[3]]
+    b = manhattan.wall_angle(pts)
+    if b is None:
+        return None
+    off = angle_err(get_yaw(), snap_target())     # поворот от оси сетки по гироскопу
+    e = off - b
+    if abs(e) > WALL_HDG_MAX_DEG:
+        print(f"    [курс] стены {b:+.1f}° против гироскопа {off:+.1f}° - не верю")
+        return None
+    fix = WALL_HDG_GAIN * e
+    YAW_ORIGIN = (YAW_ORIGIN + fix) % 360.0
+    _wall_hdg_total += fix
+    if abs(fix) >= 0.3:
+        print(f"    [курс] по стенам {b:+.1f}°, гироскоп {off:+.1f}° - "
+              f"сетка {fix:+.1f}° (всего {_wall_hdg_total:+.1f}°)")
+    return fix
 
 
 def _walls_rel_map(w):
@@ -4267,7 +4376,8 @@ def flood_fill_run(max_cells):
     ищет кратчайший путь по известным открытым рёбрам до ближайшей ещё не
     посещённой клетки и едет туда. Останавливается сама, когда такой клетки
     не остаётся - возвращает (cx, cy, hdg, checkpoint, status), status:
-    'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells). Аварийного
+    'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells), 'time' (до
+    конца заезда только доехать домой, см. must_go_home). Аварийного
     выхода нет: связь/моторы - ждём (wait_for_robot), затор - перемеряем и
     пробуем дальше; заезд кончается только на старте."""
     cx, cy, hdg = 0, 0, 0
@@ -4358,6 +4468,11 @@ def flood_fill_run(max_cells):
                   "больше нет - разведка завершена")
             _write_state(cx, cy, hdg, checkpoint, "explored")
             return cx, cy, hdg, checkpoint, "explored"
+        late, why = must_go_home(cx, cy, hdg, path)
+        if late:
+            print(f"  ⏳ Время: {why} - домой, разведку бросаю")
+            _write_state(cx, cy, hdg, checkpoint, "time")
+            return cx, cy, hdg, checkpoint, "time"
 
         d = path[0]
         now = time.monotonic()
@@ -4638,6 +4753,10 @@ def return_to_start(cx, cy, hdg, checkpoint):
         # Карта уже известна, но реальность может разойтись с ней (стену
         # чуть подвинули, лидар ошибся при разведке) - те же реакции, что и
         # при разведке: считаем ребро непроезжим и просим BFS искать заново.
+        if reason in ("obstacle_stall", "ramp_stall", "front_obstacle", "bumper_both",
+                      "bumper_left", "bumper_right") or (reason == "wall_close" and n == 0):
+            key = _edge_key(cx, cy, hdg)
+            _home_fails[key] = _home_fails.get(key, 0) + 1
         if reason in ("obstacle_stall", "ramp_stall"):
             if reason == "obstacle_stall":
                 creep_mm(-OBSTACLE_BACKOFF_MM, snap_target())
