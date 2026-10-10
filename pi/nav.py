@@ -554,6 +554,10 @@ BUMPER_ENTER_MM = 200.0
 # в проход не больше чем на ~9 см (3.4.4b), робот в центре занимает ±62 мм из
 # ±140; сдвиг держит центровка (цель - не ось прохода).
 BUMPER_SIDE_SHIFT_MM = 35.0
+# Упёрлись одним боком почти сразу (ближе этого от старта) - сдвиг рулём не
+# успеет: шаг вбок манёвром (поворот 90°, проезд, поворот обратно).
+BUMPER_SIDE_ROOM_MM = 80.0
+_last_bump_mm = 0.0         # где сработал бампер в последней поездке, мм от её начала
 
 # Если робот крутится не в ту сторону (гироскоп намотан зеркально) -
 # поменять на -1, это единственное место со знаком поворота.
@@ -2622,7 +2626,10 @@ def turn_to(target, label=None, seen=None):
         yaw_hist.add(time.monotonic(), yaw_unw)
         for b in _watcher.poll():
             x1, y1, x2, y2 = b.xyxy
-            if b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX:
+            # по высоте не меньше 1/8 кадра - как требует чтение стоя: рамку,
+            # обрезанную краем до полоски, стоя не прочитать
+            if (b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
+                    and y2 - y1 >= watch_logic.FRAME_PX * 0.125):
                 seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf))
     tag = label if label is not None else f"{target:.1f}°"
 
@@ -3104,6 +3111,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             side = bumper_side()
             reason = {"left": "bumper_left", "right": "bumper_right"}.get(side, "bumper_both")
             print(f"\n    БАМПЕР ({side}) на {traveled_cm*10:.0f}мм")
+            global _last_bump_mm
+            _last_bump_mm = traveled_cm * 10.0
             # Упёрлись, заехав в следующую клетку, и после отката останемся
             # близко к её центру (BUMPER_ENTER_MM) - значит, мы в ней: препятствие
             # у её дальнего края (3.4.4b - до 10 см от стены). Раньше клетка
@@ -4083,8 +4092,9 @@ def _turn_marks(cx, cy, seen):
             print(f"    [WARN] чтение метки ({side}): {e}")
             result = None
         if result is None:
-            print("    метка не подтвердилась - место отбраковано")
-            _marks.add(key, along, "rejected")
+            # кадр на повороте - слабое свидетельство: место не отбраковываем,
+            # наблюдатель на ходу и скан стоя ещё могут её прочитать
+            print("    метка с поворота не подтвердилась")
             continue
         phi_now = angle_err(angle_err(get_yaw(), YAW_ORIGIN), 90.0 * h)
         pos2 = watch_logic.turned_mark_pos(
@@ -4461,6 +4471,21 @@ class _DrivePlan:
             self.on_checkpoint(self.cell(k))
 
 
+def _side_step(shift_mm):
+    """Шаг вбок на shift_mm (вправо > 0) на месте: поворот на 90° в ту
+    сторону, проезд, поворот обратно - для повтора ребра после однобокого
+    удара, когда до препятствия нет хода, чтобы сдвинуться рулём."""
+    if abs(shift_mm) < 1.0 or get_esp_paused():
+        return
+    base = snap_target()
+    step = 90 if shift_mm > 0 else -90
+    print(f"    шаг вбок {shift_mm:+.0f}мм")
+    if turn(step) and not get_esp_paused():
+        creep_mm(abs(shift_mm), snap_target())
+    if not get_esp_paused():
+        turn_to(base, label="обратно")
+
+
 def wait_for_robot(cx, cy, hdg, checkpoint, phase):
     """Нет связи с ESP или моторы молчат (энкодеры не отвечают по CAN) - это
     не конец заезда: моторы просто выключили (или отошёл провод), их включат.
@@ -4790,6 +4815,8 @@ def flood_fill_run(max_cells):
                 side_bias = (cx, cy, hdg, shift * bumper_side_fails)
                 print(f"    асимметричный бампер ({side_ru}) - повтор со сдвигом "
                       f"{side_bias[3]:+.0f}мм вбок")
+                if _last_bump_mm < BUMPER_SIDE_ROOM_MM:
+                    _side_step(shift)
             stalls = 0
             continue
 
@@ -4858,11 +4885,39 @@ def return_to_start(cx, cy, hdg, checkpoint):
         d = path[0]
         delta = DIR_DELTA[(d - hdg) % 4]
         if delta != 0:
-            ok = turn(delta)
+            # как при разведке: наблюдатель меток на поворотах, а разворот у
+            # невиданной стены (тупик, где разведка кончилась) - двумя по 90°
+            # со сканом посередине: на середине эта стена сбоку
+            unseen = any(_maze.get((cx, cy), [None] * 4)[w] is True
+                         and (cx, cy, w) not in _scanned_walls for w in range(4))
+            steps = (90, 90) if abs(delta) == 180 and unseen else (delta,)
+            ok, replan = True, False
+            for i, step in enumerate(steps):
+                tgt = snap_target(step)
+                seen = []
+                ok = turn_to(tgt, label=f"{step:+.0f}°", seen=seen)
+                if get_esp_paused() or not ok:
+                    break
+                if seen:
+                    h2 = _turn_marks(cx, cy, seen)
+                    if h2 is not None:
+                        hdg, replan = h2, True
+                        break
+                    if abs(angle_err(get_yaw(), tgt)) > TURN_TOL_DEG:
+                        turn_to(tgt, label="обратно")
+                hdg = (hdg + step // 90) % 4
+                if i < len(steps) - 1:
+                    h2 = scan_cell(cx, cy, hdg)
+                    if h2 != hdg:
+                        hdg, replan = h2, True
+                        break
             if get_esp_paused():
                 continue
             if not ok:
                 hdg = gyro_heading()
+                _write_state(cx, cy, hdg, checkpoint, "returning")
+                continue
+            if replan:
                 _write_state(cx, cy, hdg, checkpoint, "returning")
                 continue
             align_at_wall(snap_target())
@@ -4933,6 +4988,8 @@ def return_to_start(cx, cy, hdg, checkpoint):
             else:
                 shift = BUMPER_SIDE_SHIFT_MM * (1 if reason == "bumper_left" else -1)
                 home_bias = (cx, cy, hdg, shift * side_fails)
+                if _last_bump_mm < BUMPER_SIDE_ROOM_MM:
+                    _side_step(shift)
             continue
 
     print(f"  ✓ На старте ({cx},{cy}) курс={_DIR_NAME[hdg]}")
@@ -4943,22 +5000,54 @@ def return_to_start(cx, cy, hdg, checkpoint):
 
 def _scan_unseen_walls(cx, cy, hdg):
     """Стены клетки, которых камеры ещё не видели (стартовая: задняя стена,
-    если робот уехал прямо и вернулся с той же стороны), - повернуться к ним
-    боком и просканировать. Перед миганием на старте - время уже не жалко,
-    бонус за выход считается по миганию. Возвращает итоговый курс."""
+    если робот уехал прямо и вернулся с той же стороны), - осмотреть с обоих
+    курсов, при которых стена сбоку: стоя камера видит ~125 мм из 280 мм
+    стены, два положения вместе - всю. На поворотах - наблюдатель. Перед
+    миганием на старте: время уже не жалко, бонус за выход - по миганию.
+    Возвращает итоговый курс."""
     cell = _maze.get((cx, cy))
     if cell is None or (_victim_r is None and _victim_l is None):
         return hdg
     for d in range(4):
         if cell[d] is not True or (cx, cy, d) in _scanned_walls or get_esp_paused():
             continue
-        # стена спереди или сзади - поворот на 90°, и она сбоку
-        if d not in ((hdg + 1) % 4, (hdg + 3) % 4):
-            if not turn(90):
-                return gyro_heading()
-            hdg = (hdg + 1) % 4
         print(f"    досмотр стены {_DIR_NAME[d]} на старте")
-        hdg = scan_cell(cx, cy, hdg)
+        _scanned_walls.add((cx, cy, d))
+        for h in ((d + 1) % 4, (d + 3) % 4):
+            delta = DIR_DELTA[(h - hdg) % 4]
+            for step in ((90, 90) if abs(delta) == 180 else (delta,) if delta else ()):
+                seen = []
+                if not turn_to(snap_target(step), label=f"{step:+.0f}°", seen=seen):
+                    return gyro_heading()
+                hdg = (hdg + step // 90) % 4
+                if seen:
+                    h2 = _turn_marks(cx, cy, seen)
+                    if h2 is not None:
+                        hdg = h2
+                    if abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
+                        turn_to(snap_target(), label="по сетке")
+            if hdg != h:
+                continue                     # после выдачи комплектов курс другой
+            side = "right" if (hdg + 1) % 4 == d else "left"
+            det = _victim_r if side == "right" else _victim_l
+            if det is None:
+                continue
+            try:
+                result = det.read_wall(cx, cy, d)
+            except Exception as e:
+                print(f"    [WARN] скан {side}: {e}")
+                result = None
+            if result is None:
+                continue
+            key, along = _mark_world(result, (cx, cy), hdg, d, 0.0)
+            dup = _marks.near(key, along)
+            if dup is not None and dup[2] == "read":
+                continue
+            _marks.add(key, along, "read")
+            _victim_log.append({**result, "side": side, "wall_dir": d,
+                                "ts": time.strftime("%H:%M:%S")})
+            if result.get("blink"):
+                hdg = report_victim(result, side, d, hdg)
     return hdg
 
 

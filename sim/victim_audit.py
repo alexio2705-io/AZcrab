@@ -144,6 +144,7 @@ def main():
     ap.add_argument("--seed", type=int)
     ap.add_argument("--spec")
     ap.add_argument("--noise", type=float, default=0.0)
+    ap.add_argument("--arm", help="из сравнения (--compare): только заезды этого варианта (A/B)")
     ap.add_argument("--one", action="store_true", help="служебное: один заезд, JSON в stdout")
     a = ap.parse_args()
 
@@ -156,8 +157,8 @@ def main():
     import subprocess
     from concurrent.futures import ThreadPoolExecutor
     results = json.load(open(os.path.join(a.dir, "results.json")))
-    todo = [r["seed"] for r in results if r["noise"] == a.noise
-            and r.get("found", 0) + r.get("wrong", 0) < r.get("victims", 0)]
+    todo = sorted({r["seed"] for r in results if r["noise"] == a.noise
+                   and (a.arm is None or r.get("arm") == a.arm) and r.get("missed")})
 
     def go(seed):
         p = subprocess.run([sys.executable, os.path.abspath(__file__), "--seed", str(seed),
