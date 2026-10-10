@@ -706,6 +706,9 @@ class Sim:
                                    "left": w["left_still_n"], "back": w["back_n"]}
         nav._state["scan_t"] = self.t
         nav._scan_cnt += 1
+        note = getattr(nav, "_note_scan", None)       # как поток лидара на роботе
+        if note is not None:
+            note()
         # Оборот модели снят мгновенно (с одной позы) - длительность 0, чтобы
         # corridor.point_time не размазывал точки по 100 мс, как у LD19.
         pts = corridor.corridor_points(filt[0])

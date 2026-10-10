@@ -108,13 +108,15 @@ def _ramp_options(plateau, inside, taken, length):
     return out
 
 
-def generate(seed, w=None, h=None, braid=None, victims=None, features=None):
+def generate(seed, w=None, h=None, braid=None, victims=None, features=None, big=False):
     """Спецификация случайного лабиринта (dict, годится для JSON).
-    features - что из FEATURES можно ставить (None - всё, по жребию)."""
+    features - что из FEATURES можно ставить (None - всё, по жребию).
+    big - поле как на крупных соревнованиях (7-10 x 6-8 клеток): на нём
+    лимит 8 минут уже ограничивает, и экономия времени даёт очки."""
     rng = random.Random(seed)
     feats = set(FEATURES if features is None else features)
-    w = w or rng.randint(4, 7)
-    h = h or rng.randint(4, 6)
+    w = w or (rng.randint(7, 10) if big else rng.randint(4, 7))
+    h = h or (rng.randint(6, 8) if big else rng.randint(4, 6))
     braid = rng.uniform(0.15, 0.4) if braid is None else braid
     cells = [(x, y) for x in range(w) for y in range(h)]
     inside = set(cells)
@@ -279,7 +281,7 @@ def generate(seed, w=None, h=None, braid=None, victims=None, features=None):
              for d in range(4) if _edge(c, d) in walls]
     rng.shuffle(faces)
     used, vics = set(), []
-    n_vic = victims if victims is not None else rng.randint(3, min(9, max(3, len(cells) // 3)))
+    n_vic = victims if victims is not None else rng.randint(3, min(14 if big else 9, max(3, len(cells) // 3)))
     for c, d in faces:
         if len(vics) >= n_vic:
             break
@@ -293,7 +295,7 @@ def generate(seed, w=None, h=None, braid=None, victims=None, features=None):
                      "kind": kind})
 
     return {
-        "gen": GEN_VERSION, "seed": seed, "w": w, "h": h,
+        "gen": GEN_VERSION, "seed": seed, "w": w, "h": h, "big": bool(big),
         "walls": sorted([list(e) for e in walls]),
         "tiles": [[c[0], c[1], t] for c, t in sorted(tiles.items())],
         "victims": vics, "bumps": bumps,

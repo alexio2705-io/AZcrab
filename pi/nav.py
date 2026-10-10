@@ -1288,6 +1288,7 @@ def _lidar_thread():
                 _lidar_dropped = msg.get("dropped", 0)
                 _state["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
                 _scan_cnt += 1
+                _note_scan()
                 pts = msg.get("pts")
                 if pts is not None:
                     _scan_pts.append((_scan_cnt, msg.get("t"), msg.get("trev", 0.1), pts))
@@ -2478,6 +2479,52 @@ def restart_from_checkpoint(checkpoint):
     return cx, cy, hdg
 
 
+# Замеры стен по оборотам с подъезда (задача 5): после каждого оборота -
+# (номер, одометрия, курс, стены стоя). Замер стоя берёт обороты последних
+# WALLS_APPROACH_MM пути без поворота и поправляет перед/зад на пройденное с
+# тех пор, а не ждёт 3 свежих оборота (~0.3 с на каждой остановке).
+# 0 - прежнее поведение: только свежие обороты.
+WALLS_APPROACH_MM = 0.0           # 40 проверено (2026-10-11): домой 99.7→96.7%, время не меньше - выключено
+WALLS_APPROACH_DEG = 1.5
+_wall_hist = deque(maxlen=8)
+
+
+def _note_scan():
+    """Вызывать после каждого оборота лидара, когда стены уже в _state."""
+    try:
+        l, r = get_odo()
+        with _lock:
+            w = dict(_state["wall_still"])
+        _wall_hist.append((_scan_cnt, (l + r) / 2.0, get_yaw(), w))
+    except Exception:          # noqa: BLE001 - поток лидара не должен падать из-за учёта
+        pass
+
+
+def _approach_walls(n):
+    """До n замеров из недавних оборотов, годных для текущей позы: путь с тех
+    пор не больше WALLS_APPROACH_MM, курс тот же. Перед/зад поправлены на
+    пройденное. Самые свежие первыми."""
+    if WALLS_APPROACH_MM <= 0 or not _wall_hist:
+        return []
+    l, r = get_odo()
+    odo = (l + r) / 2.0
+    yaw = get_yaw()
+    out = []
+    for cnt, o, y, w in reversed(_wall_hist):
+        moved_mm = (odo - o) * 10.0
+        if abs(moved_mm) > WALLS_APPROACH_MM or abs(angle_err(yaw, y)) > WALLS_APPROACH_DEG:
+            break
+        w = dict(w)
+        if w.get("front") is not None:
+            w["front"] = w["front"] - moved_mm
+        if w.get("back") is not None:
+            w["back"] = w["back"] + moved_mm
+        out.append(w)
+        if len(out) >= n:
+            break
+    return out
+
+
 def wait_scan(n=2, timeout=3.0):
     """False - свежих сканов нет (лидар молчит): get_walls*() отдаст старое."""
     start = _scan_cnt
@@ -2534,7 +2581,11 @@ def measure_walls(n=WALL_VOTE_SCANS, fresh=False):
     odo0, yaw0 = get_odo(), get_yaw()
     samples = {"front": [], "right": [], "left": [], "back": []}
     fresh_ok = True
-    for _ in range(max(1, n)):
+    ready = _approach_walls(max(1, n) - 1) if not fresh else []
+    for w in ready:                      # обороты с подъезда - без ожидания
+        for k in samples:
+            samples[k].append(w[k] if w[k] is not None else FAR)
+    for _ in range(max(1, n) - len(ready)):
         fresh_ok &= wait_scan(1)
         w = get_walls_still()
         for k in samples:
@@ -4020,6 +4071,8 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     except Exception as e:
         print(f"    [WARN] чтение метки ({side}): {e}")
         result = None
+    if result is not None and result.get("blink"):
+        result = _confirm(det, tcell[0], tcell[1], wall_dir, result)
     if result is None:
         print(f"    метка не подтвердилась - место отбраковано ({side}, {trav:.0f}мм)")
         _reject_mark(cell, hdg, side, m["pos_mm"])
@@ -4043,6 +4096,29 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
 # Число комплектов на тип жертвы - см. шапку victim_detect.py и правила
 # RoboCup 2026 Rescue Maze.
 KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
+
+
+# Мигание - только по уверенной метке: при conf ниже этого - ещё одно чтение
+# стоя (~0.15 с). Не подтвердилась - не мигаем: мигание мимо метки - минус 5
+# очков (5.6.14). 0 - без второго чтения.
+CONFIRM_CONF = 0.7
+
+
+def _confirm(det, cx, cy, wall_dir, result):
+    """Настоящая метка (blink) с низкой уверенностью - второй кадр стоя.
+    Возвращает метку, по которой мигать (из двух кадров - уверенней), или
+    None - второй кадр её не увидел."""
+    if CONFIRM_CONF <= 0 or result.get("conf", 1.0) >= CONFIRM_CONF:
+        return result
+    try:
+        again = det.read_wall(cx, cy, wall_dir)
+    except Exception as e:
+        print(f"    [WARN] второй кадр: {e}")
+        return result
+    if again is None or not again.get("blink"):
+        print(f"    {result['label']} (conf {result['conf']:.2f}) вторым кадром не подтвердилась - не мигаю")
+        return None
+    return again if again.get("conf", 0.0) > result.get("conf", 0.0) else result
 
 
 def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
@@ -4091,6 +4167,8 @@ def _turn_marks(cx, cy, seen):
         except Exception as e:
             print(f"    [WARN] чтение метки ({side}): {e}")
             result = None
+        if result is not None and result.get("blink"):
+            result = _confirm(det, cx, cy, wall_dir, result)
         if result is None:
             # кадр на повороте - слабое свидетельство: место не отбраковываем,
             # наблюдатель на ходу и скан стоя ещё могут её прочитать
@@ -4183,6 +4261,8 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
 
     for side, det, wall_dir in jobs:
         result = results.get(side)
+        if result is not None and result.get("blink"):
+            result = _confirm(det, cx, cy, wall_dir, result)
         if result is None:
             continue
         # Та же метка могла быть прочитана на ходу из соседней клетки (или
@@ -5037,6 +5117,8 @@ def _scan_unseen_walls(cx, cy, hdg):
             except Exception as e:
                 print(f"    [WARN] скан {side}: {e}")
                 result = None
+            if result is not None and result.get("blink"):
+                result = _confirm(det, cx, cy, d, result)
             if result is None:
                 continue
             key, along = _mark_world(result, (cx, cy), hdg, d, 0.0)

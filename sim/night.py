@@ -583,6 +583,7 @@ def main():
                     help="записи заездов: все, только проблемные, никакие (поле - всегда)")
     ap.add_argument("--sweep", help="ПАРАМЕТР=v1,v2,... - шум Noise поверх уровня, по значению на набор")
     ap.add_argument("--features", help="особенности поля через запятую (mazegen.FEATURES; '' - никаких)")
+    ap.add_argument("--big", action="store_true", help="большие поля 7-10 x 6-8 (лимит 8 мин ограничивает)")
     ap.add_argument("--one", type=int, help="один заезд в этом процессе (служебное)")
     ap.add_argument("--spec", help="(служебное) поле из файла")
     ap.add_argument("--arm", default="", help="(служебное) метка варианта")
@@ -610,7 +611,7 @@ def main():
         sp = os.path.join(out, f"seed-{a.seed + i}.spec.json")
         if not os.path.exists(sp):
             with open(sp, "w") as f:
-                json.dump(mazegen.generate(a.seed + i, features=feats), f)
+                json.dump(mazegen.generate(a.seed + i, features=feats, big=a.big), f)
     sweeps = [None]
     if a.sweep:
         k, vals = parse_sweep(a.sweep)
@@ -619,7 +620,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="maze-arms-")
     arms = [Arm(t, lb, tmp) for t, lb in zip(a.compare, ("A", "B"))] if a.compare else [None]
     keep = a.keep
-    sub = (f"{a.n} полей × шум {a.noise}{' × ' + a.sweep if a.sweep else ''} · номера с {a.seed} · "
+    sub = (f"{a.n} {'больших ' if a.big else ''}полей × шум {a.noise}{' × ' + a.sweep if a.sweep else ''} · номера с {a.seed} · "
            f"записи: {keep} · настоящий nav.py в модели (sim/night.py)")
     total = len(jobs) * len(arms)
     print(f"Прогон: {total} заездов ({a.n} полей × шум {a.noise}"
