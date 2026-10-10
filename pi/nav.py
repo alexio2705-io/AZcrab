@@ -549,6 +549,11 @@ BUMPER_ENTERED_BACKOFF_MM = 25.0
 # (сбоку задели препятствие, ехали со смещением) - прежняя клетка: из точки
 # на границе не доехать до центра ни той, ни другой.
 BUMPER_ENTER_MM = 200.0
+# Однобокий удар (bumper_left/right): назад в центр клетки и повтор того же
+# ребра со сдвигом от задетого бока на столько - препятствие у стены выступает
+# в проход не больше чем на ~9 см (3.4.4b), робот в центре занимает ±62 мм из
+# ±140; сдвиг держит центровка (цель - не ось прохода).
+BUMPER_SIDE_SHIFT_MM = 35.0
 
 # Если робот крутится не в ту сторону (гироскоп намотан зеркально) -
 # поменять на -1, это единственное место со знаком поворота.
@@ -2830,7 +2835,7 @@ STATUS_PERIOD_S = 0.1     # строка статуса в drive_cells не ча
 
 
 @_timed("ход")
-def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None):
+def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None, bias_mm=0.0):
     """См. _drive_cells. cell, hdg - клетка, из которой едем, и курс по карте:
     без них наблюдатель меток на ходу не включается (victim_watch.py). Что бы
     ни остановило поездку, наблюдатель после неё выключен.
@@ -2838,10 +2843,13 @@ def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None):
     plan (_DrivePlan) - проезд без остановок: в каждой клетке решает план
     ("прямо или стоп", по стенам впереди из corridor.py), а не прежнее
     "справа открыто или спереди стена"; проеханные клетки план сам заносит в
-    карту. Без plan - прежнее поведение."""
+    карту. Без plan - прежнее поведение.
+
+    bias_mm - держаться на столько правее оси прохода (влево - минус): объезд
+    препятствия, задетого одним боком бампера (BUMPER_SIDE_SHIFT_MM)."""
     global _drive_live
     try:
-        return _drive_cells(max_cells, expect_ramp, cell, hdg, plan)
+        return _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm)
     finally:
         _drive_live = None
         if _watcher is not None:
@@ -2851,7 +2859,7 @@ def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None):
                 print(line)
 
 
-def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
+def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     """Едет вперёд, пересекая границы клеток БЕЗ остановки, пока очередная
     клетка не потребует поворота (справа открылось или спереди стена), пока
     не кончится лимит клеток, или пока не вмешается бампер/авария/пауза.
@@ -2955,6 +2963,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
     reason = "done" if one_cell else "stop"
     v_max = MOVE_MAX_CMS if one_cell else MOVE_MAX_NONSTOP_CMS
     black_back_cm = 0.0     # сколько отъехать назад, если поймали чёрное
+    bump_back_cm = 0.0      # однобокий бампер: сколько назад до центра прежней клетки
 
     # Скорость по одометрии (для ассиста): окно SPEED_WIN_S, см. v_meas.
     odo_hist = deque()
@@ -3107,7 +3116,18 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                 cells += 1
                 if reason == "bumper_both":
                     reason = "bumper_entered"
+                else:
+                    reason += "_in"         # однобокий, клетка засчитана
                 print(f"    уже в следующей клетке ({past_mm:.0f}мм за центром после отката) - засчитываю")
+            elif reason != "bumper_both":
+                # назад - в центр клетки позади: если план уже засчитал эту
+                # клетку на ходу, а до её центра не доехали (упор раньше), -
+                # в предыдущую, иначе повтор начался бы вплотную к препятствию
+                back_to = from_cm
+                if traveled_cm < from_cm - 1.0 and cells >= 1:
+                    cells -= 1
+                    back_to = from_cm - cell_cm
+                bump_back_cm = traveled_cm - back_to
             break
 
         # ── Чёрная плитка: заезжать нельзя ────────────────────
@@ -3399,7 +3419,9 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                 fv, fn = front_votes
                 f_wall = (True if get_bumper() or (fv >= 2 and fv > fn) else
                           False if fn >= 2 and fn > fv else None)
-                if TILE_BLUE in tiles.get(kN, ()):
+                if TILE_BLUE in tiles.get(kN, ()) or plan.cell(kN) in _blue_cells:
+                    # и уже известная синяя: на бугорке датчик слепнет, а
+                    # стоянка нужна на каждом визите (3.2.5b)
                     print(f"\n    → кл.{kN}: синяя - стоп в её центре")
                     go, walls_rel = False, {}
                 elif USE_COLOR_SENSOR and not tiles.get(kN):
@@ -3561,6 +3583,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
             wall_e = wr - SIDE_CENTER_MM
         else:
             wall_e = 0.0
+        if bias_mm and (wall_l or wall_r):
+            wall_e += bias_mm               # цель - не ось, а bias_mm правее неё
         if abs(wall_e) < WALL_DEADBAND_MM:
             wall_e = 0.0
 
@@ -3772,6 +3796,15 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
         # робота обратно к чёрному.
         if black_back_cm > 0.2:
             creep_mm(-black_back_cm * 10.0, target_yaw)
+    elif reason in ("bumper_left", "bumper_right"):
+        # Однобокий удар, клетку не засчитали: назад в центр прежней клетки -
+        # позиция в карте честная, и следующая попытка (со сдвигом вбок,
+        # bias_mm) начнётся оттуда, а не с полпути.
+        if bump_back_cm > 0.2:
+            creep_mm(-bump_back_cm * 10.0, target_yaw,
+                     timeout_s=2.0 + 1.5 * bump_back_cm / ALIGN_SPEED_CMS)
+    elif reason in ("bumper_left_in", "bumper_right_in"):
+        creep_mm(-BUMPER_SIDE_BACKOFF_MM, target_yaw)
     elif reason == "bumper_entered":
         # Клетка засчитана, впереди препятствие: только отпустить концевики.
         # Доводку не делаем - по стене за препятствием она снова повела бы
@@ -3924,6 +3957,17 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     r = _interrupt_reason()
     if r or det is None:
         return r
+    # Поздно затормозили и центр уже за границей клетки, а под датчиком
+    # синяя: робот больше чем наполовину на ней - стоянка до подъезда
+    # назад к метке, иначе уход с синей без неё - LoP (5.5.1c).
+    k_c = watch_logic.cell_index(trav_mm())
+    if k_c >= 1 and USE_COLOR_SENSOR and tile_color() == TILE_BLUE:
+        bc = _cell_at(cell, hdg, k_c)
+        print(f"    торможение к метке завело на синюю {bc} - стоянка")
+        blue_stop(bc)
+        r = _interrupt_reason()
+        if r:
+            return r
 
     def look():
         try:
@@ -4477,6 +4521,7 @@ def flood_fill_run(max_cells):
     stalls = 0
     obstacle_fails = 0
     bumper_side_fails = 0
+    side_bias = None         # (cx, cy, hdg, мм) - повтор ребра со сдвигом вбок
     total = 0
 
     def arrive(new_cell):
@@ -4642,8 +4687,9 @@ def flood_fill_run(max_cells):
 
         plan = _DrivePlan((cx, cy), hdg, lambda c: c not in _visited,
                           on_checkpoint=on_checkpoint)
+        bias = side_bias[3] if side_bias is not None and side_bias[:3] == (cx, cy, hdg) else 0.0
         n, reason = drive_cells(max(1, max_cells - total), expect_ramp=(cx, cy, hdg) in _ramps,
-                                cell=(cx, cy), hdg=hdg, plan=plan)
+                                cell=(cx, cy), hdg=hdg, plan=plan, bias_mm=bias)
         if n > 0:
             # Клетки до последней уже в карте (_DrivePlan.passed); последний
             # шаг - как раньше: проход по факту или горка, и замер стоя.
@@ -4728,30 +4774,27 @@ def flood_fill_run(max_cells):
             continue
 
         elif reason in ("bumper_left", "bumper_right"):
-            # Сработал только ОДИН концевик - задели что-то одним боком, не
-            # стеной по центру. Объезд: поворот на 45° В СТОРОНУ ОТ задетого
-            # бока, откат, возврат на исходный курс - и следующая итерация
-            # сама попробует то же ребро заново. Знак подобран эмпирически
-            # (как TURN_SIGN) - по факту "слева" оказалось направо.
-            base_yaw = snap_target()
-            away_deg = -45 if reason == "bumper_left" else 45
-            side_ru = "слева" if reason == "bumper_left" else "справа"
-            print(f"    асимметричный бампер ({side_ru}) - "
-                  f"поворот {away_deg:+.0f}°, откат {BUMPER_SIDE_BACKOFF_MM:.0f}мм, возврат курса")
-            turn(away_deg)
-            if not get_esp_paused():
-                creep_mm(-BUMPER_SIDE_BACKOFF_MM, get_yaw())
-            if not get_esp_paused():
-                turn_to(base_yaw)
+            # Сработал только ОДИН концевик - задели что-то одним боком
+            # (препятствие у стены). drive_cells уже вернул робота в центр
+            # клетки; следующая попытка того же ребра - со сдвигом от
+            # задетого бока (bias_mm), центровка его держит.
             bumper_side_fails += 1
+            side_ru = "слева" if reason == "bumper_left" else "справа"
             if bumper_side_fails >= BUMPER_SIDE_RETRIES:
                 print("    асимметричный бампер повторился - считаю ребро непроезжим")
                 block_direction(cx, cy, hdg)
                 bumper_side_fails = 0
+                side_bias = None
+            else:
+                shift = BUMPER_SIDE_SHIFT_MM * (1 if reason == "bumper_left" else -1)
+                side_bias = (cx, cy, hdg, shift * bumper_side_fails)
+                print(f"    асимметричный бампер ({side_ru}) - повтор со сдвигом "
+                      f"{side_bias[3]:+.0f}мм вбок")
             stalls = 0
             continue
 
         bumper_side_fails = 0
+        side_bias = None
         # Защита от залипания: если робот несколько раз подряд не смог
         # продвинуться ни на клетку по ЛЮБОЙ причине, дальше крутиться
         # бессмысленно - что-то системно не так.
@@ -4781,6 +4824,7 @@ def return_to_start(cx, cy, hdg, checkpoint):
     if (cx, cy) == (0, 0):
         return cx, cy, hdg
     print("\n  ↩ Возврат на старт (BFS по известной карте)")
+    home_bias, side_fails = None, 0       # повтор ребра со сдвигом (см. flood_fill_run)
 
     while (cx, cy) != (0, 0):
         if _lifted.is_set():
@@ -4826,8 +4870,9 @@ def return_to_start(cx, cy, hdg, checkpoint):
             _write_state(cx, cy, hdg, checkpoint, "returning")
 
         plan = _DrivePlan((cx, cy), hdg, lambda c: c == (0, 0), home=True)
+        bias = home_bias[3] if home_bias is not None and home_bias[:3] == (cx, cy, hdg) else 0.0
         n, reason = drive_cells(300, expect_ramp=(cx, cy, hdg) in _ramps,
-                                cell=(cx, cy), hdg=hdg, plan=plan)
+                                cell=(cx, cy), hdg=hdg, plan=plan, bias_mm=bias)
         if n > 0:
             cx, cy = plan.cell(n - 1)
             if reason != "ramp":
@@ -4880,14 +4925,14 @@ def return_to_start(cx, cy, hdg, checkpoint):
             block_direction(cx, cy, hdg)
             continue
         if reason in ("bumper_left", "bumper_right"):
-            base_yaw = snap_target()
-            away_deg = -45 if reason == "bumper_left" else 45
-            turn(away_deg)
-            if not get_esp_paused():
-                creep_mm(-BUMPER_SIDE_BACKOFF_MM, get_yaw())
-            if not get_esp_paused():
-                turn_to(base_yaw)
-            block_direction(cx, cy, hdg)
+            # как при разведке: повтор со сдвигом от задетого бока, потом - закрыть
+            side_fails = side_fails + 1 if home_bias is not None and home_bias[:3] == (cx, cy, hdg) else 1
+            if side_fails >= BUMPER_SIDE_RETRIES:
+                block_direction(cx, cy, hdg)
+                home_bias = None
+            else:
+                shift = BUMPER_SIDE_SHIFT_MM * (1 if reason == "bumper_left" else -1)
+                home_bias = (cx, cy, hdg, shift * side_fails)
             continue
 
     print(f"  ✓ На старте ({cx},{cy}) курс={_DIR_NAME[hdg]}")
