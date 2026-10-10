@@ -308,6 +308,10 @@ RAMP_EXIT_MIN_MM = 50.0
 # плане сдвинут почти на полклетки, и две горки могут округлиться по-разному:
 # печатаем, а record_ramp() ещё сверяет стены на приезде.
 RAMP_PLAN_WARN_FRAC = 0.35
+# План ближе этого к целому числу клеток - ему и верим, без сверки по стенам:
+# сверка слабая (хватает двух совпавших сторон), у соседних клеток стены часто
+# одинаковые, и она "поправляла" верную клетку на соседнюю.
+RAMP_PLAN_SURE_FRAC = 0.2
 RAMP_GAP_CM = 3.0              # провалы наклона короче этого - дрожь, не конец горки
 # Горка - это целые плитки, то есть не короче ~30см по уклону (замер 1
 # плитки в симуляции - 31..34см). Крутая лестница (ступеньки 2см через
@@ -1976,7 +1980,10 @@ def record_ramp(cx, cy, d, info, measure=None):
 
     bx, by = dest(k)
     cands = [kk for kk in (k, k - 1, k + 1) if kk >= 1]
-    if floor_known and measure is not None and any(dest(kk) in _visited for kk in cands):
+    sure = abs(info.get("plan_cells", k) - k) <= RAMP_PLAN_SURE_FRAC
+    if floor_known and sure and dest(k) in _visited:
+        print(f"    горка: план {info.get('plan_cells', k):.2f} кл. - верю, этаж {z} знакомый")
+    elif floor_known and measure is not None and any(dest(kk) in _visited for kk in cands):
         walls = measure()
         pick = next((kk for kk in cands
                      if dest(kk) in _visited and _walls_match(dest(kk), d, walls)), None)
@@ -2577,7 +2584,7 @@ def gyro_heading():
 
 
 @_timed("поворот")
-def turn_to(target, label=None):
+def turn_to(target, label=None, seen=None):
     """Поворот на АБСОЛЮТНЫЙ курс target (град), без привязки к сетке 90°.
 
     Нужен отдельно от turn(): у объезда препятствия (bumper_side) курс после
@@ -2589,9 +2596,29 @@ def turn_to(target, label=None):
     Возвращает True, если доехал до цели; False - прервали (пауза, пропала
     телеметрия) или вышел TURN_TIMEOUT_S. Тогда курс в карте "как просили"
     считать нельзя - вызывающий берёт его с гироскопа (gyro_heading()).
+
+    seen - список: на повороте включён наблюдатель меток (обе стороны), и
+    сюда пишутся уверенные рамки (сторона, курс в момент кадра, рамка) -
+    см. _turn_marks(). Стоя в центре клетки камера видит ~125 мм из 280 мм
+    стены, а на повороте её проносит вдоль всей стены.
     """
     global _turn_ff
     settled = 0
+    watch = (seen is not None and _watcher is not None and not _watcher.dead
+             and _watcher.arm({"left", "right"}))
+    yaw_hist = watch_logic.OdoHistory(keep_s=2.0)
+    yaw_unw = last_yaw = get_yaw()      # без перескока 360 -> 0
+
+    def _watch_poll():
+        nonlocal yaw_unw, last_yaw
+        y = get_yaw()
+        yaw_unw += angle_err(y, last_yaw)
+        last_yaw = y
+        yaw_hist.add(time.monotonic(), yaw_unw)
+        for b in _watcher.poll():
+            x1, y1, x2, y2 = b.xyxy
+            if b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX:
+                seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf))
     tag = label if label is not None else f"{target:.1f}°"
 
     print(f"    поворот {tag}  цель={target:.1f}°  yaw={get_yaw():.1f}°")
@@ -2620,6 +2647,8 @@ def turn_to(target, label=None):
         now = time.monotonic()
         elapsed = now - t_ramp
         rate = get_yaw_rate()
+        if watch:
+            _watch_poll()
         # Остаток угла В СТОРОНУ ЦЕЛИ (>0 - крутиться по часовой), и он же с
         # поправкой на запаздывание: к моменту исполнения команды робот уже
         # довернётся на rate * TURN_LEAD_S.
@@ -2717,6 +2746,9 @@ def turn_to(target, label=None):
         telem_seq = wait_telem(telem_seq, TURN_DT)
 
     settle_brake(0.10)
+    if watch:
+        _watch_poll()               # кадры, что ещё в обработке
+        _watcher.arm(set())
     done = settled >= TURN_SETTLE
     print(f"    итог yaw={get_yaw():.1f}°  ошибка={angle_err(get_yaw(), target):+.1f}°  "
           f"за {time.monotonic() - t0:.2f}с  TURN_FF={_turn_ff:.3f}"
@@ -3969,6 +4001,66 @@ def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
     return watch_logic.world_along(cell, hdg, wall_dir, pos, LEVEL_STRIDE)
 
 
+def _turn_marks(cx, cy, seen):
+    """Метки, замеченные наблюдателем на повороте в клетке (cx, cy) (см.
+    turn_to(seen=...)): для каждой стены - лучшая рамка; если там ещё ничего
+    не читали, довернуться на курс того кадра, прочитать стоя (read_wall) и
+    отрепортить. Возвращает курс сетки после выдачи комплектов или None
+    (курс не менялся; робот может стоять не по сетке - вызывающий
+    доворачивает сам)."""
+    best = {}
+    for side, yf, xyxy, conf in seen:
+        rel = angle_err(yf, YAW_ORIGIN)
+        h = int(round(rel / 90.0)) % 4
+        phi = angle_err(rel, 90.0 * h)
+        wall_dir = watch_logic.wall_of(h, side)
+        px = max(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])
+        k = (side, wall_dir)
+        if k not in best or px > best[k][0]:
+            best[k] = (px, yf, xyxy, h, phi)
+    out_hdg = None
+    for (side, wall_dir), (px, yf, xyxy, h, phi) in best.items():
+        det = _victim_r if side == "right" else _victim_l
+        if det is None or get_esp_paused():
+            continue
+        pos = watch_logic.turned_mark_pos(phi, side, watch_logic.px_to_mm(
+            watch_logic.mark_center_y(xyxy)))
+        if pos is None:
+            continue
+        key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos, LEVEL_STRIDE)
+        if _marks.near(key, along) is not None:
+            continue                      # уже читали (или отбраковали) рядом
+        print(f"    [W] на повороте: {side} {px:.0f}px, стена {_DIR_NAME[wall_dir]} "
+              f"{along:.0f}мм - доворачиваю на {yf:.0f}°")
+        turn_to(yf, label="к метке")
+        try:
+            result = det.read_wall(cx, cy, wall_dir)
+        except Exception as e:
+            print(f"    [WARN] чтение метки ({side}): {e}")
+            result = None
+        if result is None:
+            print("    метка не подтвердилась - место отбраковано")
+            _marks.add(key, along, "rejected")
+            continue
+        phi_now = angle_err(angle_err(get_yaw(), YAW_ORIGIN), 90.0 * h)
+        pos2 = watch_logic.turned_mark_pos(
+            phi_now, side, watch_logic.px_to_mm(sum(result["box_y"]) / 2.0))
+        if pos2 is not None:
+            key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos2, LEVEL_STRIDE)
+        dup = _marks.near(key, along)
+        if dup is not None and dup[2] == "read":
+            print(f"    [W] {result['label']} в {along:.0f}мм - уже прочитана, не репортю")
+            continue
+        _marks.add(key, along, "read")
+        _victim_log.append({**result, "side": side, "wall_dir": wall_dir,
+                            "ts": time.strftime("%H:%M:%S")})
+        if result.get("blink"):
+            out_hdg = report_victim(result, side, wall_dir, h)
+    if out_hdg is not None and abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
+        turn_to(snap_target(), label="по сетке")     # без комплектов стоим, как читали
+    return out_hdg
+
+
 @_timed("камеры")
 def scan_sides(cx, cy, hdg, walls_rel=None):
     """Проверяет ОБЕ боковые стены (лево и право по камерам) и, если стена
@@ -4491,7 +4583,9 @@ def flood_fill_run(max_cells):
             steps = (90, 90) if abs(delta) == 180 else (delta,)
             replan = False
             for i, step in enumerate(steps):
-                ok = turn(step)
+                tgt = snap_target(step)
+                seen = []
+                ok = turn_to(tgt, label=f"{step:+.0f}°", seen=seen)
                 if get_esp_paused():
                     replan = True
                     break
@@ -4501,6 +4595,16 @@ def flood_fill_run(max_cells):
                     _write_state(cx, cy, hdg, checkpoint, "exploring")
                     replan = True
                     break
+                if seen:
+                    h = _turn_marks(cx, cy, seen)
+                    if h is not None:
+                        # выдали комплекты - стоим спиной к метке, шаг заново
+                        hdg = h
+                        _write_state(cx, cy, hdg, checkpoint, "exploring")
+                        replan = True
+                        break
+                    if abs(angle_err(get_yaw(), tgt)) > TURN_TOL_DEG:
+                        turn_to(tgt, label="обратно")
                 # После поворота стены поменялись местами - встаём в центр
                 # клетки по тому, что видно. Мерить после поворота точнее, чем
                 # предсказывать до него. Посередине разворота на 180° - не
@@ -4787,8 +4891,30 @@ def return_to_start(cx, cy, hdg, checkpoint):
             continue
 
     print(f"  ✓ На старте ({cx},{cy}) курс={_DIR_NAME[hdg]}")
+    hdg = _scan_unseen_walls(cx, cy, hdg)
     _write_state(cx, cy, hdg, checkpoint, "at_start")
     return cx, cy, hdg
+
+
+def _scan_unseen_walls(cx, cy, hdg):
+    """Стены клетки, которых камеры ещё не видели (стартовая: задняя стена,
+    если робот уехал прямо и вернулся с той же стороны), - повернуться к ним
+    боком и просканировать. Перед миганием на старте - время уже не жалко,
+    бонус за выход считается по миганию. Возвращает итоговый курс."""
+    cell = _maze.get((cx, cy))
+    if cell is None or (_victim_r is None and _victim_l is None):
+        return hdg
+    for d in range(4):
+        if cell[d] is not True or (cx, cy, d) in _scanned_walls or get_esp_paused():
+            continue
+        # стена спереди или сзади - поворот на 90°, и она сбоку
+        if d not in ((hdg + 1) % 4, (hdg + 3) % 4):
+            if not turn(90):
+                return gyro_heading()
+            hdg = (hdg + 1) % 4
+        print(f"    досмотр стены {_DIR_NAME[d]} на старте")
+        hdg = scan_cell(cx, cy, hdg)
+    return hdg
 
 
 def blink_start_return():

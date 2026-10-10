@@ -92,10 +92,19 @@ def view(sim, side):
     return out
 
 
-def detections(sim, side, still):
+def camera_rng(sim, who):
+    """Свой генератор ошибок зрения у каждой камеры и у наблюдателя: nav.py
+    сканирует вторую сторону в соседнем потоке, и общий sim.rng выдавал бы
+    числа потокам в случайном порядке - заезд переставал повторяться."""
+    import random
+    return random.Random(f"{getattr(sim, 'seed', 0)}:{who}")
+
+
+def detections(sim, side, still, rng=None):
     """Что "увидела" YOLO на кадре: [(класс, уверенность, xyxy, индекс|None, тип)]
     с ошибками из sim.noise. still - кадр стоя (ложные метки - только там)."""
-    n, rng = sim.noise, sim.rng
+    n = sim.noise
+    rng = rng or sim.rng
     out = []
     for i, v, box in view(sim, side):
         if n.vis_miss and rng.random() < n.vis_miss:
@@ -115,6 +124,7 @@ class FakeDetector:
 
     def __init__(self, sim, side):
         self.sim, self.side = sim, side
+        self.rng = camera_rng(sim, side)
         self.scanned = set()
         self.log = []
         self.cam = None
@@ -128,7 +138,7 @@ class FakeDetector:
 
     def read_wall(self, cell_x, cell_y, wall_dir=None):
         _sleep(STILL_SCAN_S)
-        found = detections(self.sim, self.side, still=True)
+        found = detections(self.sim, self.side, still=True, rng=self.rng)
         found = [f for f in found if f[2][3] - f[2][1] >= watch_logic.FRAME_PX * 0.125]
         if not found:
             return None
@@ -147,7 +157,7 @@ class FakeDetector:
 
     def best_fast(self):
         _sleep(BEST_FAST_S)
-        found = detections(self.sim, self.side, still=False)
+        found = detections(self.sim, self.side, still=False, rng=self.rng)
         if not found:
             return None
         cls, conf, box, _, _ = max(found, key=lambda f: f[1])
@@ -175,6 +185,7 @@ class FakeWatcher:
 
     def __init__(self, sim):
         self.sim = sim
+        self.rng = camera_rng(sim, "watch")
         self.ready = threading.Event()
         self.ready.set()
         self.dead = False
@@ -192,7 +203,7 @@ class FakeWatcher:
         for side in self._armed:
             if now >= self._next.get(side, 0.0):
                 self._next[side] = now + 1.0 / WATCH_HZ
-                boxes = detections(self.sim, side, still=False)
+                boxes = detections(self.sim, side, still=False, rng=self.rng)
                 self._pending.append((now + WATCH_LATENCY_S, side, now, boxes))
                 lv = self._live[side]
                 lv["fid"] += 1

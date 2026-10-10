@@ -316,3 +316,17 @@ class TestSideHold(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TurnedMarkPosTest(unittest.TestCase):
+    def test_straight_matches_mark_pos(self):
+        for o in (-50.0, 0.0, 37.0):
+            for side in ("left", "right"):
+                self.assertAlmostEqual(wl.turned_mark_pos(0.0, side, o), wl.mark_pos_mm(0.0, o))
+
+    def test_turned_cameras(self):
+        # повёрнут по часовой - правый борт смотрит назад, левый - вперёд
+        self.assertLess(wl.turned_mark_pos(20.0, "right", 0.0), wl.mark_pos_mm(0.0, 0.0) - 30)
+        self.assertGreater(wl.turned_mark_pos(20.0, "left", 0.0), wl.mark_pos_mm(0.0, 0.0) + 30)
+        # сверено с геометрией sim/fake_hw.view: поворот 10°, метка справа в -60 мм
+        self.assertAlmostEqual(wl.turned_mark_pos(10.0, "right", wl.px_to_mm(0.62)), -55, delta=15)

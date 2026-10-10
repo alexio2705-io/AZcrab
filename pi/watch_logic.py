@@ -67,6 +67,33 @@ def mark_pos_mm(traveled_mm, offset_mm):
     return traveled_mm - CAM_BACK_MM + offset_mm
 
 
+# Объектив от оси робота вбок и от него до стены, когда робот в центре
+# клетки (по ним снималась калибровка CAM_CALIB_Y_MM): стена в 140 мм от
+# центра робота (SIDE_CENTER_MM в nav.py).
+CAM_SIDE_MM = 40.0
+WALL_FACE_MM = 140.0
+LAT_REF_MM = WALL_FACE_MM - CAM_SIDE_MM
+
+
+def turned_mark_pos(phi_deg, side, offset_mm):
+    """Где метка вдоль хода (мм от центра клетки, как mark_pos_mm при
+    traveled=0), если кадр снят на повороте: робот в центре клетки повёрнут
+    на phi_deg по часовой от курса сетки, метка в кадре смещена на offset_mm
+    (px_to_mm). Луч из объектива под углом к стене - пересечение с ней.
+    При phi=0 - то же, что mark_pos_mm(0, offset_mm)."""
+    if side == "left":                 # зеркало: левая камера - правая при -phi
+        phi_deg = -phi_deg
+    r = math.radians(phi_deg)
+    c, s = math.cos(r), math.sin(r)
+    # поворот по часовой: (x вперёд, y вправо) -> (x c - y s, x s + y c)
+    cx, cy = -CAM_BACK_MM * c - CAM_SIDE_MM * s, -CAM_BACK_MM * s + CAM_SIDE_MM * c
+    k = offset_mm / LAT_REF_MM
+    dx, dy = -s + c * k, c + s * k                 # ось объектива + смещение в кадре
+    if dy <= 1e-6:
+        return None                                # луч не к стене
+    return cx + (WALL_FACE_MM - cy) / dy * dx
+
+
 def wall_of(hdg, side):
     """Абсолютное направление стены, на которую смотрит камера side."""
     return (hdg + (1 if side == "right" else 3)) % 4

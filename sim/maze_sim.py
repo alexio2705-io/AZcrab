@@ -286,6 +286,7 @@ class Sim:
         self.w = world
         self.noise = noise or Noise()
         self.rng = random.Random(seed)
+        self.seed = seed
         # датчик цвета - по умолчанию, если в мире есть цветные плитки
         self.color = bool(world.tiles) if color is None else color
         self.t0 = 1000.0
