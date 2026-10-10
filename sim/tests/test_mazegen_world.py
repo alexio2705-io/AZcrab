@@ -173,6 +173,13 @@ class VisitsTest(unittest.TestCase):
         sim2 = ms.Sim(corridor_world(), cell=(0, 3), heading=0.0)
         self.drive(sim2, 20.0, 1.5)                                  # тупик - ровная стена
         self.assertEqual(sim2.bumped, (True, True))
+        # узкий столбик точно по центру - между рычагами: стоит, концевики молчат
+        w3 = corridor_world()
+        w3.walls.append((-5.0, 220.0, 5.0, 240.0, 0.0, 200.0))
+        sim3 = ms.Sim(w3)
+        self.drive(sim3, 20.0, 1.0)
+        self.assertEqual(sim3.bumped, (False, False))
+        self.assertFalse(ms.nav._state["clicker1"] or ms.nav._state["clicker2"])
 
     def test_kit_lands_behind(self):
         sim = ms.Sim(corridor_world())

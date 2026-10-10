@@ -188,7 +188,7 @@ STILL_W_DPS = 3.0          # и не крутится на месте
 BUMP_CLEAR_MM = AXLE + 25.0    # колёса обеих осей за бугорком - центр дальше этого
 KIT_BACK_MM = NOSE + 15.0      # комплект падает за задний край, из бокового отсека
 BUMP_PTS = (-HALF_W + 5, -40.0, -20.0, 0.0, 20.0, 40.0, HALF_W - 5)   # точки носа, вправо > 0
-BUMP_DEAD_MM = 10.0            # ближе к центру концевик не достаёт
+BUMP_DEAD_MM = 10.0            # середина носа ±1 см - между рычагами, ни один не нажат
 BUMP_PRESS_MM = 15.0           # дожим бампера после касания
 KIT_SIDE_MM = 40.0
 
@@ -484,11 +484,12 @@ class Sim:
 
     def _nose_hits(self, x, y):
         """Нос упрётся в стену/препятствие в позе (x, y)? None - нет, иначе
-        (левый концевик, правый): концевики по бокам бампера, каждый - от
-        ~1 см от центра до края корпуса (nav.py, BUMPER_CONFIRM_S). Удар по
-        центру или о ровную стену давит оба; что коснётся в пределах ещё
-        BUMP_PRESS_MM хода - тоже нажато (настоящий робот дожимает бампер
-        за доли секунды)."""
+        (левый концевик, правый). Бампер - два рычага на концевиках, каждый
+        закрывает свою половину носа от ~1 см от центра до края корпуса;
+        середина ±BUMP_DEAD_MM не нажимает ни один (узкий предмет точно по
+        центру - робот стоит, концевики молчат, ловит одометрия). Ровная
+        стена давит оба; что коснётся в пределах ещё BUMP_PRESS_MM хода -
+        тоже нажато (настоящий робот дожимает бампер за доли секунды)."""
         fx, fy = self.fwd()
         rx, ry = fy, -fx
         zf = self.w.height(x, y) + 40.0
@@ -503,9 +504,9 @@ class Sim:
         if not any(touch(s, 0.0) for s in BUMP_PTS):
             return None
         pressed = [s for s in BUMP_PTS if touch(s, BUMP_PRESS_MM)]
-        left = any(s <= -BUMP_DEAD_MM for s in pressed) or 0.0 in pressed
-        right = any(s >= BUMP_DEAD_MM for s in pressed) or 0.0 in pressed
-        return (left, right)
+        left = any(s <= -BUMP_DEAD_MM for s in pressed)
+        right = any(s >= BUMP_DEAD_MM for s in pressed)
+        return (left, right)            # (False, False) - упёрлись серединой: стоим, концевики молчат
 
     def _telemetry(self, p, omega):
         with nav._lock:
