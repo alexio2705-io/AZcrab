@@ -350,6 +350,17 @@ def list_runs():
 
 
 # ── HTTP ───────────────────────────────────────────────────────
+class QuietServer(ThreadingHTTPServer):
+    """Браузер закрыл соединение (вкладка, keep-alive, перезагрузка повтора) -
+    это не ошибка: без трассировки в консоль. Остальное - как обычно."""
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError,
+                                          ConnectionAbortedError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     hub: Hub = None  # type: ignore[assignment]
     protocol_version = "HTTP/1.1"
@@ -487,7 +498,7 @@ def main():
     hub = Hub(record=not a.no_record)
     Handler.hub = hub
     try:
-        srv = ThreadingHTTPServer(("0.0.0.0", a.port), Handler)
+        srv = QuietServer(("0.0.0.0", a.port), Handler)
     except OSError as e:
         # Пульт уже работает (с прошлого заезда) - он и подхватит этот nav.py.
         print(f"Порт {a.port} занят ({e}) - пульт уже запущен, выхожу.", flush=True)

@@ -237,19 +237,26 @@ def blink_pink(px, seconds=5.3, stop=None):
     событие для оценки - с последней записью ms.nav._victim_log."""
     sim = ms.CURRENT
     last = ms.nav._victim_log[-1] if ms.nav._victim_log else {}
-    sim.event("blink", s=seconds, type=last.get("type"), truth=last.get("_truth"),
-              cell=list(last.get("cell") or ()), on_move=bool(last.get("on_move")))
+    ev = sim.event("blink", s=seconds, type=last.get("type"), truth=last.get("_truth"),
+                   cell=list(last.get("cell") or ()), on_move=bool(last.get("on_move")),
+                   th=round(sim.theta, 1))
+    x0, y0, t0 = sim.x, sim.y, sim.t
     end = ms.nav.time.monotonic() + seconds
     while ms.nav.time.monotonic() < end:
         if stop is not None and stop():
             break
         ms.nav.time.sleep(0.05)
+    # для очков (5.6.1): мигал ли все 5 с и стоял ли при этом
+    ev["dur"] = round(sim.t - t0, 2)
+    ev["moved"] = round(math.hypot(sim.x - x0, sim.y - y0), 1)
 
 
 def blink_return(px, seconds=10.5):
     sim = ms.CURRENT
-    sim.event("finish_blink", s=seconds)
+    ev = sim.event("finish_blink", s=seconds)
+    x0, y0 = sim.x, sim.y
     ms.nav.time.sleep(seconds)
+    ev["moved"] = round(math.hypot(sim.x - x0, sim.y - y0), 1)
 
 
 def install(sim, vision=True):

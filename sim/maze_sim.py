@@ -32,7 +32,9 @@ import types
 from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "pi"))
+# MAZE_PI_DIR - другая копия pi/ (ветка, рабочая копия) для сравнения
+# "было/стало" (sim/night.py --compare): nav.py и его модули берутся оттуда.
+sys.path.insert(0, os.environ.get("MAZE_PI_DIR") or os.path.join(os.path.dirname(HERE), "pi"))
 
 
 def _stub(name, **attrs):
@@ -176,6 +178,17 @@ COLOR_FWD_MM = 90.0       # датчик цвета - на переднем ба
 COLOR_PERIOD_S = 1.0 / 30.0
 COLOR_SPOT_MM = 6.0
 
+# "Посещённая плитка" (регламент 5.4.4) - больше половины робота на ней, если
+# смотреть сверху. Площадь - по сетке 5 x 3 точек корпуса (вперёд, вправо),
+# каждая - центр своего участка; считается каждые VISIT_PERIOD_S.
+FOOT_PTS = [(f, s) for f in (-77.2, -38.6, 0.0, 38.6, 77.2) for s in (-41.7, 0.0, 41.7)]
+VISIT_PERIOD_S = 0.02
+STILL_V_CMS = 0.5          # быстрее - едет (стоянка на синей - 5 с подряд без движения)
+STILL_W_DPS = 3.0          # и не крутится на месте
+BUMP_CLEAR_MM = AXLE + 25.0    # колёса обеих осей за бугорком - центр дальше этого
+KIT_BACK_MM = NOSE + 15.0      # комплект падает за задний край, из бокового отсека
+KIT_SIDE_MM = 40.0
+
 
 def tile_samples():
     """Образцы для nav._tile_samples - как их снял бы tile_calib.py."""
@@ -196,6 +209,8 @@ class World:
         self._idx = None      # сетка BUCKET мм -> стены/рельеф, что её задевают
         self.tiles = {}       # (i, j) клетки мира -> "black"/"blue"/"silver"/"red"
         self.victims = []     # Victim - метки на стенах
+        self.bumps = []       # {"cell", "axis", "pos"} - лежачие полицейские (для очков)
+        self.ramps = []       # горки/лестницы из спецификации mazegen (для очков)
 
     def wall(self, cx, cy, d, z0=0.0, z1=WALL_H):
         """Стена клетки (cx, cy) с направления d (0=N, 1=E, 2=S, 3=W)."""
@@ -283,6 +298,10 @@ class Sim:
         self.cells_seen = set()   # клетки мира, где побывал центр робота
         self.motors_on = True     # False - питание моторов выключено: колёса стоят, энкодеры молчат
         self.black_depth = 0.0    # глубже всего, мм, заезжал центр робота на чёрную от её края
+        self.visits = []          # посещения плиток (5.4.4): {"t", "cell", "tile", "full", "still"}
+        self._next_visit = 0.0
+        self._still_t0 = None     # с какого момента робот стоит (для стоянки на синей)
+        self._bump_side = {}      # бугорок -> с какой стороны от него весь робот (-1/+1)
         self.x, self.y = cell[0] * CELL, cell[1] * CELL
         self.theta = heading
         self.yaw_offset = yaw_offset
@@ -322,10 +341,16 @@ class Sim:
         elif s.startswith("K:"):
             side = s[2:3]
             self.kits[side] = self.kits.get(side, 0) + 1
-            self.event("kit", side=side)
+            fx, fy = self.fwd()
+            k = KIT_SIDE_MM if side == "R" else -KIT_SIDE_MM
+            self.event("kit", side=side, th=round(self.theta, 1),
+                       at=[round(self.x - fx * KIT_BACK_MM + fy * k),
+                           round(self.y - fy * KIT_BACK_MM - fx * k)])
 
     def event(self, kind, **data):
+        """Событие для оценки; возвращает его данные (их можно дописать)."""
         self.events.append((round(self.t - self.t0, 3), kind, round(self.x), round(self.y), data))
+        return data
 
     def flush(self):
         pass
@@ -425,6 +450,9 @@ class Sim:
                 self._next_color = self.t + COLOR_PERIOD_S
                 self._color_publish()
         self._track_tiles(v)
+        if self.t >= self._next_visit:
+            self._next_visit = self.t + VISIT_PERIOD_S
+            self._track_visits(v, omega)
         self.cells_seen.add(cell_of(self.x, self.y))
         for f in self.hooks:
             f(self)
@@ -515,25 +543,69 @@ class Sim:
             nav._state["color_fresh"] = True
 
     def _track_tiles(self, v):
-        """События пола для оценки: заехал центром на чёрную, сколько стоял
-        на синей, проехал чекпоинт."""
-        tile = self.tile_at(self.x, self.y)
-        cell = cell_of(self.x, self.y)
-        if tile == "black":
+        """Чёрная под центром робота - как глубоко заехал (для отчёта)."""
+        if self.tile_at(self.x, self.y) == "black":
+            cell = cell_of(self.x, self.y)
             dx, dy = abs(self.x - cell[0] * CELL), abs(self.y - cell[1] * CELL)
             self.black_depth = max(self.black_depth, CELL / 2 - max(dx, dy))
-        cur = self._tile_since
-        if cur is None or cur[1] != cell:
-            if cur is not None and cur[0] == "blue":
-                self.event("blue_left", cell=cur[1], still_s=round(cur[4], 2))
+
+    def footprint_cells(self):
+        """{клетка: сколько точек корпуса (из FOOT_PTS) на ней}."""
+        fx, fy = self.fwd()
+        out = {}
+        for f, s in FOOT_PTS:
+            c = cell_of(self.x + fx * f + fy * s, self.y + fy * f - fx * s)
+            out[c] = out.get(c, 0) + 1
+        return out
+
+    def _track_visits(self, v, omega):
+        """Посещения плиток по регламенту (5.4.4): плитка, на которой больше
+        половины робота. Новое посещение - когда большая часть робота
+        перешла на другую плитку. Для каждого - была ли поза целиком на
+        плитке (горка пройдена, 5.6.9) и дольше всего сколько робот стоял
+        (синяя - 5 с подряд, 5.5.1c). События: "tile" - на цветную,
+        "blue_left" - ушёл с синей (сколько стоял), "bump_cross" - весь
+        робот переехал бугорок (5.6.8)."""
+        cnt = self.footprint_cells()
+        best = max(cnt, key=cnt.get)
+        n = cnt[best]
+        moving = abs(v) > STILL_V_CMS or abs(omega) > STILL_W_DPS
+        if moving:
+            self._still_t0 = None
+        elif self._still_t0 is None:
+            self._still_t0 = self.t
+        cur = self.visits[-1] if self.visits else None
+        if 2 * n > len(FOOT_PTS) and (cur is None or cur["cell"] != best):
+            if cur is not None and cur["tile"] == "blue":
+                self.event("blue_left", cell=list(cur["cell"]), still_s=round(cur["still"], 2))
+            tile = self.w.tiles.get(best, "white")
+            cur = {"t": round(self.t - self.t0, 3), "cell": best, "tile": tile,
+                   "full": False, "still": 0.0}
+            self.visits.append(cur)
+            if self._still_t0 is not None:
+                self._still_t0 = self.t       # стоянка считается на этой плитке
             if tile != "white":
-                self.event("tile", tile=tile, cell=cell)
-            self._tile_since = [tile, cell, self.t, self.t, 0.0]
-            return
-        if abs(v) > 0.5:
-            cur[3] = self.t
-        else:
-            cur[4] = max(cur[4], self.t - cur[3])     # дольше всего стоял на месте
+                self.event("tile", tile=tile, cell=list(best))
+        if cur is not None and cur["cell"] == best:
+            if n == len(FOOT_PTS):
+                cur["full"] = True
+            if self._still_t0 is not None:
+                cur["still"] = max(cur["still"], self.t - self._still_t0)
+        for i, b in enumerate(self.w.bumps):
+            bx, by = b["cell"][0] * CELL, b["cell"][1] * CELL
+            if b["axis"] == "ns":
+                lat, d = self.x - bx, self.y - b["pos"]
+            else:
+                lat, d = self.y - by, self.x - b["pos"]
+            if abs(lat) > CELL / 2 or abs(d) > CELL:
+                self._bump_side.pop(i, None)
+                continue
+            side = -1 if d < -BUMP_CLEAR_MM else 1 if d > BUMP_CLEAR_MM else 0
+            if side:
+                prev = self._bump_side.get(i)
+                if prev is not None and prev != side:
+                    self.event("bump_cross", cell=list(b["cell"]))
+                self._bump_side[i] = side
 
     def _ray_walls(self, ox, oy, dx, dy, z, te, walls):
         best = 4000.0

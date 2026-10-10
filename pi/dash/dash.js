@@ -480,7 +480,7 @@ function renderMap() {
   $('mapRobot').setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${yaw.toFixed(1)})`);
   const g = $('mapTruth'), tr = s && s.truth;
   if (g && tr) {
-    const [gx, gy] = mapGeo.center(tr.x / 300, tr.y / 300);
+    const [gx, gy] = mapGeo.center(tr.x / 300, tr.y / 300 + 1000 * (tr.lvl || 0));   // этаж 1 - y + 1000, как в nav.py
     g.setAttribute('transform', `translate(${gx.toFixed(1)} ${gy.toFixed(1)}) rotate(${tr.th})`);
   }
   $('mapMeta').textContent = `${(m.visited || []).length} клеток${mapGeo.levels.length > 1 ? ` · ${mapGeo.levels.length} этажа` : ''}`
