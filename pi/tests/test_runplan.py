@@ -39,6 +39,40 @@ class TestBfsPath(unittest.TestCase):
         self.assertIsNone(rp.bfs_path((0, 0), N, maze(), nxt, lambda c: c == (5, 5), RIGHT_HAND))
 
 
+class TestStepCost(unittest.TestCase):
+    # квадрат 2x2: из (0,0) в (1,1) через (0,1) или через (1,0)
+    od = staticmethod(maze(((0, 0), N), ((0, 1), E), ((0, 0), E), ((1, 0), N)))
+
+    def goal(self, c):
+        return c == (1, 1)
+
+    def test_tie_keeps_side_priority(self):
+        # правая рука: из (0,0) курсом N сначала направо (E)
+        self.assertEqual(rp.bfs_path((0, 0), N, self.od, nxt, self.goal, RIGHT_HAND), [E, N])
+        unit = lambda c, h, d, n: 1.0        # noqa: E731
+        self.assertEqual(rp.bfs_path((0, 0), N, self.od, nxt, self.goal, RIGHT_HAND, unit), [E, N])
+
+    def test_expensive_cell_avoided(self):
+        blue = {(1, 0)}
+        cost = lambda c, h, d, n: 1.0 + (20.0 if n in blue else 0.0)   # noqa: E731
+        self.assertEqual(rp.bfs_path((0, 0), N, self.od, nxt, self.goal, RIGHT_HAND, cost), [N, E])
+
+    def test_expensive_cell_taken_if_only_way(self):
+        od = maze(((0, 0), E), ((1, 0), E))
+        cost = lambda c, h, d, n: 1.0 + (20.0 if n == (1, 0) else 0.0)   # noqa: E731
+        self.assertEqual(rp.bfs_path((0, 0), N, od, nxt, lambda c: c == (2, 0), RIGHT_HAND, cost),
+                         [E, E])
+
+    def test_turn_cost_prefers_straight(self):
+        # в (2,1) два пути одной длины: N,N,E,E (один поворот) или E,N,E,N (три)
+        od = maze(((0, 0), N), ((0, 1), E), ((1, 1), E), ((0, 0), E), ((1, 0), N),
+                  ((0, 1), N), ((0, 2), E), ((1, 2), E), ((2, 2), S), ((1, 0), E), ((2, 0), N))
+        cost = lambda c, h, d, n: 1.0 + (0.0 if d == h else 2.0)   # noqa: E731
+        path = rp.bfs_path((0, 0), N, od, nxt, lambda c: c == (2, 1), RIGHT_HAND, cost)
+        turns = sum(1 for a, b in zip([N] + path, path) if a != b)
+        self.assertEqual(turns, 1)
+
+
 class TestGoStraight(unittest.TestCase):
     visited = {(0, 0), (0, 1)}
 

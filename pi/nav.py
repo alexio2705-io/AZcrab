@@ -808,7 +808,14 @@ COLOR_SENSOR_FWD_CM = 9.0
 PITCH_COLOR_GUARD_DEG = 3.0
 COLOR_RECOVER_S = 0.35
 
-BLUE_STOP_S = 6.0          # стоянка на синей плитке
+# Стоянка на синей: регламент 3.2.5b/5.5.1c - 5 с подряд без движения, иначе
+# LoP. Запас как у мигания на метке (VICTIM_STOP_S + MARGIN_S). Отсчёт - с
+# момента, когда робот встал в клетке (замер стен стоя тоже стоянка).
+BLUE_STOP_S = 5.3
+# Повторный заезд на ту же синюю - минус 10 очков (5.6.6) и ещё одна стоянка.
+# Для маршрута это цена шага в неё, в клетках пути: объезд до стольких
+# клеток дешевле. Синюю, которая единственный проход, маршрут всё равно берёт.
+BLUE_REVISIT_COST = 12.0
 
 # ── Чекпоинт: красная плитка ─────────────────────────────────
 # Красный проверяется ПЕРЕД чёрным, и это не косметика: красная плитка
@@ -1443,7 +1450,7 @@ def _tile_color():
 
 
 @_timed("синяя")
-def blue_stop(cell):
+def blue_stop(cell, since=None):
     """Стоянка на синей плитке - КАЖДЫЙ раз, когда робот на ней оказывается,
     а не только при первом распознавании: если клетка хоть раз была
     распознана как синяя, это помнится навсегда (_blue_cells), и стоянка
@@ -1460,15 +1467,19 @@ def blue_stop(cell):
     Фиксацию моторов переподтверждаем: удержание на ESP само отпускает через
     3 секунды (BRAKE_HOLD_US), а стоять надо дольше - на наклонном поле робот
     иначе потихоньку поедет.
+
+    since - когда робот встал в клетке (time.monotonic()); стоянка с этого
+    момента, а не с вызова: замер стен до неё тоже стоя.
     """
     _blue_cells.add(cell)
-    print(f"  ■ СИНЯЯ {cell}: стоим {BLUE_STOP_S:.0f}с")
-    end = time.time() + BLUE_STOP_S
-    while time.time() < end:
+    now = time.monotonic()
+    end = (now if since is None else min(since, now)) + BLUE_STOP_S
+    print(f"  ■ СИНЯЯ {cell}: стоим {BLUE_STOP_S:.1f}с (ещё {max(0.0, end - now):.1f}с)")
+    while time.monotonic() < end:
         if interrupted():
             return
         brake()
-        time.sleep(min(0.5, max(0.0, end - time.time())))
+        time.sleep(min(0.5, max(0.0, end - time.monotonic())))
 
 
 def load_tile_calib():
@@ -2069,6 +2080,12 @@ def open_dirs(cx, cy):
             if cell[d] is False and _next_cell(cx, cy, d) not in _blocked]
 
 
+def route_cost(cell, h, d, nxt):
+    """Цена шага маршрута из cell в nxt (runplan.bfs_path): клетка пути, а
+    синяя, где уже стояли, - ещё BLUE_REVISIT_COST (повтор - минус 10 очков)."""
+    return 1.0 + (BLUE_REVISIT_COST if nxt in _blue_cells else 0.0)
+
+
 def find_path_bfs(start, goal_test, hdg=0):
     """Кратчайший (по числу клеток) путь от start по уже известным открытым
     рёбрам карты до ближайшей клетки, для которой goal_test() верно.
@@ -2082,7 +2099,7 @@ def find_path_bfs(start, goal_test, hdg=0):
     шаг - первый элемент) или None, если ни одна подходящая клетка не
     достижима по разведанной части лабиринта."""
     return runplan.bfs_path(start, hdg, open_dirs, _next_cell, goal_test,
-                            SIDE_ORDER[_side_pref])
+                            SIDE_ORDER[_side_pref], route_cost)
 
 
 def _open_dirs_relaxed(level):
@@ -2118,7 +2135,7 @@ def find_home_path(cx, cy, hdg):
         return path
     for level, why in ((1, "через мягко закрытые рёбра"), (2, "и через неизвестные рёбра")):
         path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level), _next_cell, goal,
-                                SIDE_ORDER[_side_pref])
+                                SIDE_ORDER[_side_pref], route_cost)
         if path is not None:
             print(f"  [WARN] по карте старт недостижим - пробую путь {why}")
             return path
@@ -4172,7 +4189,8 @@ class _DrivePlan:
                         if abs_w[d] is False and _next_cell(cx, cy, d) not in _blocked]
 
             goal = self.goal_test if self.home else (lambda c: c != N and self.goal_test(c))
-            go = runplan.go_straight(N, hdg, od, _next_cell, goal, SIDE_ORDER[_side_pref])
+            go = runplan.go_straight(N, hdg, od, _next_cell, goal, SIDE_ORDER[_side_pref],
+                                     route_cost)
             why = "известна" if N in _visited else "новая"
         r, l = sides_res["right"], sides_res["left"]
         print(f"\n    → кл.{N}: R={_WALL_TXT[walls['right']]}({r[1]}т,{r[2]:.0f}мм) "
@@ -4265,6 +4283,7 @@ def flood_fill_run(max_cells):
         Курс может измениться: после выдачи аптечек робот остаётся спиной
         к метке (см. report_victim)."""
         nonlocal checkpoint, hdg, cx, cy
+        t_still = time.monotonic()      # встали - отсюда и стоянка на синей
         # Позицию - на веб сразу по приезде, не дожидаясь замера стен, синей
         # стоянки и камер: иначе робот на карте отставал на всё это время.
         _write_state(cx, cy, hdg, checkpoint, "exploring")
@@ -4297,7 +4316,7 @@ def flood_fill_run(max_cells):
         # см. blue_stop()/_blue_cells: однажды подтверждённому факту доверяем
         # больше, чем одному текущему замеру датчика цвета.
         if tile == TILE_BLUE or (cx, cy) in _blue_cells:
-            blue_stop((cx, cy))
+            blue_stop((cx, cy), since=t_still)
         # Чекпоинт запоминается стоя в центре клетки: на ходу цвет не
         # читается при задранном носе (PITCH_COLOR_GUARD_DEG).
         if tile == CHECKPOINT_TILE and checkpoint[:2] != (cx, cy):
@@ -4595,7 +4614,8 @@ def return_to_start(cx, cy, hdg, checkpoint):
             if reason != "ramp":
                 open_edge(cx, cy, hdg)
             cx, cy = _arrived_cell(cx, cy, hdg, reason)
-            # Позицию - до синей стоянки (она 6с), а не после.
+            t_still = time.monotonic()
+            # Позицию - до синей стоянки, а не после.
             _write_state(cx, cy, hdg, checkpoint, "returning")
             # Голос и на обратном пути: если карта ошиблась, BFS сразу
             # перестроит маршрут до старта.
@@ -4604,7 +4624,7 @@ def return_to_start(cx, cy, hdg, checkpoint):
             # Синяя клетка требует стоянки на КАЖДОМ визите, включая обратный
             # путь - см. blue_stop()/_blue_cells.
             if tile_color() == TILE_BLUE or (cx, cy) in _blue_cells:
-                blue_stop((cx, cy))
+                blue_stop((cx, cy), since=t_still)
 
         if reason in ("paused", "lifted", "link_lost"):
             continue
