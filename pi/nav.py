@@ -559,6 +559,20 @@ BUMPER_SIDE_SHIFT_MM = 35.0
 BUMPER_SIDE_ROOM_MM = 80.0
 _last_bump_mm = 0.0         # где сработал бампер в последней поездке, мм от её начала
 
+# Встали "у стены", а стена ближе, чем по одометрии, больше чем на это - перед
+# нами, скорее всего, препятствие у стены (3.4.4b), и до центра клетки робот
+# не доехал. Помним смещение (мм, x - восток, y - север): следующая поездка
+# считает путь с него, доводка по передней/задней "стене" вдоль этой оси не
+# делается (она выровняла бы по грани препятствия). Иначе одометрия всех
+# следующих поездок съезжала на 4-6 см, и чёрная приписывалась не той клетке.
+OBST_SHORT_MM = 25.0
+_pos_off = [0.0, 0.0]
+
+
+def _off_along(hdg):
+    """Смещение робота от центра клетки вдоль курса hdg, мм (вперёд > 0)."""
+    return _pos_off[0] * _DX[hdg] + _pos_off[1] * _DY[hdg]
+
 # Если робот крутится не в ту сторону (гироскоп намотан зеркально) -
 # поменять на -1, это единственное место со знаком поворота.
 TURN_SIGN = +1
@@ -2991,7 +3005,12 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     target_yaw = snap_target()
 
     last_l, last_r = get_odo()
-    traveled_cm = 0.0
+    # Старт не из центра (встали у препятствия - см. OBST_SHORT_MM): путь -
+    # от центра клетки, как его и считают границы и решения.
+    traveled_cm = _off_along(gyro_heading()) / 10.0
+    if abs(traveled_cm) > 0.5:
+        print(f"    старт не из центра: {traveled_cm * 10:+.0f}мм по ходу")
+    _pos_off[0] = _pos_off[1] = 0.0
     head_off_f = 0.0
     last_steer = 0.0
     cell_cm = CELL_MM / 10.0
@@ -3627,6 +3646,13 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             cells += 1
             if at_wall:
                 print(f"\n    у стены: f={f_est:.0f}мм")
+                short_mm = (boundary_cm - traveled_cm) * 10.0
+                if short_mm > OBST_SHORT_MM and ramp_state is None:
+                    h_now = gyro_heading()
+                    _pos_off[0] = -short_mm * _DX[h_now]
+                    _pos_off[1] = -short_mm * _DY[h_now]
+                    print(f"    стена ближе, чем по одометрии, на {short_mm:.0f}мм - "
+                          f"препятствие? до центра не доехали")
             break
 
         # ── Профиль скорости ──────────────────────────────────
@@ -3971,6 +3997,12 @@ def creep_mm(dist_mm, target_yaw, timeout_s=2.0):
 def align_at_wall(target_yaw):
     """Доводка вдоль движения: встать в центр клетки по передней стене, а
     если её нет (например, после разворота) - по задней."""
+    off = _off_along(int(round(angle_err(target_yaw, YAW_ORIGIN) / 90.0)) % 4)
+    if abs(off) > 10.0:
+        # стоим не в центре из-за препятствия (OBST_SHORT_MM): по его грани
+        # не выравниваемся, путь следующей поездки учтёт смещение
+        print(f"    [выр] не по стене: до центра {-off:+.0f}мм (препятствие)")
+        return
     on_slope = abs(get_pitch() - _pitch_level) > SLOPE_BACK_GUARD_DEG
     for it in range(ALIGN_TRIES):
         if interrupted():
@@ -3999,6 +4031,12 @@ def align_at_wall(target_yaw):
         if abs(need) < ALIGN_TOL_MM:
             if it:
                 print(f"    [выр] ок, {src}мм")
+            return
+        if (src.startswith("F") and need < -OBST_SHORT_MM) or \
+                (src.startswith("B") and need > OBST_SHORT_MM):
+            # "стена" ближе центра клетки на 2.5+ см - это скорее грань
+            # препятствия у стены (3.4.4b): по ней в центр не встать
+            print(f"    [выр] {src}мм: {need:+.0f}мм - похоже на препятствие, не выравниваюсь")
             return
         if abs(need) > ALIGN_MAX_MM:
             print(f"    [выр] {src}мм: {need:+.0f}мм - это не доводка, пропускаю")
