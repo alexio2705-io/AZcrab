@@ -821,6 +821,15 @@ COLOR_SENSOR_FWD_CM = 9.0
 # После возврата в горизонт даём подвеске/датчику короткое время опуститься.
 PITCH_COLOR_GUARD_DEG = 3.0
 COLOR_RECOVER_S = 0.35
+# Пока датчик слеп (бугорок, COLOR_RECOVER_S), центр робота не заезжает за
+# границу клетки, цвет которой ещё не прочитан: тормозим так, чтобы встать
+# за BLIND_MARGIN_CM до неё, ждём, пока датчик (он на 9 см впереди - уже над
+# той клеткой) прочитает цвет, и едем дальше; чёрная - обычный откат. Иначе
+# решение "цвет не прочитан - стоп" приходило, когда робот уже больше чем
+# наполовину на следующей клетке - на чёрной это LoP. Дольше BLIND_HOLD_MAX_S
+# не ждём (стоим на бугорке и датчик не прозреет).
+BLIND_MARGIN_CM = 3.0
+BLIND_HOLD_MAX_S = 1.5
 
 # Стоянка на синей: регламент 3.2.5b/5.5.1c - 5 с подряд без движения, иначе
 # LoP. Запас как у мигания на метке (VICTIM_STOP_S + MARGIN_S). Отсчёт - с
@@ -3022,6 +3031,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     v_max = MOVE_MAX_CMS if one_cell else MOVE_MAX_NONSTOP_CMS
     black_back_cm = 0.0     # сколько отъехать назад, если поймали чёрное
     bump_back_cm = 0.0      # однобокий бампер: сколько назад до центра прежней клетки
+    blind_since = None      # с какого момента ждём датчик цвета у границы
 
     # Скорость по одометрии (для ассиста): окно SPEED_WIN_S, см. v_meas.
     odo_hist = deque()
@@ -3629,6 +3639,22 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 fwd = max(fwd, MOVE_MIN_CMS * 0.5)   # чтобы не заглохнуть у самой цели
         else:
             fwd = ramp_up
+
+        # ── Слепой датчик цвета у границы непрочитанной клетки ─
+        if (plan is not None and USE_COLOR_SENSOR and ramp_state is None
+                and tile == TILE_UNKNOWN and not tiles.get(cells + 1)):
+            lim_cm = (boundary_cm - cell_cm / 2.0 - BLIND_MARGIN_CM - traveled_cm
+                      - fwd * STOP_LEAD_S)        # запаздывание петли - как у остановки
+            v_lim = math.sqrt(2.0 * BRAKE_DECEL_CMS2 * max(0.0, lim_cm))
+            if v_lim < fwd:
+                if blind_since is None:
+                    blind_since = now_m
+                    print(f"\n    датчик цвета слеп - не заезжаю в кл.{cells + 1}, пока не прочитает")
+                if now_m - blind_since < BLIND_HOLD_MAX_S:
+                    fwd = v_lim
+                    last_progress_t = now_m          # ждём датчик, а не застряли
+        else:
+            blind_since = None
 
         # ── Центровка: сдвигает цель курса, а не руль ─────────
         wl, wr = walls["left"], walls["right"]
