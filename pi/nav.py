@@ -993,6 +993,14 @@ _edge_fixed = {}
 # кончается только на старте - сдаваться по карте нельзя.
 _black_cells = set()
 _soft_edges = set()
+# Чёрные, пойманные, когда датчик был у самой границы клеток (BLACK_AMBIG_CM):
+# какой клетке она принадлежит, решила одометрия, а она могла уйти (старт не
+# из центра - встали у препятствия, приняв его за стену). Путь домой может
+# пройти через такую, только если иначе пути нет совсем: поле проходимо
+# (5.3.7), значит, какая-то чёрная приписана не той клетке.
+_black_unsure = set()
+BLACK_AMBIG_CM = 4.0
+_last_black_ambig = False
 # Сколько раз мягкий запрет не пустил на пути домой (ребро -> попыток). Ребро,
 # что не пустило HOME_EDGE_TRIES раз, обходной путь домой больше не берёт,
 # пока есть другие: иначе робот бился в одно место до конца заезда, на
@@ -2000,7 +2008,9 @@ def record_ramp(cx, cy, d, info, measure=None):
     bx, by = dest(k)
     cands = [kk for kk in (k, k - 1, k + 1) if kk >= 1]
     sure = abs(info.get("plan_cells", k) - k) <= RAMP_PLAN_SURE_FRAC
-    if floor_known and sure and dest(k) in _visited:
+    if floor_known and sure:
+        # и когда сама клетка ещё не посещена: иначе сверка выбирала
+        # посещённую соседнюю, у которой стены совпали случайно
         print(f"    горка: план {info.get('plan_cells', k):.2f} кл. - верю, этаж {z} знакомый")
     elif floor_known and measure is not None and any(dest(kk) in _visited for kk in cands):
         walls = measure()
@@ -2108,6 +2118,15 @@ def set_cell_walls(cx, cy, hdg, walls_rel):
         vote_wall(cx, cy, rel_to_abs[rel], present)
 
 
+def block_black(cx, cy, d):
+    """Ребро в чёрную, пойманную на ходу (drive_cells, reason 'black')."""
+    block_direction(cx, cy, d, black=True)
+    if _last_black_ambig:
+        n = _next_cell(cx, cy, d)
+        _black_unsure.add(n)
+        print(f"    чёрная у самой границы клеток - {n} под сомнением")
+
+
 def block_direction(cx, cy, d, black=False):
     """Считать ребро (cx,cy)->d непроезжим, хотя лидар мог видеть его как
     открытое - для случаев, которые лидар не предсказывает (чёрная плитка,
@@ -2206,12 +2225,13 @@ def _open_dirs_relaxed(level, tries=None):
         out = []
         for d in range(4):
             n = _next_cell(cx, cy, d)
-            if n in _black_cells:
+            if n in _black_cells and not (level >= 3 and n in _black_unsure):
                 continue
             key = _edge_key(cx, cy, d)
             ok = (cell[d] is False
                   or (key in _soft_edges and (tries is None or _home_fails.get(key, 0) < tries))
-                  or (level >= 2 and cell[d] is None))
+                  or (level >= 2 and cell[d] is None)
+                  or (level >= 3 and n in _black_unsure))
             if ok:
                 out.append(d)
         return out
@@ -2231,7 +2251,8 @@ def find_home_path(cx, cy, hdg):
     # нашлось - со всеми: попытки по кругу, а не в одно и то же ребро.
     for level, tries, why in ((1, HOME_EDGE_TRIES, "через мягко закрытые рёбра"),
                               (2, HOME_EDGE_TRIES, "и через неизвестные рёбра"),
-                              (2, None, "через все мягкие рёбра заново")):
+                              (2, None, "через все мягкие рёбра заново"),
+                              (3, None, "через чёрную под сомнением")):
         path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level, tries), _next_cell, goal,
                                 SIDE_ORDER[_side_pref], route_cost)
         if path is not None:
@@ -3213,6 +3234,9 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             cells, black_back_cm = runplan.black_retreat(traveled_cm, boundary_cm,
                                                          cells, cell_cm,
                                                          COLOR_SENSOR_FWD_CM)
+            global _last_black_ambig
+            _last_black_ambig = abs(traveled_cm + COLOR_SENSOR_FWD_CM
+                                    - (boundary_cm - cell_cm / 2.0)) < BLACK_AMBIG_CM
             print(f"\n    ЧЁРНАЯ (C={get_rgbc()[3]}) на {traveled_cm*10:.0f}мм - "
                   f"откат {black_back_cm*10:.0f}мм")
             break
@@ -4890,7 +4914,7 @@ def flood_fill_run(max_cells):
             # Ребро в чёрную клетку непроезжее - BFS обойдёт его сам, без
             # жёстко зашитого разворота на 180.
             print("    чёрная клетка - ребро непроезжее")
-            block_direction(cx, cy, hdg, black=True)
+            block_black(cx, cy, hdg)
             stalls = 0
             continue
 
@@ -5073,7 +5097,7 @@ def return_to_start(cx, cy, hdg, checkpoint):
             block_direction(cx, cy, hdg)
             continue
         if reason == "black":
-            block_direction(cx, cy, hdg, black=True)
+            block_black(cx, cy, hdg)
             continue
         if reason == "front_obstacle":
             close_edge(cx, cy, hdg)          # см. то же место в flood_fill_run
