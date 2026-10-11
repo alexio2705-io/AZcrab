@@ -4279,8 +4279,12 @@ def _turn_marks(cx, cy, seen):
                             "ts": time.strftime("%H:%M:%S")})
         if result.get("blink"):
             out_hdg = report_victim(result, side, wall_dir, h)
-    if out_hdg is not None and abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
-        turn_to(snap_target(), label="по сетке")     # без комплектов стоим, как читали
+    if out_hdg is not None:
+        if abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
+            turn_to(snap_target(), label="по сетке")     # без комплектов стоим, как читали
+        # курс - по гироскопу: после первой метки робот мог довернуть ко
+        # второй, и курс выдачи комплектов первой уже не тот
+        out_hdg = gyro_heading()
     return out_hdg
 
 
