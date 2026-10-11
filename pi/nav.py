@@ -3268,8 +3268,11 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             if (tile == TILE_BLUE and k_under == cells >= 1 and not stopping
                     and traveled_cm < boundary_cm - cell_cm - 3.0):
                 # Синюю заметили уже после решения "прямо": её центр ещё
-                # впереди - встаём там (правила: стоянка на синей).
+                # впереди - встаём там (правила: стоянка на синей). Счёт
+                # клеток - тоже на одну назад: остановка засчитает клетку
+                # сама (cells += 1), иначе робот считал себя клеткой дальше.
                 boundary_cm -= cell_cm
+                cells -= 1
                 stopping, pending, reason = True, False, "stop"
                 print(f"\n    → кл.{cells}: синяя после решения - стоп в её центре")
             if tile == CHECKPOINT_TILE and 1 <= k_under <= cells and k_under not in cp_done:
