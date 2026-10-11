@@ -434,6 +434,12 @@ class Sim:
         adv = v * 10.0 * dt * math.cos(math.radians(p))   # мм по горизонтали
         nx, ny = self.x + fx * adv, self.y + fy * adv
         hit = self._nose_hits(nx, ny) if adv > 0 else None
+        if adv < 0 and self._tail_hits(nx, ny):
+            # задом в стену: концевиков сзади нет - колёса просто встают
+            self.vl = self.vr = 0.0
+            self.crashes += 1
+            adv = 0.0
+            nx, ny = self.x, self.y
         if hit:
             self.bumped = hit
             self.vl = self.vr = 0.0
@@ -481,6 +487,19 @@ class Sim:
             _time.sleep(ahead)
         elif ahead < -0.5:      # не успеваем (лидар считается долго) - не копим долг
             self._pace0 = (now, self.t)
+
+    def _tail_hits(self, x, y):
+        """Задний край корпуса в стене/препятствии в позе (x, y)."""
+        fx, fy = self.fwd()
+        rx, ry = fy, -fx
+        zf = self.w.height(x, y) + 40.0
+        walls, _ = self.w.near(x, y, NOSE + HALF_W)
+        for s in BUMP_PTS:
+            px, py = x - fx * NOSE + rx * s, y - fy * NOSE + ry * s
+            if any(x0 <= px <= x1 and y0 <= py <= y1 and z0 <= zf <= z1
+                   for x0, y0, x1, y1, z0, z1 in walls):
+                return True
+        return False
 
     def _nose_hits(self, x, y):
         """Нос упрётся в стену/препятствие в позе (x, y)? None - нет, иначе
