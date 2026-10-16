@@ -127,6 +127,49 @@ def _button_thread():
         time.sleep(0.01)
 
 
+# Коротко для дисплея сзади (oled.py): мелкий шрифт, 25 символов в строке.
+# Двумя буквами, а не одной: строчная «з» рядом с цифрой читается как «3».
+_SHORT = {"white": "бе", "black": "чё", "blue": "си", "red": "кр",
+          "silver": "зе", "air": "во"}
+_MID = {"white": "бел", "black": "чёрн", "blue": "син", "red": "крас",
+        "silver": "зерк", "air": "возд"}
+
+
+def _oled_thread():
+    """Экран калибровки на дисплее робота: стоишь у робота с кнопкой -
+    видно, какой цвет выбран, что датчик видит сейчас и чем кончился замер,
+    без телефона в руке."""
+    import oled
+    oled.ensure_daemon()
+    while True:
+        try:
+            r, g, b, c = _read()
+            with _lock:
+                samples = {k: list(v) for k, v in _samples.items()}
+                st = dict(_st)
+            verdict, d, _, _ = tc.classify(samples, r, g, b, c)
+            sel = st["selected"]
+            seen = _MID.get(verdict, "?") if verdict else "не знаю"
+            if d is not None:
+                seen += f" d={d:.1f}"
+            # «зеркальная (чекпоинт)» -> «зеркальная»: пояснение есть на странице
+            lines = [f"цвет: {tc.NAMES[sel].split(' (')[0] if sel else 'выбери на странице'}",
+                     f"видит: {seen} C={c:.0f}",
+                     " ".join(f"{_SHORT[k]}{len(samples.get(k, []))}"   # число образцов
+                              for k in tc.COLORS)]
+            if st["msg"]:
+                # Длинное сообщение переносится по словам на оставшиеся строки.
+                lines.append(("" if st["msg_ok"] else "! ") + st["msg"])
+            else:
+                lines.append(f"кнопка GPIO{BTN_GPIO} - замер")
+            oled.say("ЗАМЕР - НЕ ТРОГАЙ" if st["busy"] else "КАЛИБР. ПЛИТОК",
+                     lines, alert=st["busy"], small=True, ttl=1.5)
+        except Exception as e:          # экран - не повод ронять калибровку
+            print(f"  [!] дисплей: {type(e).__name__}: {e}", flush=True)
+            time.sleep(5.0)
+        time.sleep(0.25)
+
+
 @app.route("/api/state")
 def api_state():
     r, g, b, c = _read()
@@ -421,6 +464,7 @@ def main():
     print(f"Телеметрия идёт. Образцов в {tc.CALIB_PATH}: "
           f"{sum(len(v) for v in _samples.values())}")
     threading.Thread(target=_button_thread, daemon=True).start()
+    threading.Thread(target=_oled_thread, daemon=True).start()
     print(f"Страница: http://<ip малины>:{HTTP_PORT}   кнопка замера: GPIO{BTN_GPIO}")
     try:
         app.run(host="0.0.0.0", port=HTTP_PORT, threaded=True)

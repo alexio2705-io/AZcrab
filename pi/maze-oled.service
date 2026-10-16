@@ -1,0 +1,26 @@
+# Дисплей сзади робота (oled.py) - сразу после загрузки Pi, ещё до nav.py:
+# IP для SSH, Wi-Fi, температура, питание. Дальше тот же процесс показывает
+# заезд и калибровки. Упал - systemd поднимет снова; уже запущен (его поднял
+# nav.py) - выходит с кодом 0, и перезапуска нет.
+#
+# Установка (на Pi, один раз):
+#   sudo cp ~/maze/maze-oled.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now maze-oled
+# Лог:  journalctl -u maze-oled -f
+
+[Unit]
+Description=MAZE2027 debug OLED (oled.py)
+After=local-fs.target
+
+[Service]
+Type=simple
+User=madness
+Group=madness
+SupplementaryGroups=i2c
+WorkingDirectory=/home/madness/maze
+ExecStart=/home/madness/maze/venv/bin/python -u /home/madness/maze/oled.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

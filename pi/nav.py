@@ -2317,6 +2317,12 @@ def _note_state(cx, cy, hdg, checkpoint, phase):
                  map_ver=_live["map_ver"] + 1)
 
 
+def _note_phase(phase):
+    """Фаза до заезда (кнопка, калибровка на старте) - позы ещё нет, только
+    пульту и дисплею сказать, чего ждём."""
+    _live.update(phase=phase, map_ver=_live["map_ver"] + 1)
+
+
 def _write_state(cx, cy, hdg, checkpoint, phase):
     """Снимок карты + найденных меток -> STATE_PATH, для map_web.py.
 
@@ -5389,6 +5395,9 @@ def _live_snapshot(n):
         "tick_ms": tick,
         "cams": _watcher.live_info() if _watcher is not None else None,
         "victims_n": len(_victim_log),
+        "visited_n": len(_visited),
+        "t_left": _r(time_left()),
+        "side": _side_pref,
         "map_ver": lv["map_ver"],
         "color_on": USE_COLOR_SENSOR,
         "sim": lv.get("sim"),
@@ -5484,6 +5493,10 @@ def main():
     start_live()
     if use_web:
         start_dash_web()
+    # Дисплей сзади: отдельный процесс, берёт тот же живой снимок, что пульт.
+    # Не на Pi или I2C выключен - ничего не делает.
+    import oled
+    oled.ensure_daemon()
 
     try:
         _link = serial.Serial(LINK_PORT, LINK_BAUD, timeout=0.1)
@@ -5571,7 +5584,9 @@ def main():
 
     # Кнопка - раньше первого замера лидара и тем более раньше проезда:
     # пока не нажата, лидар не проверяем и никуда не едем.
+    _note_phase("wait_button")
     wait_start_button()
+    _note_phase("calib")
     if _watcher is not None and not _watcher.ready.is_set():
         print("  [WARN] наблюдатель меток ещё грузится - включится, когда будет готов")
     # Курс поля - именно сейчас: кнопку жмут, когда робот уже стоит на старте
@@ -5596,6 +5611,7 @@ def main():
         _write_state(0, 0, 0, (0, 0, 0), "wait_lidar")
         while _scan_cnt == 0:
             wait_scan(1, timeout=1.0)
+        _note_phase("calib")
     w0 = get_walls()
 
     def _f(v): return f"{v:.0f}" if v is not None else "—"
