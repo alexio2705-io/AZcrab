@@ -58,7 +58,7 @@ static void run_button_test(void)
 
 // 1 = тест шин: BTN_1 - проехать 50 см вперёд без RPi (drive_test.c).
 // Перекрывает RUN_MAZE ниже. Перед лабиринтом вернуть 0.
-#define DRIVE_TEST 1
+#define DRIVE_TEST 0
 
 // 1 = the maze run: sensors + motors, driven by the RPi over UART
 // (robot_link.c). 0 = the servo dispense bench test instead.
