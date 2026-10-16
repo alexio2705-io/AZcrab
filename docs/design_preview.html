@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MAZE2027: варианты дизайна</title>
+<style>
+body{margin:0;padding:24px;background:#888;font:13px system-ui,sans-serif;color:#222}
+.row{display:flex;gap:24px;justify-content:center;flex-wrap:wrap;align-items:flex-start}
+.cap{font:600 12px system-ui;color:#fff;margin:0 0 8px}
+.dev{width:360px;box-sizing:border-box}
+
+/* ---------- общий каркас ---------- */
+.ui{background:var(--bg);color:var(--fg);font:13px/20px system-ui,-apple-system,"Segoe UI",sans-serif;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.ui *{box-sizing:border-box}
+.num{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.bar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
+.bar b{font-weight:600;letter-spacing:.02em}
+.st{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--fg)}
+.dot.off{background:none;border:1.5px solid var(--mut)}
+.dot.err{background:var(--acc)}
+.sec{padding:12px 16px 4px;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.map{display:grid;grid-template-columns:repeat(6,1fr);gap:0;margin:8px 16px 16px;border:1px solid var(--line2);border-radius:2px}
+.c{aspect-ratio:1;border-right:1px solid var(--line);border-bottom:1px solid var(--line);position:relative}
+.c:nth-child(6n){border-right:0}.c:nth-last-child(-n+6){border-bottom:0}
+.c.v{background:var(--vis)}
+.c.k{background:var(--blk)}
+.c.cp{box-shadow:inset 0 0 0 2px var(--fg)}
+.c.me::after{content:"";position:absolute;inset:30%;background:var(--acc);border-radius:50%}
+.c .w{position:absolute;background:var(--fg)}
+.leg{display:flex;gap:16px;padding:0 16px 12px;color:var(--mut);font-size:11px}
+.leg i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;border:1px solid var(--line2)}
+.tbl{border-top:1px solid var(--line)}
+.r{display:flex;justify-content:space-between;align-items:baseline;padding:8px 16px;border-bottom:1px solid var(--line)}
+.r span:first-child{color:var(--mut)}
+.r .num{font-size:14px;text-align:right}
+.r .num small{font:11px system-ui;color:var(--mut);margin-left:4px}
+.r.alert{box-shadow:inset 3px 0 0 var(--acc)}
+.r.alert .num{color:var(--acc)}
+.r:hover{background:var(--hov)}
+.foot{display:flex;gap:8px;padding:12px 16px}
+.btn{flex:1;font:inherit;padding:8px 0;border:1px solid var(--line2);background:none;color:var(--fg);border-radius:4px;cursor:pointer}
+.btn.p{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.btn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.btn:hover{background:var(--hov)}.btn.p:hover{opacity:.88;background:var(--fg)}
+.empty{margin:0 16px 12px;padding:12px;border:1px dashed var(--line2);color:var(--mut);font-size:12px;border-radius:2px}
+
+/* ---------- A: светлый прибор ---------- */
+.A{--bg:#EEEDE8;--fg:#1F2123;--mut:#6B6C6A;--line:rgba(31,33,35,.12);--line2:rgba(31,33,35,.35);--vis:#E2E1DB;--blk:#1F2123;--acc:#E8590C;--hov:rgba(31,33,35,.05)}
+/* ---------- B: тёмная панель ---------- */
+.B{--bg:#14161A;--fg:#D7DADF;--mut:#7E838C;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.3);--vis:#20242A;--blk:#050607;--acc:#F2A900;--hov:rgba(255,255,255,.04);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.B .sec,.B .st,.B .leg{letter-spacing:.1em}
+.B .r .num small{font-family:ui-monospace,monospace}
+.B .r span:first-child{font-size:12px}
+</style></head><body>
+<div class="row">
+ <div class="dev"><p class="cap">A — светлый прибор</p><div class="ui A" id="A"></div></div>
+ <div class="dev"><p class="cap">B — тёмная панель</p><div class="ui B" id="B"></div></div>
+</div>
+<script>
+const cells=[ // 6x6: v посещена, k чёрная плитка, cp чекпоинт, me робот
+"v v v . . .","v k v . . .","v cp v v . .","v . . v . .","v v v v me .",". . . . . ."].map(r=>r.split(" "));
+function map(){return '<div class="map">'+cells.flat().map(c=>'<div class="c '+(c==='.'?'':c==='v'?'v':c==='k'?'k':c==='cp'?'v cp':'v me')+'"></div>').join('')+'</div>'}
+const html=`
+<div class="bar"><b>MAZE2027 · карта</b><span class="st"><i class="dot"></i>онлайн · <span class="num">98 мс</span></span></div>
+<div class="sec">Лабиринт</div>${map()}
+<div class="leg"><span><i style="background:var(--vis)"></i>пройдено</span><span><i style="background:var(--blk)"></i>чёрная</span><span><i style="background:var(--acc);border-radius:50%"></i>робот</span></div>
+<div class="sec">Показания</div>
+<div class="tbl">
+<div class="r"><span>Лидар, фронт</span><span class="num">130.4<small>мм</small></span></div>
+<div class="r"><span>Курс</span><span class="num">87.4<small>°</small></span></div>
+<div class="r"><span>Скорость</span><span class="num">0.21<small>м/с</small></span></div>
+<div class="r"><span>Клетка</span><span class="num">4 : 4</span></div>
+<div class="r alert"><span>Батарея</span><span class="num">6.9<small>В</small></span></div>
+</div>
+<div class="sec">Состояния</div>
+<div class="r"><span class="st"><i class="dot"></i>онлайн</span><span class="st"><i class="dot off"></i>офлайн</span><span class="st"><i class="dot err"></i>ошибка</span></div>
+<div class="empty">Нет данных от ESP32. Последний пакет 14 с назад.</div>
+<div class="foot"><button class="btn">Сбросить карту</button><button class="btn p">Старт</button></div>`;
+document.getElementById('A').innerHTML=html;document.getElementById('B').innerHTML=html;
+document.querySelectorAll('.r .num').forEach(e=>{});
+</script></body></html>

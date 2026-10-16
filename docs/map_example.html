@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Карта — MAZE2027</title>
+<style>
+  /* Системный моноширинный стек: страница отдаётся с Пи без интернета, веб-шрифт
+     не загрузится. Один семейство на всё - подписи, значения, единицы. */
+  :root {
+    --bg:#14161A; --panel:#1B1E23; --fg:#D7DADF; --mut:#7E838C;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.28); --hov:rgba(255,255,255,.04);
+    --acc:#F2A900;                       /* внимание: авария, чекпоинт, робот */
+    --damaged:#E5534B; --stable:#C7D84B; --unharmed:#3FB27F;   /* типы меток = цвета LED */
+    --blue:#4C8DF0;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:13px/20px var(--mono); font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%;
+  }
+  .wrap { max-width:1120px; margin:0 auto; padding:16px; }
+
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:16px;
+         padding:0 0 12px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .bar h1 { margin:0; font:600 13px/20px var(--mono); letter-spacing:.1em; text-transform:uppercase; }
+  .bar h1 span { color:var(--mut); font-weight:400; }
+  .st { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12px; letter-spacing:.06em; white-space:nowrap; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--fg); flex:none; }
+  .dot.off { background:none; box-shadow:inset 0 0 0 1.5px var(--mut); }
+  .dot.err { background:var(--acc); }
+
+  .layout { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; }
+  @media (min-width:900px) { .layout { grid-template-columns:minmax(0,1fr) 360px; } .wrap { padding:24px; } }
+
+  .panel { border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .sec { display:flex; justify-content:space-between; align-items:baseline; padding:12px 16px 8px;
+         color:var(--mut); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+  .sec .n { color:var(--fg); letter-spacing:0; }
+
+  #map-wrap { padding:8px 16px 16px; overflow:auto; }
+  svg#map { display:block; margin:0 auto; height:auto; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 16px; padding:12px 16px; border-top:1px solid var(--line);
+            color:var(--mut); font-size:11px; letter-spacing:.06em; }
+  .legend i { display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:-1px;
+              border:1px solid var(--line2); border-radius:2px; }
+  .legend i.c { border-radius:50%; }
+
+  .r { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:8px 16px;
+       border-top:1px solid var(--line); }
+  .r:hover { background:var(--hov); }
+  .r > span:first-child { color:var(--mut); font-size:12px; }
+  .r .v { font-size:14px; text-align:right; }
+  .r .v small { font-size:11px; color:var(--mut); margin-left:4px; }
+  .r.err { box-shadow:inset 3px 0 0 var(--acc); }
+  .r.err .v { color:var(--acc); }
+
+  .note { margin:8px 16px 16px; padding:12px; border:1px dashed var(--line2); border-radius:2px;
+          color:var(--mut); font-size:12px; line-height:18px; }
+  .note b { display:block; color:var(--fg); font-weight:600; margin-bottom:2px; }
+  .note.err { border-color:var(--acc); border-style:solid; }
+  .note.err b { color:var(--acc); }
+
+  #victims { max-height:70vh; overflow-y:auto; }
+  .v-row { display:grid; grid-template-columns:3px minmax(0,1fr) auto; gap:12px; padding:12px 16px 12px 0;
+           border-top:1px solid var(--line); }
+  .v-row:hover { background:var(--hov); }
+  .v-row .bar3 { background:var(--mut); margin:-12px 0; }
+  .v-row.damaged .bar3 { background:var(--damaged); } .v-row.stable .bar3 { background:var(--stable); }
+  .v-row.unharmed .bar3 { background:var(--unharmed); }
+  .v-row.fake { opacity:.6; }
+  .v-t { font-weight:600; }
+  .v-t .g { display:inline-block; width:20px; text-align:center; margin-right:4px; }
+  .v-row.damaged .g { color:var(--damaged); } .v-row.stable .g { color:var(--stable); } .v-row.unharmed .g { color:var(--unharmed); }
+  .v-m { color:var(--mut); font-size:12px; }
+  .v-r { text-align:right; color:var(--mut); font-size:12px; }
+  .v-r b { display:block; color:var(--fg); font-weight:400; font-size:14px; }
+  .v-img { display:block; margin-top:8px; width:100%; max-width:240px; max-height:160px; object-fit:contain;
+           background:#000; border:1px solid var(--line); border-radius:2px; }
+  .rings { display:flex; align-items:center; gap:4px; margin-top:8px; font-size:12px; color:var(--mut); }
+  .ring { width:14px; height:14px; border-radius:50%; box-shadow:inset 0 0 0 1px var(--line2); }
+  .ring[data-c="black"]{background:#000} .ring[data-c="red"]{background:var(--damaged)}
+  .ring[data-c="yellow"]{background:var(--stable)} .ring[data-c="green"]{background:var(--unharmed)}
+  .ring[data-c="blue"]{background:var(--blue)} .ring[data-c="?"]{background:#555}
+  a { color:inherit; } a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  #victims::-webkit-scrollbar { width:8px; } #victims::-webkit-scrollbar-thumb { background:var(--line2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <h1>MAZE2027 <span>/ карта</span></h1>
+    <div class="st"><i class="dot off" id="conn-dot"></i><span id="conn">подключение</span></div>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <div class="sec"><span>Лабиринт</span><span class="n" id="floors"></span></div>
+      <div id="map-wrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div id="map-note"></div>
+      <div class="legend">
+        <span><i style="background:#2A2F37"></i>посещено</span>
+        <span><i style="background:rgba(76,141,240,.3);border-color:var(--blue)"></i>синяя</span>
+        <span><i style="border-color:var(--acc)"></i>чекпоинт</span>
+        <span><i style="background:repeating-linear-gradient(45deg,rgba(229,83,75,.55) 0 2px,transparent 2px 4px)"></i>непроезжая</span>
+        <span><i class="c" style="background:var(--acc);border:0"></i>робот</span>
+        <span><i class="c" style="background:var(--damaged);border:0"></i>Φ</span>
+        <span><i class="c" style="background:var(--stable);border:0"></i>Ψ</span>
+        <span><i class="c" style="background:var(--unharmed);border:0"></i>Ω</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="sec"><span>Показания</span></div>
+        <div class="r"><span>Фаза</span><span class="v" id="phase">-</span></div>
+        <div class="r"><span>Позиция</span><span class="v" id="pos">-</span></div>
+        <div class="r"><span>Курс</span><span class="v" id="dir">-</span></div>
+        <div class="r"><span>Этаж</span><span class="v" id="lvl">-</span></div>
+        <div class="r"><span>Посещено</span><span class="v" id="nvis">-</span></div>
+        <div class="r" id="r-blk"><span>Непроезжих</span><span class="v" id="nblk">-</span></div>
+        <div class="r"><span>Снимок</span><span class="v" id="ts">-</span></div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="sec"><span>Метки</span><span class="n" id="vcount">0</span></div>
+        <div id="victims"></div>
+        <div class="note" id="empty"><b>Меток пока нет</b>Появятся после первого скана стены.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>window.fetch=()=>Promise.resolve({ok:true,json:()=>Promise.resolve({"ts": "14:07:31", "phase": "exploring", "robot": {"cx": 3, "cy": 2, "hdg": 1, "dir": "E"}, "checkpoint": {"cx": 0, "cy": 0, "hdg": 0}, "maze": {"0,0": [false, false, true, true], "0,1": [false, false, false, true], "0,2": [false, false, false, true], "0,3": [true, false, false, true], "1,0": [false, false, true, false], "1,1": [false, false, false, false], "1,2": [false, true, false, false], "1,3": [true, false, false, false], "2,0": [false, false, true, false], "2,1": [false, false, false, true], "2,2": [false, false, false, false], "2,3": [true, false, false, false], "3,0": [false, false, true, false], "3,1": [false, false, false, false], "3,2": [false, false, false, false], "3,3": [true, false, false, false], "4,0": [false, true, true, false], "4,1": [false, true, false, false], "4,2": [false, true, false, false], "4,3": [true, true, false, false], "0,1000": [false, false, true, true], "0,1001": [false, false, false, true], "0,1002": [true, false, false, true], "1,1000": [false, false, true, false], "1,1001": [false, false, false, false], "1,1002": [true, false, false, false], "2,1000": [false, true, true, false], "2,1001": [false, true, false, false], "2,1002": [true, true, false, false]}, "visited": [[0, 0], [1, 0], [2, 0], [2, 1], [3, 1], [3, 2], [0, 1000], [1, 1000]], "blocked": [[4, 2]], "blue_done": [[2, 1]], "level_stride": 1000, "ramps": [[3, 3, 0, 0, 1000, 2, 1]], "victims": [{"type": "damaged", "cell": [2, 0], "wall_dir": 2, "side": "right", "class": "phi", "conf": 0.91, "ts": "14:05:02"}, {"type": "unharmed", "cell": [3, 2], "wall_dir": 0, "side": "left", "class": "omega", "conf": 0.87, "ts": "14:06:40"}, {"type": "fake", "class": "cognetive", "cell": [1, 1], "wall_dir": 3, "side": "left", "conf": 0.7, "rings": ["red", "blue", "green"], "checksum": 4, "ts": "14:06:58"}]})});</script>
+<script>
+const CELL = 56;   // единиц viewBox на клетку карты
+const NAMES = {damaged: 'ПОВРЕЖДЁН', stable: 'СТАБИЛЕН', unharmed: 'НЕ ПОВРЕЖДЁН', fake: 'ФЕЙК'};
+const GLYPH = {damaged: 'Φ', stable: 'Ψ', unharmed: 'Ω'};
+const COLOR = {damaged: '#E5534B', stable: '#C7D84B', unharmed: '#3FB27F'};
+const PHASE = {waiting: ['ожидание', 'off'], exploring: ['разведка', 'on'], sleep: ['сон', 'off'],
+               explored: ['разведка завершена', 'on'], fatal: ['авария', 'err']};
+const DIR_DX = [0, 1, 0, -1], DIR_DY = [1, 0, -1, 0];   // N,E,S,W - как в nav.py
+const ACC = '#F2A900', FG = '#D7DADF';
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+const $ = id => document.getElementById(id);
+function setDot(kind) { $('conn-dot').className = 'dot' + (kind === 'on' ? '' : ' ' + kind); }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function drawMap(s) {
+  const svg = $('map');
+  svg.innerHTML = '';
+  const keys = Object.keys(s.maze || {});
+  const cells = keys.map(k => { const [x, y] = k.split(',').map(Number); return {x, y, w: s.maze[k]}; });
+  const robot = s.robot || {cx: 0, cy: 0, hdg: 0};
+  const known = cells.length ? cells : [{x: robot.cx, y: robot.cy, w: [null, null, null, null]}];
+
+  // Этажи (горки): nav.py хранит этаж в y со сдвигом level_stride*z. На
+  // экране кладём этажи рядом слева направо, с промежутком в 2 клетки -
+  // иначе этаж 1 рисовался бы в тысяче клеток от этажа 0.
+  const LS = s.level_stride || 1000;
+  const lvl = y => Math.floor((y + LS / 2) / LS);
+  const xs = known.map(c => c.x).concat([robot.cx]);
+  const spanX = Math.max(...xs) - Math.min(...xs) + 3;
+  const vx = (x, y) => x + lvl(y) * spanX;
+  const vy = y => y - lvl(y) * LS;
+  const levels = [...new Set(known.map(c => lvl(c.y)).concat([lvl(robot.cy)]))].sort((a, b) => a - b);
+  const multi = levels.length > 1;
+
+  const minX = Math.min(...known.map(c => vx(c.x, c.y)), vx(robot.cx, robot.cy));
+  const maxX = Math.max(...known.map(c => vx(c.x, c.y)), vx(robot.cx, robot.cy));
+  const minY = Math.min(...known.map(c => vy(c.y)), vy(robot.cy));
+  const maxY = Math.max(...known.map(c => vy(c.y)), vy(robot.cy));
+
+  const PAD = 4, TOP = multi ? 22 : 0;
+  const W = (maxX - minX + 1) * CELL, H = (maxY - minY + 1) * CELL;
+  svg.setAttribute('viewBox', `${-PAD} ${-PAD - TOP} ${W + 2 * PAD} ${H + 2 * PAD + TOP}`);
+  svg.style.width = '100%';
+  svg.style.maxWidth = (W + 2 * PAD) + 'px';   // клетка на экране не крупнее CELL px
+
+  const sx = x => (x - minX) * CELL;
+  const sy = y => (maxY - y) * CELL;   // север (y растёт) - вверх экрана
+
+  const visited = new Set((s.visited || []).map(p => p[0] + ',' + p[1]));
+  const blocked = new Set((s.blocked || []).map(p => p[0] + ',' + p[1]));
+  const blueDone = new Set((s.blue_done || []).map(p => p[0] + ',' + p[1]));
+  const cp = s.checkpoint || {cx: 0, cy: 0};
+
+  const defs = svgEl('defs', {});
+  const pat = svgEl('pattern', {id: 'hatch', width: 8, height: 8, patternUnits: 'userSpaceOnUse',
+                                 patternTransform: 'rotate(45)'});
+  pat.appendChild(svgEl('rect', {width: 3, height: 8, fill: 'rgba(229,83,75,.55)'}));
+  defs.appendChild(pat);
+  svg.appendChild(defs);
+
+  if (multi) {
+    for (const z of levels) {
+      const xsz = known.filter(c => lvl(c.y) === z).map(c => vx(c.x, c.y));
+      const t = svgEl('text', {x: sx(Math.min(...xsz)), y: -10, fill: '#7E838C', 'font-size': 13,
+                                'letter-spacing': '1.2', 'font-family': 'ui-monospace,Menlo,Consolas,monospace'});
+      t.textContent = 'ЭТАЖ ' + z;
+      svg.appendChild(t);
+    }
+  }
+
+  for (const c of cells) {
+    const key = c.x + ',' + c.y;
+    const x = sx(vx(c.x, c.y)), y = sy(vy(c.y));
+    let fill = 'transparent';
+    if (blocked.has(key)) fill = 'url(#hatch)';
+    else if (blueDone.has(key)) fill = 'rgba(76,141,240,.28)';
+    else if (visited.has(key)) fill = '#2A2F37';
+    svg.appendChild(svgEl('rect', {x, y, width: CELL, height: CELL, fill,
+                                    stroke: 'rgba(255,255,255,.08)', 'stroke-width': 1}));
+    if (cp.cx === c.x && cp.cy === c.y)
+      svg.appendChild(svgEl('rect', {x: x + 4, y: y + 4, width: CELL - 8, height: CELL - 8, fill: 'none',
+                                      stroke: ACC, 'stroke-width': 1.5}));
+    // Стены: [N,E,S,W]. true - линия, null (неизвестно) - не рисуем.
+    const edges = [
+      c.w[0] === true ? [x, y, x + CELL, y] : null,               // N
+      c.w[1] === true ? [x + CELL, y, x + CELL, y + CELL] : null, // E
+      c.w[2] === true ? [x, y + CELL, x + CELL, y + CELL] : null, // S
+      c.w[3] === true ? [x, y, x, y + CELL] : null,                // W
+    ];
+    for (const e of edges) {
+      if (!e) continue;
+      svg.appendChild(svgEl('line', {x1: e[0], y1: e[1], x2: e[2], y2: e[3],
+                                      stroke: FG, 'stroke-width': 3, 'stroke-linecap': 'square'}));
+    }
+  }
+
+  // Горки - пунктир от подножия до гребня (другой этаж) с числом плиток.
+  for (const [ax, ay, , bx, by, n] of (s.ramps || [])) {
+    const x1 = sx(vx(ax, ay)) + CELL / 2, y1 = sy(vy(ay)) + CELL / 2;
+    const x2 = sx(vx(bx, by)) + CELL / 2, y2 = sy(vy(by)) + CELL / 2;
+    svg.appendChild(svgEl('line', {x1, y1, x2, y2, stroke: ACC, 'stroke-width': 1.5, 'stroke-dasharray': '5 4'}));
+    const t = svgEl('text', {x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle', 'font-size': 13,
+                              fill: ACC, 'font-family': 'ui-monospace,Menlo,Consolas,monospace'});
+    t.textContent = 'горка ' + n;
+    svg.appendChild(t);
+  }
+
+  // Метки: диск цвета типа у той стены, где нашли, глиф типа внутри.
+  for (const v of (s.victims || [])) {
+    const [vcx, vcy] = v.cell;
+    const d = v.wall_dir ?? 0;
+    const cx0 = sx(vx(vcx, vcy)) + CELL / 2, cy0 = sy(vy(vcy)) + CELL / 2;
+    const px = cx0 + DIR_DX[d] * CELL * 0.32, py = cy0 - DIR_DY[d] * CELL * 0.32;
+    svg.appendChild(svgEl('circle', {cx: px, cy: py, r: 10.5, fill: COLOR[v.type] || '#7E838C',
+                                      stroke: '#14161A', 'stroke-width': 2}));
+    const label = svgEl('text', {x: px, y: py, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+                                  'font-size': 13, 'font-weight': 700, fill: '#14161A',
+                                  'font-family': 'ui-monospace,Menlo,Consolas,monospace'});
+    label.textContent = GLYPH[v.type] || '?';
+    svg.appendChild(label);
+  }
+
+  // Робот - треугольник, острие по курсу (0=N вверх, 1=E вправо, ...).
+  const rcx = sx(vx(robot.cx, robot.cy)) + CELL / 2, rcy = sy(vy(robot.cy)) + CELL / 2, r = CELL * 0.28;
+  const points = `${rcx},${rcy - r} ${rcx - r * 0.75},${rcy + r * 0.7} ${rcx + r * 0.75},${rcy + r * 0.7}`;
+  svg.appendChild(svgEl('polygon', {points, fill: ACC, stroke: '#14161A', 'stroke-width': 1.5,
+                                     'stroke-linejoin': 'round', transform: `rotate(${robot.hdg * 90} ${rcx} ${rcy})`}));
+  return {levels, LS, lvl, vy};
+}
+
+let lastVictims = null;
+function drawVictims(list) {
+  const key = JSON.stringify(list);
+  $('vcount').textContent = list.length;
+  $('empty').style.display = list.length ? 'none' : 'block';
+  if (key === lastVictims) return;   // не пересобираем DOM зря - иначе мигают снимки
+  lastVictims = key;
+  const box = $('victims');
+  box.innerHTML = '';
+  for (const v of [...list].reverse()) {   // свежие сверху
+    const row = document.createElement('div');
+    row.className = 'v-row ' + (v.type || '');
+    const src = v.image ? `/detections/${encodeURIComponent(v.image)}` : '';
+    const img = src ? `<a href="${src}" target="_blank" rel="noopener"><img class="v-img" src="${src}" loading="lazy" alt=""></a>` : '';
+    const rings = (v.rings || []).map(c => `<span class="ring" data-c="${esc(c)}"></span>`).join('');
+    row.innerHTML = `
+      <i class="bar3"></i>
+      <div style="min-width:0">
+        <div class="v-t"><span class="g">${GLYPH[v.type] || '·'}</span>${esc(NAMES[v.type] || v.type || '?')}</div>
+        <div class="v-m">клетка ${v.cell[0]}:${v.cell[1]} · ${v.side === 'right' ? 'право' : 'лево'} · ${esc(v.class)}</div>
+        ${v.class === 'cognetive' ? `<div class="rings">${rings}<span style="margin-left:6px">сумма ${v.checksum ?? '?'}</span></div>` : ''}
+        ${img}
+      </div>
+      <div class="v-r"><b>${v.conf ?? ''}</b>${esc(v.ts || '')}</div>`;
+    box.appendChild(row);
+  }
+}
+
+function render(s) {
+  const waiting = !s.ts;
+  const [pname, pkind] = PHASE[s.phase] || [s.phase || '-', 'off'];
+  const info = drawMap(s);
+  $('phase').textContent = pname;
+  const robot = s.robot || {cx: 0, cy: 0, hdg: 0, dir: '?'};
+  const z = info.lvl(robot.cy);
+  $('pos').textContent = waiting ? '-' : `${robot.cx} : ${info.vy(robot.cy)}`;
+  $('dir').innerHTML = waiting ? '-' : `${robot.dir}<small>${(robot.hdg * 90) % 360}°</small>`;
+  $('lvl').textContent = waiting ? '-' : z;
+  $('nvis').textContent = waiting ? '-' : (s.visited || []).length;
+  const nb = (s.blocked || []).length;
+  $('nblk').textContent = waiting ? '-' : nb;
+  $('r-blk').className = 'r' + (nb ? ' err' : '');
+  $('ts').textContent = s.ts || '-';
+  $('floors').textContent = info.levels.length > 1 ? info.levels.length + ' этажа' : '';
+  $('map-note').innerHTML = waiting
+    ? '<div class="note"><b>Ожидание nav.py</b>state.json ещё не создан: робот не вышел на первую клетку.</div>' : '';
+  document.querySelector('#map').style.display = waiting ? 'none' : 'block';
+  drawVictims(s.victims || []);
+  if (waiting) setConn('off', 'ожидание nav.py');
+  else setConn(pkind === 'err' ? 'err' : 'on', pkind === 'err' ? 'авария' : 'онлайн');
+}
+
+function setConn(kind, text) { setDot(kind); $('conn').textContent = text; }
+
+let fails = 0;
+async function poll() {
+  try {
+    const r = await fetch('/state.json', {cache: 'no-store'});
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    fails = 0;
+  } catch (e) {
+    // одна-две потери пакета при поллинге 4 Гц - не повод мигать офлайном
+    if (++fails >= 3) {
+      setConn('off', 'нет связи');
+      $('map-note').innerHTML = '<div class="note err"><b>Нет связи с map_web.py</b>Страница будет пытаться снова каждые 0.25 с.</div>';
+    }
+  }
+  setTimeout(poll, 250);
+}
+poll();
+</script>
+</body>
+</html>
