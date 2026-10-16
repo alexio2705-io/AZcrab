@@ -318,6 +318,44 @@ class TestVideo(unittest.TestCase):
         self.assertFalse(cv.get(x0 + 17, y0 + 2))      # значок убран
 
 
+class TestCatAndButton(unittest.TestCase):
+    def test_button_debounce_one_press_per_hold(self):
+        levels = iter([1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0])   # 1 - отпущена
+        b = oled.Button(read=lambda: bool(next(levels)), start=False)
+        for _ in range(11):
+            b.poll()
+        # одиночный LOW - дребезг; удержание - одно нажатие; потом ещё одно
+        self.assertEqual(b.presses, 2)
+
+    def test_gpio_users_found_by_cmdline(self):
+        with tempfile.TemporaryDirectory() as d:
+            def proc(pid, cmd):
+                os.makedirs(os.path.join(d, str(pid)))
+                with open(os.path.join(d, str(pid), "cmdline"), "wb") as f:
+                    f.write(cmd.replace(" ", "\0").encode())
+            proc(100, "/usr/bin/python3 -u /home/madness/maze/oled.py")
+            proc(101, "bash")
+            self.assertFalse(oled.gpio_users_running(d))
+            proc(102, "/home/madness/maze/venv/bin/python -u /home/madness/maze/nav.py --no-color")
+            self.assertTrue(oled.gpio_users_running(d))
+
+    def test_cat_mode(self):
+        c = oled.CatMode()
+        self.assertTrue(c.show(False, None, None, False))          # после включения - кот
+        c.step(1, busy=False, connected=False)                     # нажали - экран с IP
+        self.assertFalse(c.show(False, None, None, False))
+        c.step(2, busy=False, connected=False)                     # ещё раз - кот
+        self.assertTrue(c.on)
+        c.step(3, busy=True, connected=False)                      # nav.py ждёт старта - кнопка его
+        self.assertTrue(c.on)
+        self.assertFalse(c.show(True, None, None, False))          # и кота не видно
+        c.step(3, busy=False, connected=True)                      # заезд идёт
+        self.assertFalse(c.show(False, None, {"phase": "exploring"}, True))
+        c.step(3, busy=False, connected=False)                     # кончился - итог, не кот
+        self.assertFalse(c.on)
+        self.assertFalse(c.show(False, {"title": "x"}, None, False))   # say() важнее
+
+
 class TestMessages(unittest.TestCase):
     def test_say_reaches_inbox(self):
         box = oled.Inbox(port=0)

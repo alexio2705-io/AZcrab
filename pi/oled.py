@@ -1102,6 +1102,11 @@ class TileGuess:
         return self._tc.classify(self._samples, *rgbc[:4])[0]
 
 
+def _has_pinctrl():
+    return any(os.access(os.path.join(d, "pinctrl"), os.X_OK)
+               for d in os.environ.get("PATH", "/usr/bin").split(os.pathsep))
+
+
 def build_state(now, feed, sysinfo, msg=None, tile=None):
     """Состояние для compose(): живой снимок (Feed), сведения о Pi (SysInfo),
     сообщение say() и плитка до старта. Им же рисует экран пульт
@@ -1119,6 +1124,96 @@ def build_state(now, feed, sysinfo, msg=None, tile=None):
     return st
 
 
+CAT_PATH = os.path.expanduser("~/maze/cat.oledv")   # oled_cat.py; нет файла - кота нет
+BUTTON_GPIO = 27             # та же кнопка, что старт nav.py (левая рука) и замер tile_calib.py
+BUTTON_POLL_S = 0.05
+GPIO_USERS = ("nav.py", "tile_calib.py", "bringup.py")   # им кнопка нужна самим
+
+
+class Button:
+    """Кнопка, которую демон читает, НЕ занимая пин.
+
+    GPIO27 - кнопка старта nav.py и замера tile_calib.py. Если демон займёт
+    пин (RPi.GPIO / lgpio), их GPIO.setup упадёт с «GPIO busy» - проверено на
+    Pi. Поэтому уровень читается утилитой pinctrl (регистры, без захвата
+    линии, ~1 мс), а подтяжка вверх ставится ей же - та же, что ставят они.
+    Нажатие - LOW два опроса подряд после HIGH."""
+
+    def __init__(self, pin=BUTTON_GPIO, read=None, start=True):
+        self.pin = pin
+        self.presses = 0
+        self._read = read or self._pinctrl
+        self._low = 0
+        self._armed = True
+        if read is None:
+            subprocess.run(["pinctrl", "set", str(pin), "ip", "pu"], capture_output=True)
+        if start:
+            threading.Thread(target=self._run, daemon=True, name="oled-button").start()
+
+    def _pinctrl(self):
+        out = subprocess.run(["pinctrl", "lev", str(self.pin)], capture_output=True, text=True).stdout
+        return out.strip() != "0"            # True - отпущена (подтяжка вверх)
+
+    def poll(self):
+        if self._read():
+            self._low = 0
+            self._armed = True
+            return
+        self._low += 1
+        if self._armed and self._low >= 2:
+            self.presses += 1
+            self._armed = False              # следующее - только после отпускания
+
+    def _run(self):
+        while True:
+            try:
+                self.poll()
+            except (OSError, subprocess.SubprocessError):
+                time.sleep(1.0)
+            time.sleep(BUTTON_POLL_S)
+
+
+def gpio_users_running(proc="/proc"):
+    """Запущен ли кто-то, кому кнопка GPIO27 нужна самому (по cmdline)."""
+    me = os.getpid()
+    try:
+        pids = [p for p in os.listdir(proc) if p.isdigit() and int(p) != me]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(os.path.join(proc, pid, "cmdline"), "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "oled.py" not in cmd and any(name in cmd for name in GPIO_USERS):
+            return True
+    return False
+
+
+class CatMode:
+    """Кот на экране простоя: после включения - кот, кнопка - экран с IP и
+    обратно. Пока работает nav.py/tile_calib.py, кнопка - их (не
+    переключает), а кота не видно. nav.py закончил - его итог, не кот."""
+
+    def __init__(self):
+        self.on = True
+        self._seen = 0
+        self._was_connected = False
+
+    def step(self, presses, busy, connected):
+        if presses != self._seen:
+            if not busy and (presses - self._seen) % 2:
+                self.on = not self.on
+            self._seen = presses
+        if self._was_connected and not connected:
+            self.on = False                  # заезд кончился - сначала его итог
+        self._was_connected = connected
+
+    def show(self, busy, msg, snap, connected):
+        return self.on and not busy and msg is None and (snap is None or not connected)
+
+
 class Daemon:
     def __init__(self, rot180=ROTATE_180):
         self.inbox = Inbox()
@@ -1128,6 +1223,9 @@ class Daemon:
         self.sys = SysInfo()
         self._idle_since = None
         self._videos = {}            # путь -> (к/с, кадры)
+        self.button = Button() if _has_pinctrl() else None
+        self.cat = CatMode()
+        self._busy, self._busy_t = False, -1e9
 
     def state(self, now):
         return build_state(now, self.feed, self.sys, self.inbox.current(now), self.tile)
@@ -1157,12 +1255,19 @@ class Daemon:
             period = 1.0 / FPS
             try:
                 st = self.state(t0)
+                if t0 - self._busy_t > 0.5:
+                    self._busy, self._busy_t = gpio_users_running(), t0
+                self.cat.step(self.button.presses if self.button else 0, self._busy, st["connected"])
                 m = st["msg"]
                 v = self.video(m["video"]) if m and m.get("video") else None
+                t_from = self.inbox.since
+                if v is None and self.cat.show(self._busy, m, st["snap"], st["connected"]):
+                    v = self.video(CAT_PATH)
+                    t_from = 0.0
                 if v is not None:
                     fps, frames = v
                     period = 1.0 / max(1, fps)
-                    cv.buf[:] = frames[int((t0 - self.inbox.since) * fps) % len(frames)]
+                    cv.buf[:] = frames[int((t0 - t_from) * fps) % len(frames)]
                 else:
                     compose(cv, st)
                 # Простой (никто ничего не шлёт) дольше IDLE_DIM_S - тускло.
