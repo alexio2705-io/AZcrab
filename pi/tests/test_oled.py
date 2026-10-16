@@ -85,6 +85,13 @@ class TestTextLayout(unittest.TestCase):
         self.assertEqual(oled.paged(rows, 2, 2 * oled.PAGE_S), ["5"])
         self.assertEqual(oled.paged(rows, 2, 3 * oled.PAGE_S), ["1", "2"])
 
+    def test_first_fit_prefers_full(self):
+        self.assertEqual(oled.first_fit("ход кл2 120мм 18см/с", "ход 120мм 18см/с"),
+                         "ход кл2 120мм 18см/с")
+        self.assertEqual(oled.first_fit("толчок кл1 285мм 19см/с", "толчок 285мм 19см/с"),
+                         "толчок 285мм 19см/с")
+        self.assertEqual(oled.first_fit("а" * 30, "б" * 25), "б" * 20 + "…")
+
     def test_alert_tag_replaced(self):
         st = {"wall": 100.0, "alert": ("[WARN] лидар молчит", 99.0)}
         self.assertEqual(oled._alert(st), "! лидар молчит")

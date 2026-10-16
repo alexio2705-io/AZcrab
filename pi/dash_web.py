@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import json
 import mimetypes
@@ -46,6 +47,7 @@ from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import live  # noqa: E402
+import oled  # noqa: E402
 
 HTTP_PORT = 8888
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -155,11 +157,17 @@ class Hub:
         self._rec_n = 0
         self._rec_flush_t = 0.0
         self.sys = {}
+        # Дисплей сзади робота: тот же снимок -> тот же oled.compose(), кадр
+        # 128x64 (1024 байта, base64) - браузеру. См. oled_loop().
+        self.oled_feed = oled.Feed(start=False)
+        self.oled = None
+        self.oled_ver = 0
 
     # ── из потока связи с nav.py ───────────────────────────────
     def on_connect(self):
         with self.cond:
             self.connected = True
+            self.oled_feed.connected = True
             self.session += 1
             self.hist.clear()
             self._open_rec()
@@ -171,6 +179,7 @@ class Hub:
             if self.connected:
                 self._add_log_local("── пульт: nav.py отключился ──")
             self.connected = False
+            self.oled_feed.connected = False
             self._close_rec()
             self.cond.notify_all()
 
@@ -185,6 +194,7 @@ class Hub:
                 self.log_seq += 1
                 self.log.append((self.log_seq, ts, text))
             m = s.pop("map", None)
+            self.oled_feed.take(dict(s, log=lines), time.monotonic())
             if m is not None and m != self.map:
                 self.map = m
                 self.map_ver += 1
@@ -270,6 +280,13 @@ class Hub:
             msg["map"] = self.map
             client["map_ver"] = self.map_ver
         client["n"] = self.n
+        self.oled_message(client, msg)
+        return msg
+
+    def oled_message(self, client, msg):
+        if self.oled is not None and self.oled_ver != client.get("oled_ver"):
+            msg["oled"] = self.oled
+            client["oled_ver"] = self.oled_ver
         return msg
 
 
@@ -285,6 +302,35 @@ def feed_loop(hub, host, port):
             pass
         hub.on_disconnect()
         time.sleep(RECONNECT_S)
+
+
+def render_oled(hub, cv, sysinfo, now):
+    """Один кадр дисплея в hub.oled. True - кадр поменялся (клиентам уйдёт)."""
+    try:
+        oled.compose(cv, oled.build_state(now, hub.oled_feed, sysinfo))
+    except Exception as e:              # noqa: BLE001 - пульт не должен падать из-за экрана
+        cv.clear()
+        oled.header(cv, "ОШИБКА ЭКРАНА")
+        oled.block(cv, 0, 5, f"{type(e).__name__}: {e}", now)
+    frame = base64.b64encode(bytes(cv.buf)).decode()
+    if frame == hub.oled:
+        return False
+    with hub.cond:
+        hub.oled = frame
+        hub.oled_ver += 1
+        hub.cond.notify_all()
+    return True
+
+
+def oled_loop(hub):
+    """Кадр дисплея с частотой самого демона (oled.FPS). Без снимков он тоже
+    живой: часы, мигание шапки, «nav.py ВЫКЛ». Шлётся только изменившийся."""
+    sysinfo = oled.SysInfo()
+    cv = oled.Canvas()
+    while True:
+        t0 = time.monotonic()
+        render_oled(hub, cv, sysinfo, t0)
+        time.sleep(max(0.0, 1.0 / oled.FPS - (time.monotonic() - t0)))
 
 
 def sys_loop(hub):
@@ -394,7 +440,8 @@ class Handler(BaseHTTPRequestHandler):
                 h = self.hub
                 with h.cond:
                     return self._json({"s": h.snap, "map": h.map, "link": h.link(),
-                                       "log": list(h.log)[-500:], "hist": list(h.hist)})
+                                       "log": list(h.log)[-500:], "hist": list(h.hist),
+                                   "oled": h.oled})
             m = re.match(r"^/cam/(left|right)\.jpg$", path)
             if m:
                 return self._camera(m.group(1))
@@ -460,7 +507,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         h = self.hub
-        client = {"log_seq": 0, "map_ver": -1, "n": -1}
+        client = {"log_seq": 0, "map_ver": -1, "n": -1, "oled_ver": -1}
         with h.cond:
             first = h.message(client)
             first["hist"] = list(h.hist)
@@ -469,8 +516,15 @@ class Handler(BaseHTTPRequestHandler):
         last_ping = time.monotonic()
         while True:
             with h.cond:
-                h.cond.wait_for(lambda: h.n != client["n"], timeout=SSE_PING_S)
-                msg = h.message(client) if h.n != client["n"] else None
+                h.cond.wait_for(lambda: h.n != client["n"] or h.oled_ver != client["oled_ver"],
+                                timeout=SSE_PING_S)
+                if h.n != client["n"]:
+                    msg = h.message(client)
+                elif h.oled_ver != client["oled_ver"]:
+                    # только экран: снимок не повторяем - он ушёл бы в историю дважды
+                    msg = h.oled_message(client, {})
+                else:
+                    msg = None
                 if msg is None and time.monotonic() - last_ping >= SSE_PING_S:
                     msg = {"link": h.link()}
             if msg is not None:
@@ -508,6 +562,7 @@ def main():
     signal.signal(signal.SIGTERM, _on_term)
     threading.Thread(target=feed_loop, args=(hub, a.live_host, a.live_port), daemon=True).start()
     threading.Thread(target=sys_loop, args=(hub,), daemon=True).start()
+    threading.Thread(target=oled_loop, args=(hub,), daemon=True).start()
     print(f"Пульт: http://localhost:{a.port}/  (nav.py: {a.live_host}:{a.live_port}, "
           f"записи: {RUNS_DIR if not a.no_record else 'выкл'})", flush=True)
     try:

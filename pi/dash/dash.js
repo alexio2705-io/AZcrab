@@ -40,6 +40,7 @@ const DIRS = 'NESW';
 
 // ── состояние ────────────────────────────────────────────
 let S = null, MAP = null, LINK = null;
+let OLED = null;                     // кадр дисплея робота: 1024 байта (base64) от dash_web.py
 let HIST = [];
 const LOG = [];
 let mode = 'live';                  // 'live' | 'replay'
@@ -104,6 +105,7 @@ function connect() {
       Object.values(rates).forEach(r => r.clear());
     }
     if (m.map !== undefined) MAP = m.map;
+    if (m.oled) OLED = m.oled;
     if (m.s) pushSnap(m.s);
     if (m.log) pushLog(m.log);
     dirty = true;
@@ -130,7 +132,32 @@ function render() {
   renderSensors();
   renderVictims();
   renderCharts();
+  renderOled();
   model.set(S);
+}
+
+// ── дисплей робота ──────────────────────────────────────
+// Кадр рисует dash_web.py тем же oled.compose(), что и сам дисплей, - здесь
+// только развернуть страницы контроллера (байт = столбец из 8 пикселей,
+// младший бит сверху) в картинку. В повторе записи кадров нет.
+let oledDrawn = null;
+function renderOled() {
+  const live = mode === 'live' && OLED !== null;
+  $('oledBox').classList.toggle('off', !live);
+  $('oledCap').textContent = mode === 'live' ? 'дисплей робота' : 'дисплей: в записи нет';
+  if (!live || OLED === oledDrawn) return;
+  oledDrawn = OLED;
+  const raw = atob(OLED);
+  const ctx = $('oled').getContext('2d');
+  const img = ctx.createImageData(128, 64), d = img.data;
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 128; x++) {
+      const on = (raw.charCodeAt((y >> 3) * 128 + x) >> (y & 7)) & 1;
+      const i = (y * 128 + x) * 4;
+      d[i] = on ? 214 : 0; d[i + 1] = on ? 228 : 0; d[i + 2] = on ? 240 : 0; d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
 }
 
 // ── шапка ───────────────────────────────────────────────

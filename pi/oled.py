@@ -413,6 +413,15 @@ def line(cv, i, s, inv=False):
     cv.text(1, y, clip(s), on=not inv)
 
 
+def first_fit(*options, n=COLS):
+    """Первый вариант строки, что влезает целиком (от подробного к краткому);
+    не влез ни один - последний, обрезанный."""
+    for s in options:
+        if len(s) <= n:
+            return s
+    return clip(options[-1], n)
+
+
 def line2(cv, i, left, right):
     """Строка в две колонки: right прижат к правому краю."""
     right = clip(right, COLS - 1)
@@ -653,8 +662,12 @@ def scr_run(cv, st):
     if d:
         what = {"ramp": "горка", "kick": "толчок"}.get(d.get("mode"), "ход")
         spd = d.get("spd")
-        s = (f"{what} кл{d.get('cell')} {d.get('rem_mm')}мм "
-             f"{'-' if spd is None else round(spd)}см/с")
+        spd = "-" if spd is None else round(spd)
+        cell, rem = d.get("cell"), d.get("rem_mm")
+        # «толчок кл1 285мм 19см/с» - 23 символа: сначала без номера клетки,
+        # потом без «/с»
+        s = first_fit(f"{what} кл{cell} {rem}мм {spd}см/с", f"{what} {rem}мм {spd}см/с",
+                      f"{what} {rem}мм {spd}см")
     else:
         s = snap.get("act") or snap.get("status") or "стоит"
     line(cv, 1, s)
@@ -895,6 +908,21 @@ class TileGuess:
         return self._tc.classify(self._samples, *rgbc[:4])[0]
 
 
+def build_state(now, feed, sysinfo, msg=None, tile=None):
+    """Состояние для compose(): живой снимок (Feed), сведения о Pi (SysInfo),
+    сообщение say() и плитка до старта. Им же рисует экран пульт
+    (dash_web.py) - на странице ровно то, что на дисплее."""
+    with feed._lock:
+        snap, t_snap = feed.snap, feed.t
+    st = {"now": now, "wall": time.time(), "msg": msg,
+          "snap": snap, "connected": feed.connected, "stale": now - t_snap,
+          "rates": feed.rates, "alert": feed.alert, "lastline": feed.lastline,
+          "tile_guess": None, **sysinfo.info}
+    if tile is not None and snap is not None and snap.get("phase") == "wait_button":
+        st["tile_guess"] = tile(snap.get("rgbc"), now)
+    return st
+
+
 class Daemon:
     def __init__(self, rot180=ROTATE_180):
         self.inbox = Inbox()
@@ -905,16 +933,7 @@ class Daemon:
         self._idle_since = None
 
     def state(self, now):
-        f = self.feed
-        with f._lock:
-            snap, t_snap = f.snap, f.t
-        st = {"now": now, "wall": time.time(), "msg": self.inbox.current(now),
-              "snap": snap, "connected": f.connected, "stale": now - t_snap,
-              "rates": f.rates, "alert": f.alert, "lastline": f.lastline,
-              "tile_guess": None, **self.sys.info}
-        if snap is not None and snap.get("phase") == "wait_button":
-            st["tile_guess"] = self.tile(snap.get("rgbc"), now)
-        return st
+        return build_state(now, self.feed, self.sys, self.inbox.current(now), self.tile)
 
     def run(self):
         _log(f"дисплей: {I2C_DEV}, поворот {'180°' if self.oled.rot180 else '0°'}")
@@ -989,6 +1008,7 @@ def demo_states():
                 "цвет: зеркальная", "видит: зерк d=1.4 C=412",
                 "бе3 чё2 си1 кр0 зе2 во1",
                 "! C гулял на 15% (робот двигался?) - не сохранено, нажми ещё раз"]}),
+        "4b_run_kick": mk(snap={"drive": {"cell": 1, "rem_mm": 285, "spd": 19.4, "mode": "kick"}}),
         "12_run_long_alert": mk(alert=(
             "[WARN] нет калибровки цвета (~/maze/tile_calib.json, нужны хотя бы белая "
             "и чёрная) - старые пороги, ЧЕКПОИНТЫ НЕ РАСПОЗНАЮТСЯ", wall - 2)),

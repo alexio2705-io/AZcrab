@@ -131,6 +131,23 @@ class TestHub(unittest.TestCase):
         self.assertNotIn("log", m2)
         self.assertNotIn("log", h.snap, "лог не хранится в последнем снимке")
 
+    def test_oled_frame_follows_snapshot(self):
+        import base64
+        import oled
+        h = dash_web.Hub(record=False)
+        si = oled.SysInfo(start=False)
+        cv = oled.Canvas()
+        self.assertTrue(dash_web.render_oled(h, cv, si, time.monotonic()))
+        idle = h.oled
+        self.assertEqual(len(base64.b64decode(idle)), 1024)
+        h.on_connect()
+        h.on_snapshot(self.snap(1.0, phase="exploring", run_s=12.0))
+        self.assertTrue(dash_web.render_oled(h, cv, si, time.monotonic()))
+        self.assertNotEqual(h.oled, idle)            # уже экран заезда, а не простоя
+        c = {"log_seq": 0, "map_ver": -1, "n": -1, "oled_ver": -1}
+        self.assertIn("oled", h.message(c))
+        self.assertNotIn("oled", h.message(c))       # тот же кадр второй раз не шлём
+
     def test_history_window(self):
         h = dash_web.Hub(record=False)
         for i in range(200):
