@@ -1117,11 +1117,13 @@ class Daemon:
                 compose(cv, st)
                 # Простой (никто ничего не шлёт) дольше IDLE_DIM_S - тускло.
                 idle = st["msg"] is None and st["snap"] is None
+                dim = False
                 if not idle:
                     self._idle_since = None
                 elif self._idle_since is None:
                     self._idle_since = t0
-                dim = idle and t0 - self._idle_since > IDLE_DIM_S
+                else:
+                    dim = t0 - self._idle_since > IDLE_DIM_S
                 self.oled.contrast = DIM_CONTRAST if dim else CONTRAST
             except Exception as e:              # кривой снимок не должен гасить экран
                 _log(f"[WARN] экран не нарисовался: {type(e).__name__}: {e}")
