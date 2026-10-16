@@ -69,6 +69,8 @@ LOG_PATH = os.path.expanduser("~/maze/oled.log")
 SYSINFO_S = 10.0             # как часто обновлять IP/температуру/питание
 ALERT_SHOW_S = 15.0          # сколько держать последнее [WARN] внизу экрана
 STALE_S = 2.0                # снимков нет дольше - nav.py «молчит»
+VICTIM_SHOW_S = 8.0          # прочитанная метка на весь экран: мигание 5 с + выдача
+KITS_PER_COLUMN = 4          # как в nav.py, если снимок старый и kits_max не прислал
 LEVEL_STRIDE = 1000          # как в nav.py: cy = y + этаж * LEVEL_STRIDE
 RUN_LIMIT_S = 480.0
 
@@ -129,6 +131,34 @@ class Canvas:
                             self.fill(x + rx * scale, y + ry * scale, scale, scale, on)
             x += fw * scale
         return x
+
+    def rect(self, x, y, w, h, on=True):
+        """Контур прямоугольника в 1 пиксель."""
+        self.fill(x, y, w, 1, on)
+        self.fill(x, y + h - 1, w, 1, on)
+        self.fill(x, y, 1, h, on)
+        self.fill(x + w - 1, y, 1, h, on)
+
+    def disc(self, cx, cy, r, on=True):
+        ri = int(r) + 1
+        for y in range(int(cy) - ri, int(cy) + ri + 2):
+            for x in range(int(cx) - ri, int(cx) + ri + 2):
+                if (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                    self.pixel(x, y, on)
+
+    def stroke(self, x0, y0, x1, y1, w=5.0):
+        """Отрезок толщиной w (круглая кисть) - для крупных значков."""
+        n = max(1, int(max(abs(x1 - x0), abs(y1 - y0))))
+        for k in range(n + 1):
+            self.disc(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n, w / 2)
+
+    def arc(self, cx, cy, rx, ry, a0, a1, w=5.0):
+        """Дуга эллипса толщиной w; углы в градусах, 0 - вправо, 90 - вниз."""
+        import math
+        n = max(8, int(abs(a1 - a0) / 360.0 * 2 * math.pi * max(rx, ry)))
+        for k in range(n + 1):
+            a = math.radians(a0 + (a1 - a0) * k / n)
+            self.disc(cx + rx * math.cos(a), cy + ry * math.sin(a), w / 2)
 
     def pages(self):
         return [bytes(self.buf[p * W:(p + 1) * W]) for p in range(H // 8)]
@@ -413,15 +443,6 @@ def line(cv, i, s, inv=False):
     cv.text(1, y, clip(s), on=not inv)
 
 
-def first_fit(*options, n=COLS):
-    """Первый вариант строки, что влезает целиком (от подробного к краткому);
-    не влез ни один - последний, обрезанный."""
-    for s in options:
-        if len(s) <= n:
-            return s
-    return clip(options[-1], n)
-
-
 def line2(cv, i, left, right):
     """Строка в две колонки: right прижат к правому краю."""
     right = clip(right, COLS - 1)
@@ -484,29 +505,15 @@ def _pos(snap):
     return s
 
 
-def _walls(snap):
-    # Стрелки - относительно робота (человек стоит сзади, ↑ - его перед).
-    # Буквами не вышло: «З» в 6x10 от «3» не отличить.
-    w = snap.get("walls") or {}
-    return (f"↑{_cm(w.get('front'))} →{_cm(w.get('right'))} "
-            f"←{_cm(w.get('left'))} ↓{_cm(w.get('back'))} см")
+def _victims(snap):
+    """Найдено жертв - без фейковых мишеней (старый nav.py: все метки)."""
+    v = snap.get("victims_real")
+    return snap.get("victims_n", 0) if v is None else v
 
 
 def _kits(snap):
     k = snap.get("kits") or {}
     return f"кит{k.get('L', '-')}/{k.get('R', '-')}"
-
-
-def _health(st):
-    snap = st["snap"]
-    r = st.get("rates") or {}
-    esp, lid = r.get("esp"), r.get("lidar")
-    s = f"ESP{'--' if esp is None else f'{esp:.0f}'} лид{'--' if lid is None else f'{lid:.0f}'}"
-    lk = snap.get("link") or {}
-    errs = (lk.get("crc") or 0) + (lk.get("lost") or 0) + (lk.get("cmd_err") or 0)
-    if errs:
-        s += f" ош{errs}"
-    return s + " " + cams_str(snap.get("cams")).replace(" ", "")
 
 
 def _alert(st):
@@ -589,7 +596,7 @@ def scr_gone(cv, st):
            blink=st["connected"])
     ph = snap.get("phase")
     line(cv, 0, f"было: {PHASE.get(ph, ph or '—')}")
-    line(cv, 1, f"время {mmss(snap.get('run_s'))} жертв{snap.get('victims_n', 0)}")
+    line(cv, 1, f"время {mmss(snap.get('run_s'))} жертв{_victims(snap)}")
     line(cv, 2, f"клеток {snap.get('visited_n', '—')} {_kits(snap)}")
     a = _alert(st)
     if a:
@@ -651,40 +658,191 @@ def scr_wait(cv, st):
         line(cv, 4, _pos(snap))
 
 
+# ── заезд: только то, что успеваешь прочесть на ходу ─────────────
+# Слева - комплекты в столбиках (как стоят в роботе: Л слева, если смотреть
+# из-за робота), справа крупно - плитка под роботом, ниже - время и что
+# необычного (едет домой, пауза), внизу на всю ширину - что сломалось.
+# Фазы, расстояния до стен и частоты на ходу не прочесть - их здесь нет.
+TILE_BIG = {"white": "БЕЛАЯ", "black": "ЧЁРНАЯ", "blue": "СИНЯЯ", "red": "КРАСНАЯ",
+            "silver": "ЗЕРКАЛО", "air": "ВОЗДУХ", "?": "?"}
+RUN_TAG = {"returning": "ДОМОЙ", "time": "ДОМОЙ", "explored": "ДОМОЙ", "cap": "ДОМОЙ",
+           "at_start": "СТАРТ", "sleep": "ПАУЗА"}
+
+
+def kits_columns(cv, snap, x0=0):
+    """Два столбика по KITS_PER_COLUMN ячеек: залитая - комплект на месте.
+    Выдаются снизу, поэтому остаток - нижние ячейки."""
+    k = snap.get("kits") or {}
+    kmax = snap.get("kits_max") or KITS_PER_COLUMN
+    top, bottom, gap = 10, 51, 2
+    h = max(3, (bottom - top + 1 - (kmax - 1) * gap) // kmax)
+    for i, (side, name) in enumerate((("L", "Л"), ("R", "П"))):
+        x = x0 + 1 + i * 15
+        cv.text(x + 4, 0, name, font="5x8")
+        left = k.get(side)
+        for j in range(kmax):
+            y = top + j * (h + gap)
+            if left is not None and j >= kmax - left:
+                cv.fill(x, y, 12, h)
+            else:
+                cv.rect(x, y, 12, h)
+
+
+def tile_box(cv, tile, x, y, w, h):
+    """Плитка под роботом крупно. Чёрная - залитая рамка (как и выглядит)."""
+    word = TILE_BIG.get(tile, "—" if tile is None else str(tile).upper())
+    word = clip(word, (w - 4) // 12)
+    black = tile == "black"
+    if black:
+        cv.fill(x, y, w, h)
+    else:
+        cv.rect(x, y, w, h)
+    cv.text(x + (w - 12 * len(word)) // 2, y + (h - 20) // 2, word, scale=2, on=not black)
+
+
+def _problems(st):
+    """Что не так с железом прямо сейчас - коротко, для нижней строки."""
+    snap = st["snap"]
+    r = st.get("rates") or {}
+    out = []
+    esp, lid = r.get("esp"), r.get("lidar")
+    if esp is not None and esp < 100:
+        out.append(f"ESP {esp:.0f}Гц")
+    if lid is not None and lid < 5:
+        out.append(f"лидар {lid:.0f}Гц")
+    cams = snap.get("cams") or {}
+    for side, name in (("left", "Л"), ("right", "П")):
+        c = cams.get(side)
+        if c and (c.get("dead") or c.get("failed")):
+            out.append(f"камера {name}")
+    return ("! " + ", ".join(out)) if out else None
+
+
+def bottom_bar(cv, text, t):
+    """Нижняя строка на всю ширину, инверсией; длинное листается по строке."""
+    page = paged(wrap(text), 1, t)
+    line(cv, 4, page[0] if page else "", inv=True)
+
+
 def scr_run(cv, st):
     t, snap = st["now"], st["snap"]
     ph = snap.get("phase")
+    kits_columns(cv, snap)
+    cv.fill(31, 0, 1, 52)
+    x0, w = 34, W - 34
+    tile_box(cv, snap.get("tile"), x0, 0, w, 24)
+    # время заезда; меньше минуты до конца - мигает
     tl = snap.get("t_left")
     late = tl is not None and tl < 60 and ph in ("exploring", "time", "returning")
-    header(cv, PHASE.get(ph, ph or "?"), mmss(snap.get("run_s")), t, blink=late)
-    line(cv, 0, _pos(snap))
-    d = snap.get("drive")
-    if d:
-        what = {"ramp": "горка", "kick": "толчок"}.get(d.get("mode"), "ход")
-        spd = d.get("spd")
-        spd = "-" if spd is None else round(spd)
-        cell, rem = d.get("cell"), d.get("rem_mm")
-        # «толчок кл1 285мм 19см/с» - 23 символа: сначала без номера клетки,
-        # потом без «/с»
-        s = first_fit(f"{what} кл{cell} {rem}мм {spd}см/с", f"{what} {rem}мм {spd}см/с",
-                      f"{what} {rem}мм {spd}см")
+    tm = mmss(snap.get("run_s"))
+    if late and int(t * 2) % 2 == 0:
+        cv.fill(x0, 27, 6 * len(tm) + 2, 11)
+        cv.text(x0 + 1, 28, tm, on=False)
     else:
-        s = snap.get("act") or snap.get("status") or "стоит"
-    line(cv, 1, s)
-    line(cv, 2, _walls(snap))
-    a = _alert(st)
+        cv.text(x0 + 1, 28, tm)
+    tag = RUN_TAG.get(ph)
+    if tag:
+        tw = 6 * len(tag) + 2
+        cv.fill(W - tw, 27, tw, 11)
+        cv.text(W - tw + 1, 28, tag, on=False)
+    cv.text(x0 + 1, 40, f"жертв {_victims(snap)}")
+    a = _alert(st) or _problems(st)
     if ph == "sleep":
-        line(cv, 3, f"{TILE.get(snap.get('tile'), '—')} жертв{snap.get('victims_n', 0)} "
-                    f"{_kits(snap)}")
-        line(cv, 4, "рестарт с чекпоинта", inv=True)
+        bottom_bar(cv, "пауза ESP: рестарт с чекпоинта", t)
     elif a:
-        # Предупреждение - на две нижние строки, инверсией, пока свежее.
-        block(cv, 3, 2, a, t, inv=True)
+        bottom_bar(cv, a, t)
+
+
+# ── прочитанная метка - на весь экран ────────────────────────────
+GLYPH = {"damaged": "Φ", "stable": "Ψ", "unharmed": "Ω"}
+RING_NAME = {"black": "чёрный", "red": "красный", "yellow": "жёлтый",
+             "green": "зелёный", "blue": "синий"}
+RING_SCORE = {"black": -2, "red": -1, "yellow": 0, "green": 1, "blue": 2}
+
+
+def draw_glyph(cv, ch, cx=63.5, w=5.0):
+    """Φ/Ψ/Ω во весь экран - нарисованы линиями (растровый шрифт в 6 раз
+    крупнее был бы лесенкой)."""
+    if ch == "Φ":
+        cv.stroke(cx, 2, cx, 61, w)
+        cv.arc(cx, 31.5, 24, 17, 0, 360, w)
+        cv.stroke(cx - 8, 2, cx + 8, 2, w)
+        cv.stroke(cx - 8, 61, cx + 8, 61, w)
+    elif ch == "Ψ":
+        cv.stroke(cx, 4, cx, 60, w)
+        cv.arc(cx, 4, 22, 34, 0, 180, w)
+        cv.stroke(cx - 9, 60, cx + 9, 60, w)
+    elif ch == "Ω":
+        cv.arc(cx, 27, 22, 22, 125, 415, w)
+        cv.stroke(cx - 12.6, 45, cx - 16.5, 58, w)
+        cv.stroke(cx + 12.6, 45, cx + 16.5, 58, w)
+        cv.stroke(cx - 27.5, 58, cx - 15, 58, w)
+        cv.stroke(cx + 15, 58, cx + 27.5, 58, w)
     else:
-        tile = snap.get("tile")
-        line(cv, 3, f"{TILE.get(tile, tile or '—')} жертв{snap.get('victims_n', 0)} "
-                    f"{_kits(snap)}")
-        line(cv, 4, _health(st))
+        big(cv, 22, ch)
+
+
+def _ring_on(color, x, y):
+    """Цвет кольца - плотностью заливки: чёрное сплошное, жёлтое пустое."""
+    if color == "black":
+        return True
+    if color == "blue":
+        return not (x % 2 == 0 and y % 2 == 0)
+    if color == "green":
+        return (x + y) % 2 == 0
+    if color == "red":
+        return x % 2 == 0 and y % 2 == 0
+    if color == "yellow":
+        return False
+    return x % 4 == 0 and y % 4 == 0        # не прочиталось
+
+
+def draw_target(cv, rings, cx=31.5, cy=31.5, r_out=31.0):
+    """Мишень: 5 колец от центра наружу, каждое залито по своему цвету,
+    между кольцами - тонкая граница."""
+    import math
+    step = r_out / 5
+    for y in range(int(cy - r_out) - 1, int(cy + r_out) + 2):
+        for x in range(int(cx - r_out) - 1, int(cx + r_out) + 2):
+            r = math.hypot(x - cx, y - cy)
+            if r > r_out + 0.5:
+                continue
+            k = min(4, int(r / step))
+            edge = abs(r - step * round(r / step)) < 0.5 and r > 0.5
+            if edge or _ring_on(rings[k] if k < len(rings) else None, x, y):
+                cv.pixel(x, y)
+
+
+def scr_cog(cv, v):
+    rings = list(v.get("rings") or [])
+    draw_target(cv, rings)
+    x = 66
+    for i, c in enumerate(rings[:5]):
+        y = 1 + 9 * i
+        for yy in range(y + 1, y + 7):            # образец заливки
+            for xx in range(x, x + 6):
+                if _ring_on(c, xx, yy):
+                    cv.pixel(xx, yy)
+        cv.rect(x - 1, y, 8, 8)
+        sc = RING_SCORE.get(c)
+        sc = "" if sc is None else f"{sc:+d}" if sc else "0"
+        cv.text(x + 9, y, clip(f"{RING_NAME.get(c, c)} {sc}", 10), font="5x8")
+    cv.fill(x - 1, 48, W - x + 1, 1)
+    cs, typ = v.get("checksum"), v.get("type")
+    if cs is None:
+        res = "кольца ?"
+    elif typ in GLYPH:
+        res = f"{cs:+d} → {GLYPH[typ]}"
+    else:
+        res = f"ФЕЙК {cs:+d}"
+    cv.text(x, 52, clip(res, (W - x) // 6))
+
+
+def scr_victim(cv, st):
+    v = st["victim"]
+    if v.get("class") == "cognetive" or v.get("rings"):
+        return scr_cog(cv, v)
+    draw_glyph(cv, GLYPH.get(v.get("type")) or str(v.get("label") or "?"))
 
 
 def scr_finish(cv, st):
@@ -692,7 +850,7 @@ def scr_finish(cv, st):
     ph = snap.get("phase")
     header(cv, PHASE.get(ph, ph), "", t, blink=ph == "blinking")
     big(cv, 13, mmss(snap.get("run_s")))
-    line(cv, 2, f"жертв {snap.get('victims_n', 0)}  {_kits(snap)}")
+    line(cv, 2, f"жертв {_victims(snap)}  {_kits(snap)}")
     line(cv, 3, f"клеток {snap.get('visited_n', '—')}")
     line(cv, 4, f"IP {st.get('ip') or '—'}")
 
@@ -716,6 +874,8 @@ def compose(cv, st):
         return scr_wait(cv, st)
     if ph in ("blinking", "done"):
         return scr_finish(cv, st)
+    if st.get("victim"):
+        return scr_victim(cv, st)
     return scr_run(cv, st)
 
 
@@ -821,6 +981,8 @@ class Feed:
         self.connected = False
         self.alert = None            # (текст, time.time() строки)
         self.lastline = None
+        self.victim = None           # (метка из _victim_log, monotonic, когда пришла)
+        self._vic_n = None           # сколько меток уже видели (None - ещё ни одной карты)
         self._hist = deque(maxlen=40)
         self.rates: dict[str, float | None] = {}
         self._lock = threading.Lock()
@@ -848,7 +1010,14 @@ class Feed:
             if any(tag in text for tag in ALERT_TAGS):
                 self.alert = (text, ts)
         s.pop("scan", None)
-        s.pop("map", None)
+        m = s.pop("map", None)
+        if m is not None:
+            vics = m.get("victims") or []
+            # Первая карта (подключились посреди заезда) - старые метки не
+            # показываем; стало меньше - nav.py перезапустили.
+            if self._vic_n is not None and len(vics) > self._vic_n:
+                self.victim = (vics[-1], now)
+            self._vic_n = len(vics)
         self._hist.append((now, s.get("telem_n"), s.get("scan_n")))
         old = next((h for h in self._hist if now - h[0] <= 1.5), None)
         if old is not None and now - old[0] > 0.5:
@@ -917,7 +1086,9 @@ def build_state(now, feed, sysinfo, msg=None, tile=None):
     st = {"now": now, "wall": time.time(), "msg": msg,
           "snap": snap, "connected": feed.connected, "stale": now - t_snap,
           "rates": feed.rates, "alert": feed.alert, "lastline": feed.lastline,
-          "tile_guess": None, **sysinfo.info}
+          "tile_guess": None, "victim": None, **sysinfo.info}
+    if feed.victim is not None and now - feed.victim[1] < VICTIM_SHOW_S:
+        st["victim"] = feed.victim[0]
     if tile is not None and snap is not None and snap.get("phase") == "wait_button":
         st["tile_guess"] = tile(snap.get("rgbc"), now)
     return st
@@ -1008,11 +1179,20 @@ def demo_states():
                 "цвет: зеркальная", "видит: зерк d=1.4 C=412",
                 "бе3 чё2 си1 кр0 зе2 во1",
                 "! C гулял на 15% (робот двигался?) - не сохранено, нажми ещё раз"]}),
-        "4b_run_kick": mk(snap={"drive": {"cell": 1, "rem_mm": 285, "spd": 19.4, "mode": "kick"}}),
         "12_run_long_alert": mk(alert=(
             "[WARN] нет калибровки цвета (~/maze/tile_calib.json, нужны хотя бы белая "
             "и чёрная) - старые пороги, ЧЕКПОИНТЫ НЕ РАСПОЗНАЮТСЯ", wall - 2)),
         "11_test": dict(base, snap=None, msg=_test_msg()),
+        "13_run_black_home": mk(snap={"tile": "black", "phase": "returning", "kits": {"L": 0, "R": 2}}),
+        "14_victim_phi": mk(victim={"type": "damaged", "class": "phi", "label": "Φ"}),
+        "15_victim_psi": mk(victim={"type": "stable", "class": "psi", "label": "Ψ"}),
+        "16_victim_omega": mk(victim={"type": "unharmed", "class": "omega", "label": "Ω"}),
+        "17_victim_cog": mk(victim={"type": "stable", "class": "cognetive", "label": "+1",
+                                    "rings": ["green", "red", "yellow", "blue", "red"],
+                                    "checksum": 1}),
+        "18_victim_cog_fake": mk(victim={"type": "fake", "class": "cognetive", "label": "+3",
+                                         "rings": ["blue", "green", "blue", "yellow", "black"],
+                                         "checksum": 3}),
     }
 
 

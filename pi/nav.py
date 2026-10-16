@@ -5392,9 +5392,12 @@ def _live_snapshot(n):
                  "cmd_err": st["esp_cmd_err"]},
         "lidar": {"dropped": _lidar_dropped, "restarts": _lidar_restarts},
         "kits": {s: KITS_PER_COLUMN - u for s, u in _kits_used.items()},
+        "kits_max": KITS_PER_COLUMN,
         "tick_ms": tick,
         "cams": _watcher.live_info() if _watcher is not None else None,
         "victims_n": len(_victim_log),
+        # настоящие жертвы (мигали), без фейковых мишеней - для дисплея
+        "victims_real": sum(1 for v in list(_victim_log) if v.get("blink")),
         "visited_n": len(_visited),
         "t_left": _r(time_left()),
         "side": _side_pref,

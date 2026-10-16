@@ -194,7 +194,7 @@ class Hub:
                 self.log_seq += 1
                 self.log.append((self.log_seq, ts, text))
             m = s.pop("map", None)
-            self.oled_feed.take(dict(s, log=lines), time.monotonic())
+            self.oled_feed.take(dict(s, log=lines, map=m), time.monotonic())
             if m is not None and m != self.map:
                 self.map = m
                 self.map_ver += 1

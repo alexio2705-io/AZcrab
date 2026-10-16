@@ -85,13 +85,6 @@ class TestTextLayout(unittest.TestCase):
         self.assertEqual(oled.paged(rows, 2, 2 * oled.PAGE_S), ["5"])
         self.assertEqual(oled.paged(rows, 2, 3 * oled.PAGE_S), ["1", "2"])
 
-    def test_first_fit_prefers_full(self):
-        self.assertEqual(oled.first_fit("ход кл2 120мм 18см/с", "ход 120мм 18см/с"),
-                         "ход кл2 120мм 18см/с")
-        self.assertEqual(oled.first_fit("толчок кл1 285мм 19см/с", "толчок 285мм 19см/с"),
-                         "толчок 285мм 19см/с")
-        self.assertEqual(oled.first_fit("а" * 30, "б" * 25), "б" * 20 + "…")
-
     def test_alert_tag_replaced(self):
         st = {"wall": 100.0, "alert": ("[WARN] лидар молчит", 99.0)}
         self.assertEqual(oled._alert(st), "! лидар молчит")
@@ -153,6 +146,38 @@ class TestScreens(unittest.TestCase):
         self.assertTrue(_same(oled.scr_gone, s["9_gone"]))
         stale = dict(s["4_run"], stale=5.0)
         self.assertTrue(_same(oled.scr_gone, stale))
+
+    def test_victim_screen_while_fresh(self):
+        self.assertTrue(_same(oled.scr_victim, self.states["14_victim_phi"]))
+        self.assertTrue(_same(oled.scr_victim, self.states["17_victim_cog"]))
+        # экран ожидания (моторы выключены) важнее метки
+        st = dict(self.states["6_wait_motors"], victim=self.states["14_victim_phi"]["victim"])
+        self.assertTrue(_same(oled.scr_wait, st))
+
+    def test_letters_are_drawn_big(self):
+        for ch in "ΦΨΩ":
+            cv = oled.Canvas()
+            oled.draw_glyph(cv, ch)
+            ys = [y for y in range(oled.H) for x in range(oled.W) if cv.get(x, y)]
+            self.assertGreater(max(ys) - min(ys), 50, ch)       # почти во всю высоту
+
+    def test_kits_columns_fill_from_bottom(self):
+        cv = oled.Canvas()
+        oled.kits_columns(cv, {"kits": {"L": 1, "R": 4}, "kits_max": 4})
+        # середина ячеек столбика Л (x 1..12): залита только нижняя
+        filled = [cv.get(7, 10 + j * 11 + 4) for j in range(4)]
+        self.assertEqual(filled, [False, False, False, True])
+        self.assertTrue(all(cv.get(22, 10 + j * 11 + 4) for j in range(4)))
+
+    def test_fake_targets_are_not_victims(self):
+        self.assertEqual(oled._victims({"victims_n": 3, "victims_real": 2}), 2)
+        self.assertEqual(oled._victims({"victims_n": 3}), 3)       # старый nav.py
+
+    def test_problems_only_when_broken(self):
+        st = dict(self.states["4_run"])
+        self.assertIsNone(oled._problems(st))
+        st = dict(st, rates={"esp": 40.0, "lidar": 10.0})
+        self.assertEqual(oled._problems(st), "! ESP 40Гц")
 
     def test_old_alert_not_shown(self):
         st = self.states["5_run_alert"]
@@ -284,6 +309,23 @@ class TestMessages(unittest.TestCase):
 
     def test_say_without_daemon_is_silent(self):
         oled.say("никого", ["нет"], port=9)          # discard - не бросает
+
+
+class TestFeedVictims(unittest.TestCase):
+    def test_only_new_victims_are_shown(self):
+        f = oled.Feed(start=False)
+        si = oled.SysInfo(start=False)
+        old = {"type": "damaged", "label": "Φ"}
+        f.take({"phase": "exploring", "map": {"victims": [old]}}, 10.0)
+        self.assertIsNone(f.victim)                 # была до подключения - не показываем
+        new = {"type": "stable", "label": "Ψ"}
+        f.take({"phase": "exploring", "map": {"victims": [old, new]}}, 11.0)
+        f.connected = True
+        self.assertEqual(oled.build_state(11.5, f, si)["victim"], new)
+        self.assertIsNone(oled.build_state(11.0 + oled.VICTIM_SHOW_S + 0.1, f, si)["victim"])
+        f.take({"phase": "boot", "map": {"victims": []}}, 30.0)     # nav.py перезапустили
+        f.take({"phase": "exploring", "map": {"victims": [old]}}, 31.0)
+        self.assertEqual(oled.build_state(31.5, f, si)["victim"], old)
 
 
 class TestFeed(unittest.TestCase):
