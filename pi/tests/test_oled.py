@@ -339,6 +339,14 @@ class TestCatAndButton(unittest.TestCase):
             proc(102, "/home/madness/maze/venv/bin/python -u /home/madness/maze/nav.py --no-color")
             self.assertTrue(oled.gpio_users_running(d))
 
+    def test_cat_starts_from_first_frame_each_time(self):
+        t = oled.restart_clock(None, True, 10.0)
+        self.assertEqual(t, 10.0)
+        self.assertEqual(oled.restart_clock(t, True, 14.0), 10.0)   # идёт дальше
+        t = oled.restart_clock(t, False, 15.0)                       # переключили на IP
+        self.assertIsNone(t)
+        self.assertEqual(oled.restart_clock(t, True, 20.0), 20.0)   # вернули - с начала
+
     def test_cat_mode(self):
         c = oled.CatMode()
         self.assertTrue(c.show(False, None, None, False))          # после включения - кот

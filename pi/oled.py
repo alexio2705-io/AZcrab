@@ -1191,6 +1191,14 @@ def gpio_users_running(proc="/proc"):
     return False
 
 
+def restart_clock(t_start, showing, now):
+    """Начало отсчёта анимации: пропала с экрана - None, снова появилась -
+    с этого момента (то есть с первого кадра), иначе - прежнее."""
+    if not showing:
+        return None
+    return now if t_start is None else t_start
+
+
 class CatMode:
     """Кот на экране простоя: после включения - кот, кнопка - экран с IP и
     обратно. Пока работает nav.py/tile_calib.py, кнопка - их (не
@@ -1225,6 +1233,7 @@ class Daemon:
         self._videos = {}            # путь -> (к/с, кадры)
         self.button = Button() if _has_pinctrl() else None
         self.cat = CatMode()
+        self._cat_t0 = None          # когда кот появился на экране: с этого кадра - с начала
         self._busy, self._busy_t = False, -1e9
 
     def state(self, now):
@@ -1261,9 +1270,12 @@ class Daemon:
                 m = st["msg"]
                 v = self.video(m["video"]) if m and m.get("video") else None
                 t_from = self.inbox.since
+                cat = None
                 if v is None and self.cat.show(self._busy, m, st["snap"], st["connected"]):
-                    v = self.video(CAT_PATH)
-                    t_from = 0.0
+                    cat = v = self.video(CAT_PATH)
+                self._cat_t0 = restart_clock(self._cat_t0, cat is not None, t0)
+                if self._cat_t0 is not None:
+                    t_from = self._cat_t0
                 if v is not None:
                     fps, frames = v
                     period = 1.0 / max(1, fps)
