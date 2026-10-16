@@ -35,6 +35,26 @@ WATCH_LATENCY_S = 0.09
 CLASS_OF = {"damaged": "phi", "stable": "psi", "unharmed": "omega", "fake": "cognetive"}
 LABEL = {"damaged": "Φ", "stable": "Ψ", "unharmed": "Ω", "fake": "+3"}
 REAL = ("damaged", "stable", "unharmed")
+# Когнитивная мишень: цвета 5 колец от центра наружу, баллы - как в
+# ring_colors.COLOR_SCORE; сумма 2/1/0 - Φ/Ψ/Ω, любая другая - фейк.
+RING_SCORE = {"black": -2, "red": -1, "yellow": 0, "green": 1, "blue": 2}
+RING_SUM = {"damaged": 2, "stable": 1, "unharmed": 0}
+
+
+def fake_rings(idx, t):
+    """Правдоподобные кольца мишени idx, прочитанной как тип t: (цвета, сумма).
+    Свой генератор (по idx и t), чтобы не сдвигать случайные числа камер -
+    иначе заезды переставали бы совпадать с прошлыми прогонами."""
+    import random
+    rng = random.Random(f"rings:{idx}:{t}")
+    target = RING_SUM.get(t)
+    if target is None:
+        target = rng.choice((-2, -1, 3, 4))
+    names = list(RING_SCORE)
+    while True:
+        rings = [rng.choice(names) for _ in range(5)]
+        if sum(RING_SCORE[c] for c in rings) == target:
+            return rings, target
 
 _CAL = watch_logic.CAM_CALIB_Y_MM
 
@@ -112,7 +132,8 @@ def detections(sim, side, still, rng=None):
         t = v.type
         if t in REAL and n.vis_wrong and rng.random() < n.vis_wrong:
             t = rng.choice([x for x in REAL if x != t])
-        out.append((CLASS_OF[t], round(0.55 + 0.4 * rng.random(), 3), box, i, t))
+        cls = "cognetive" if getattr(v, "kind", "letter") == "cog" else CLASS_OF[t]
+        out.append((cls, round(0.55 + 0.4 * rng.random(), 3), box, i, t))
     if still and not out and n.vis_false and rng.random() < n.vis_false:
         t = rng.choice(REAL)
         out.append((CLASS_OF[t], round(0.46 + 0.2 * rng.random(), 3), (100.0, 110.0, 220.0, 230.0), None, t))
@@ -143,16 +164,20 @@ class FakeDetector:
         if not found:
             return None
         cls, conf, box, idx, t = max(found, key=lambda f: f[1])
+        rings, checksum, label = None, None, LABEL[t]
+        if cls == "cognetive" and idx is not None:
+            rings, checksum = fake_rings(idx, t)
+            label = f"{checksum:+d}"
         result = {
-            "type": t, "label": LABEL[t], "image": None, "cell": (cell_x, cell_y),
+            "type": t, "label": label, "image": None, "cell": (cell_x, cell_y),
             "class": cls, "conf": conf, "blink": t in REAL,
-            "rings": None, "checksum": 3 if t == "fake" else None,
+            "rings": rings, "checksum": checksum,
             "box_y": (round(box[1] / 320.0, 4), round(box[3] / 320.0, 4)),
             "_truth": idx,
         }
         self.log.append(result)
         print(f"[VD] {'★ ЖЕРТВА' if t in REAL else '○ МЕТКА (без мигания)'} {t.upper()} "
-              f"({LABEL[t]})  клетка=({cell_x},{cell_y})  класс={cls}  conf={conf:.2f}  [сим]")
+              f"({label})  клетка=({cell_x},{cell_y})  класс={cls}  conf={conf:.2f}  [сим]")
         return result
 
     def best_fast(self):

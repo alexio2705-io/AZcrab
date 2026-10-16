@@ -495,7 +495,8 @@ def build_world(spec):
     for x, y, t in spec["tiles"]:
         w.tiles[(x, y)] = t
     for v in spec["victims"]:
-        w.victims.append(ms.Victim(tuple(v["cell"]), v["d"], v["type"], float(v["along"])))
+        w.victims.append(ms.Victim(tuple(v["cell"]), v["d"], v["type"], float(v["along"]),
+                                   v.get("kind", "letter")))
     half = ms.CELL / 2
     for cx, cy in high:
         x, y = cx * ms.CELL, cy * ms.CELL

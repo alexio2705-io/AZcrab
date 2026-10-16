@@ -117,6 +117,7 @@ class Victim:
     d: int
     type: str
     along: float = 0.0
+    kind: str = "letter"      # "letter" - буква Φ/Ψ/Ω, "cog" - когнитивная мишень
 
     def point(self, w=None):
         """Центр метки на поверхности стены (x, y), мм."""
