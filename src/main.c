@@ -9,6 +9,7 @@
 #include "gyro.h"
 #include "motor.h"
 #include "robot_link.h"
+#include "drive_test.h"
 
 static const char *TAG = "MAIN";
 
@@ -55,6 +56,10 @@ static void run_button_test(void)
 // 1 = only print BTN_1, overriding RUN_MAZE below.
 #define BUTTON_TEST 0
 
+// 1 = тест шин: BTN_1 - проехать 50 см вперёд без RPi (drive_test.c).
+// Перекрывает RUN_MAZE ниже. Перед лабиринтом вернуть 0.
+#define DRIVE_TEST 1
+
 // 1 = the maze run: sensors + motors, driven by the RPi over UART
 // (robot_link.c). 0 = the servo dispense bench test instead.
 #define RUN_MAZE 1
@@ -63,6 +68,17 @@ void app_main(void)
 {
 #if BUTTON_TEST
     run_button_test();
+#endif
+
+#if DRIVE_TEST
+    ESP_LOGI(TAG, "=== Tyre drive test boot ===");
+    buttons_init();
+    gyro_init();
+    motor_can_init();
+    motor_enc_start();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    motor_probe(1, 5);
+    drive_test_run(); // never returns
 #endif
 
 #if RUN_MAZE
