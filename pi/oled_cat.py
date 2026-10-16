@@ -18,6 +18,8 @@
 
   - силуэт - прямо из кадра ролика (фон - светлое, связанное с краем), горит
     целиком: прыжки, сплющивание и наклоны - точь-в-точь;
+  - вид «стикер»: силуэт обведён тёмной линией внутри края, глаза крупные
+    с двумя бликами (из четырёх вариантов рисунка выбран этот);
   - черты - нарисованы там, где они в кадре: глаза ищутся как два тёмных
     пятна в верхней половине силуэта (открыты - крупные, прищур - тонкие
     полоски), от них - нос «ω», полоски на лбу, румянец (розовое в кадре) и
@@ -129,6 +131,18 @@ def analyse(rgb, w, h, bg_level=225, eye_dark=60):
     return {"bg": bg, "eyes": eyes, "pink": pink}
 
 
+def sticker_outline(cv):
+    """Как у наклейки в ролике: тёмная линия на пиксель внутри края
+    силуэта, сам край остаётся светлым."""
+    lit = {(x, y) for y in range(oled.H) for x in range(oled.W) if cv.get(x, y)}
+
+    def edge(m):
+        return {(x, y) for (x, y) in m
+                if any(p not in m for p in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))}
+    for x, y in edge(lit - edge(lit)):
+        cv.pixel(x, y, False)
+
+
 def draw_frame(a, w, h, prev, open_px, blush_px):
     """Экранный кадр: силуэт (блоки UP x UP) + нарисованные черты."""
     cv = oled.Canvas()
@@ -141,6 +155,7 @@ def draw_frame(a, w, h, prev, open_px, blush_px):
                     if not bg[(y * UP + dy) * w + x * UP + dx])
             if n * 2 > UP * UP:
                 cv.pixel(x0 + x, y0 + y)
+    sticker_outline(cv)
 
     eyes = a["eyes"]
     if len(eyes) == 2:
@@ -158,9 +173,11 @@ def draw_frame(a, w, h, prev, open_px, blush_px):
     vx, vy = -uy, ux                            # вниз по морде
     er = 0.22 * d
     for ex, ey in ((lx, ly), (rx, ry)):
-        if is_open:
-            fill_ellipse(cv, ex, ey, er * 0.85, er, on=False)
-            fill_ellipse(cv, ex + 0.3 * er, ey - 0.4 * er, max(1.0, 0.3 * er), max(1.0, 0.3 * er))
+        if is_open:                             # крупные глаза, большой и маленький блик
+            eo = 0.29 * d
+            fill_ellipse(cv, ex, ey, eo * 0.85, eo, on=False)
+            fill_ellipse(cv, ex + 0.3 * eo, ey - 0.4 * eo, max(1.0, 0.32 * eo), max(1.0, 0.32 * eo))
+            cv.pixel(round(ex - 0.3 * eo), round(ey + 0.35 * eo))
         else:                                   # довольный прищур «^ ^»
             for k in (0, 1):
                 ax, ay = ex - er * ux + (0.4 * er + k) * vx, ey - er * uy + (0.4 * er + k) * vy
