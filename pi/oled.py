@@ -1134,7 +1134,11 @@ class Daemon:
 
     def video(self, path):
         """(к/с, кадры) файла oled_video.py; не читается - None (и в лог)."""
-        v = self._videos.get(path)
+        try:
+            key = (path, os.path.getmtime(path))       # файл пересобрали - перечитать
+        except OSError:
+            key = (path, None)
+        v = self._videos.get(key)
         if v is None:
             try:
                 import oled_video
@@ -1142,7 +1146,7 @@ class Daemon:
             except (OSError, ValueError) as e:
                 _log(f"[WARN] видео {path}: {e}")
                 v = (0, [])
-            self._videos[path] = v
+            self._videos[key] = v
         return v if v[1] else None
 
     def run(self):
