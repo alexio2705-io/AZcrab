@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""Кот для дисплея робота - нарисован кодом под экран 128x64 по 1 биту.
+"""Кот для дисплея робота: движение - из ролика, черты - нарисованные.
 
-    python3 pi/oled_cat.py ~/maze/cat.oledv            # собрать анимацию
+    python3 pi/oled_cat.py ролик.mp4 cat.oledv --dur 16.3 --crop 944:1040:0:30
     ~/maze/venv/bin/python ~/maze/oled.py --play ~/maze/cat.oledv
 
-Почему не из ролика: на 128x64 по одному биту обработанное видео кота
-читается как пятно. Здесь силуэт светится целиком, а глаза, нос, рот и
-полоски - тёмные, как у мультяшного стикера; усы торчат наружу.
+Перегонка - на маке (нужен ffmpeg), на Pi копируется готовый .oledv.
+Результат - только .oledv (oled_video.check_output): исходник не затереть.
 
-Движения - как в ролике-образце (16 с по кругу, 10 кадров в секунду): кот
-качается с наклоном, подпрыгивает, щурится, сплющивается и краснеет. Трек
-снят с ролика по кадрам (TRACK), нарисованный кот каждый кадр ставится в
-ту же позу. Только стандартная библиотека и oled.Canvas.
+Почему так. Ролик, пережатый в 128x64 по одному биту, читается как пятно:
+серая шерсть уходит в узор точек. Кот, нарисованный с нуля, читается, но
+двигается не как в ролике - поворот головы и прищур из силуэта не снять.
+Здесь каждый кадр собран из двух частей:
+
+  - силуэт - прямо из кадра ролика (фон - светлое, связанное с краем), горит
+    целиком: прыжки, сплющивание и наклоны - точь-в-точь;
+  - черты - нарисованы там, где они в кадре: глаза ищутся как два тёмных
+    пятна в верхней половине силуэта (открыты - крупные, прищур - тонкие
+    полоски), от них - нос «ω», полоски на лбу, румянец (розовое в кадре) и
+    усы. Голову повернул - глаза и нос сместились вместе с ней.
 """
 from __future__ import annotations
 
+import argparse
 import math
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,8 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import oled  # noqa: E402
 import oled_video  # noqa: E402
 
-FPS = 10
-CX = 64.0
+UP = 4                     # кадр разбирается в UP раз крупнее экранного
 
 
 def fill_ellipse(cv, cx, cy, rx, ry, on=True):
@@ -36,7 +43,6 @@ def fill_ellipse(cv, cx, cy, rx, ry, on=True):
 
 
 def fill_poly(cv, pts, on=True):
-    """Заливка многоугольника (по центрам пикселей)."""
     ys = [p[1] for p in pts]
     for y in range(int(min(ys)), int(max(ys)) + 1):
         yc = y + 0.5
@@ -56,142 +62,189 @@ def line(cv, x0, y0, x1, y1, on=True):
         cv.pixel(round(x0 + (x1 - x0) * k / n), round(y0 + (y1 - y0) * k / n), on)
 
 
-# Движение кота из ролика-образца, по кадру на 0.1 с (снято по силуэту:
-# центр, ширина и высота; наклон - по линии между глазами: силуэт почти
-# круглый, и его «главная ось» скакала от ушей; тёмные глаза, румянец).
-# dx, dy - сдвиг на экране, пикс.; наклон, °; sx, sy - ширина и высота
-# относительно обычной; глаза открыты (1) или прищурены (0); румянец.
-TRACK = [
-    (-0.1, 0.2, 0.0, 1.0, 0.99, 1, 0), (-0.1, -0.3, -0.1, 0.98, 1.02, 0, 0), (-0.1, -0.2, 0.0, 0.98, 1.01, 0, 0), (-0.1, 0.0, 0.1, 1.0, 1.01, 1, 0),
-    (-0.1, 0.1, 0.0, 1.01, 1.0, 1, 0), (-0.0, -0.0, 0.0, 0.98, 1.0, 1, 0), (0.0, -0.2, 0.0, 0.98, 1.0, 0, 0), (-0.0, -0.1, -0.1, 0.98, 1.0, 1, 0),
-    (-0.1, 0.0, -0.1, 1.0, 1.0, 1, 0), (-0.1, 0.0, -0.2, 1.01, 1.0, 1, 0), (-0.1, 0.1, -0.1, 1.02, 1.0, 1, 0), (-0.6, 0.2, -3.0, 1.04, 1.01, 0, 0),
-    (-0.8, 0.2, -3.5, 1.04, 1.03, 0, 0), (0.7, -0.1, 0.2, 0.97, 0.94, 0, 0), (-0.8, 0.2, -3.4, 1.04, 1.02, 0, 0), (0.8, -0.1, -0.1, 0.97, 0.94, 0, 0),
-    (0.6, -0.2, -0.7, 0.97, 0.93, 0, 0), (-0.9, 0.2, -3.8, 1.05, 1.03, 0, 0), (0.6, -0.1, -0.5, 0.97, 0.94, 0, 0), (-0.8, 0.2, -3.4, 1.04, 1.03, 0, 0),
-    (-0.9, 0.2, -3.6, 1.05, 1.03, 0, 0), (0.0, -0.4, -0.2, 0.98, 1.01, 0, 0), (0.0, -0.3, 0.0, 0.98, 1.03, 0, 0), (-0.0, -0.0, -0.1, 1.0, 1.02, 1, 0),
-    (-0.0, 0.1, -0.1, 1.01, 1.01, 1, 0), (-0.0, 0.1, 0.2, 1.01, 1.0, 1, 0), (0.1, -0.1, -0.3, 0.98, 0.99, 1, 0), (0.0, -0.1, -0.2, 0.98, 1.01, 1, 0),
-    (0.0, 0.0, -0.1, 0.98, 1.0, 1, 0), (-0.0, 0.1, 0.1, 1.0, 1.0, 1, 0), (-0.1, 0.2, 0.1, 1.01, 1.0, 1, 0), (-0.4, 0.2, 0.1, 0.99, 0.95, 1, 0),
-    (-1.5, 0.2, 0.4, 1.07, 1.04, 1, 0), (0.8, 0.4, 0.0, 1.06, 1.06, 1, 0), (-0.0, 0.4, 0.1, 1.03, 1.02, 1, 0), (-0.5, 0.3, 0.2, 0.99, 0.93, 1, 0),
-    (1.0, 0.4, 0.0, 1.07, 1.06, 1, 0), (-1.0, 0.2, 0.5, 1.07, 1.04, 1, 0), (-0.1, 0.2, 0.2, 0.98, 0.95, 1, 0), (0.8, 0.3, 0.1, 1.05, 1.04, 1, 0),
-    (-0.7, 0.2, 0.3, 1.06, 1.02, 1, 0), (1.4, 0.2, 0.0, 1.06, 1.07, 1, 0), (0.1, -0.2, 0.0, 0.98, 0.99, 1, 0), (0.0, -0.3, -0.1, 0.98, 1.01, 1, 0),
-    (0.0, -0.1, 0.0, 0.99, 1.01, 1, 0), (0.0, 0.1, 0.0, 1.0, 1.0, 1, 0), (0.0, 0.1, 0.1, 1.0, 1.0, 1, 0), (0.2, -0.2, -0.1, 0.97, 0.97, 0, 0),
-    (0.1, -0.3, -0.1, 0.98, 0.99, 1, 0), (0.1, -0.0, 0.0, 0.98, 0.98, 1, 0), (0.1, 0.0, 0.1, 0.99, 0.99, 1, 0), (0.0, 0.1, 0.1, 1.0, 0.99, 1, 0),
-    (0.0, 0.1, 0.1, 1.0, 0.98, 1, 0), (0.1, -0.1, -0.2, 1.07, 0.93, 1, 0), (0.1, -4.3, 0.2, 0.97, 0.95, 1, 0), (0.0, -6.7, 0.3, 1.0, 0.92, 1, 0),
-    (0.1, -7.0, 0.2, 1.0, 0.93, 1, 0), (0.0, -8.7, 0.1, 0.94, 0.96, 1, 0), (0.0, -7.9, 0.1, 0.97, 0.91, 1, 0), (0.0, -7.7, 0.2, 0.95, 0.94, 1, 0),
-    (1.3, -10.6, 0.2, 1.01, 1.01, 1, 0), (0.0, -4.7, 0.0, 1.02, 0.93, 1, 0), (0.0, -3.3, 0.0, 1.01, 0.93, 1, 0), (-0.1, 0.2, -0.1, 1.0, 0.98, 1, 0),
-    (-0.1, -0.1, -0.2, 0.98, 1.01, 0, 0), (-0.1, -0.0, -0.1, 0.99, 1.02, 1, 0), (-0.1, 0.1, 0.0, 1.0, 1.01, 1, 0), (-0.0, 0.3, -0.1, 1.0, 1.0, 1, 0),
-    (-0.1, 0.3, 0.1, 1.01, 1.0, 1, 0), (0.1, -0.1, -0.3, 0.98, 0.99, 0, 0), (0.0, -0.1, -0.3, 0.98, 1.0, 1, 0), (0.0, 0.2, -0.2, 0.99, 1.0, 1, 0),
-    (-0.0, 0.2, 0.0, 1.0, 1.0, 1, 0), (-0.1, 0.2, 0.1, 1.01, 1.0, 1, 0), (-0.1, -0.3, 0.0, 1.05, 1.02, 1, 0), (0.3, -4.1, -2.7, 1.23, 1.07, 0, 1),
-    (-0.4, -4.1, -3.4, 1.39, 1.15, 0, 1), (0.3, -4.1, -3.5, 1.23, 1.08, 0, 1), (0.3, -4.1, -3.1, 1.25, 1.09, 0, 1), (-0.5, -4.1, -5.1, 1.39, 1.15, 0, 1),
-    (0.2, -4.1, -4.2, 1.21, 1.04, 0, 1), (-0.3, -4.1, -4.9, 1.37, 1.14, 0, 1), (-0.5, -4.1, -3.5, 1.38, 1.15, 0, 1), (0.3, -4.2, -3.0, 1.26, 1.11, 0, 1),
-    (-0.3, -4.1, -5.5, 1.33, 1.13, 0, 1), (-0.0, -0.3, -0.1, 0.98, 1.0, 0, 0), (-0.1, -0.4, -0.1, 0.98, 1.02, 0, 0), (-0.1, -0.0, 0.0, 0.99, 1.01, 1, 0),
-    (-0.1, 0.1, -0.1, 1.0, 1.01, 1, 0), (-0.1, 0.1, -0.1, 1.02, 1.01, 1, 0), (-0.1, 0.1, 0.0, 1.02, 1.0, 1, 0), (-0.0, -0.2, 0.0, 0.98, 1.0, 0, 0),
-    (-0.0, -0.1, -0.2, 0.98, 1.0, 1, 0), (-0.1, 0.0, 0.0, 1.0, 1.0, 1, 0), (-0.1, 0.0, -0.3, 1.01, 1.0, 1, 0), (-0.1, 0.0, 0.1, 1.02, 0.99, 1, 0),
-    (-0.2, 0.0, -2.0, 1.01, 0.99, 0, 0), (-0.6, 0.2, -2.8, 1.04, 1.01, 0, 0), (0.7, -0.1, 0.5, 0.97, 0.94, 0, 0), (0.7, -0.1, 0.3, 0.97, 0.93, 0, 0),
-    (-0.6, 0.1, -3.0, 1.03, 1.01, 0, 0), (0.8, -0.1, 0.0, 0.98, 0.94, 0, 0), (-0.9, 0.2, -3.8, 1.05, 1.02, 0, 0), (-0.8, 0.2, -3.8, 1.05, 1.02, 0, 0),
-    (0.8, -0.1, 0.5, 0.97, 0.94, 0, 0), (-0.8, 0.1, -3.3, 1.03, 1.02, 0, 0), (0.3, -0.3, -0.4, 0.99, 0.97, 1, 0), (0.1, -0.4, -0.3, 0.98, 1.02, 0, 0),
-    (0.0, -0.1, -0.1, 0.99, 1.02, 1, 0), (-0.0, -0.1, -0.1, 1.0, 1.02, 1, 0), (-0.0, 0.0, -0.1, 1.01, 1.01, 1, 0), (0.0, 0.1, 0.0, 1.01, 1.0, 1, 0),
-    (0.1, -0.3, -0.2, 0.98, 1.01, 0, 0), (0.0, -0.1, -0.2, 0.98, 1.0, 1, 0), (-0.0, 0.0, -0.1, 1.0, 1.0, 1, 0), (-0.0, 0.1, 0.1, 1.0, 1.0, 1, 0),
-    (-0.1, 0.1, 0.0, 1.01, 0.99, 1, 0), (-0.3, 0.2, 0.2, 0.99, 0.95, 1, 0), (-0.4, 0.2, 0.1, 0.98, 0.96, 1, 0), (0.8, 0.4, 0.0, 1.06, 1.06, 1, 0),
-    (-1.4, 0.2, 0.5, 1.06, 1.03, 1, 0), (-0.5, 0.2, 0.1, 0.99, 0.94, 1, 0), (0.2, 0.3, 0.0, 1.02, 1.01, 1, 0), (-1.0, 0.2, 0.3, 1.07, 1.04, 1, 0),
-    (1.3, 0.3, 0.0, 1.06, 1.06, 1, 0), (0.8, 0.2, 0.1, 1.05, 1.04, 1, 0), (-0.2, 0.1, 0.2, 0.98, 0.94, 1, 0), (1.4, 0.2, 0.0, 1.06, 1.07, 1, 0),
-    (0.0, -0.4, -0.2, 0.98, 1.01, 0, 0), (0.0, -0.3, -0.2, 0.98, 1.01, 0, 0), (0.1, -0.1, 0.0, 0.99, 1.0, 1, 0), (0.0, 0.0, -0.1, 1.0, 1.0, 1, 0),
-    (0.0, 0.1, 0.0, 1.0, 0.99, 1, 0), (0.2, -0.2, 0.0, 0.97, 0.97, 0, 0), (0.1, -0.1, -0.1, 0.98, 0.99, 1, 0), (0.1, -0.0, 0.0, 0.98, 0.98, 1, 0),
-    (0.0, 0.1, -0.1, 0.99, 0.99, 1, 0), (0.0, 0.1, 0.1, 0.99, 0.99, 1, 0), (0.0, 1.0, -0.2, 1.04, 0.94, 1, 0), (0.0, -0.2, -0.3, 1.07, 0.93, 1, 0),
-    (0.1, -6.5, 0.2, 0.95, 0.97, 1, 0), (0.0, -6.7, 0.3, 0.99, 0.92, 1, 0), (-0.0, -8.0, 0.2, 0.96, 0.93, 1, 0), (0.0, -8.7, 0.1, 0.94, 0.97, 1, 0),
-    (0.1, -7.5, 0.2, 0.99, 0.92, 1, 0), (0.0, -7.8, 0.2, 0.95, 0.94, 1, 0), (0.1, -6.9, 0.4, 0.94, 0.95, 1, 0), (0.0, -4.8, 0.1, 1.02, 0.93, 1, 0),
-    (0.0, 0.5, -0.1, 1.0, 0.96, 1, 0), (-0.0, 0.1, -0.1, 1.0, 0.98, 1, 0), (-0.1, -0.3, 0.0, 0.98, 1.02, 0, 0), (-0.1, -0.1, 0.0, 0.98, 1.02, 0, 0),
-    (-0.0, 0.2, -0.1, 0.99, 1.0, 1, 0), (-0.0, 0.2, -0.1, 1.0, 1.0, 1, 0), (-0.0, 0.2, -0.1, 1.0, 0.99, 1, 0), (0.1, -0.1, -0.3, 0.98, 0.99, 0, 0),
-    (0.0, 0.0, 0.0, 0.98, 0.99, 1, 0), (0.0, 0.1, -0.2, 0.99, 0.99, 1, 0), (-0.0, 0.1, 0.0, 1.0, 0.99, 1, 0), (-0.0, 0.2, 0.0, 1.01, 0.99, 1, 0),
-    (0.2, -3.4, -2.6, 1.17, 1.04, 0, 1), (0.3, -4.1, -3.4, 1.23, 1.08, 0, 1), (-0.3, -4.1, -3.8, 1.38, 1.15, 0, 1),
-]
+def background(lum, w, h, level):
+    """Светлое, связанное с краем кадра, плюс всё, кроме самого большого
+    куска (значок соцсети и т.п.)."""
+    bg = bytearray(w * h)
+    todo = [(x, y) for x in range(w) for y in (0, h - 1)] + [(x, y) for y in range(h) for x in (0, w - 1)]
+    while todo:
+        x, y = todo.pop()
+        i = y * w + x
+        if bg[i] or lum[i] < level:
+            continue
+        bg[i] = 1
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if 0 <= nx < w and 0 <= ny < h and not bg[ny * w + nx]:
+                todo.append((nx, ny))
+    seen = bytearray(w * h)
+    best = []
+    for s0 in range(w * h):
+        if bg[s0] or seen[s0]:
+            continue
+        comp, st = [], [s0]
+        seen[s0] = 1
+        while st:
+            i = st.pop()
+            comp.append(i)
+            x, y = i % w, i // w
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                j = ny * w + nx
+                if 0 <= nx < w and 0 <= ny < h and not bg[j] and not seen[j]:
+                    seen[j] = 1
+                    st.append(j)
+        if len(comp) > len(best):
+            best = comp
+    keep = set(best)
+    for i in range(w * h):
+        if not bg[i] and i not in keep:
+            bg[i] = 1
+    return bg
 
 
-MODEL_C = (64.0, 33.0)       # точка модели, вокруг которой кот наклоняется и растягивается
+def analyse(rgb, w, h, bg_level=225, eye_dark=60):
+    """Кадр (RGB, в UP раз крупнее экранного) -> силуэт, глаза, румянец."""
+    lum = [(rgb[3 * i] * 3 + rgb[3 * i + 1] * 6 + rgb[3 * i + 2]) // 10 for i in range(w * h)]
+    bg = background(lum, w, h, bg_level)
+    pts = [(i % w, i // w) for i in range(w * h) if not bg[i]]
+    top = min(p[1] for p in pts)
+    hh = max(p[1] for p in pts) - top
+    cx = sum(p[0] for p in pts) / len(pts)
+    y0, y1 = top + 0.22 * hh, top + 0.62 * hh
+    sides = {-1: [], 1: []}
+    for y in range(int(y0), int(y1)):
+        for x in range(w):
+            i = y * w + x
+            if not bg[i] and lum[i] < eye_dark:
+                sides[-1 if x < cx else 1].append((x, y))
+    eyes = {}
+    for s, p in sides.items():
+        if len(p) >= 6:
+            eyes[s] = (sum(q[0] for q in p) / len(p), sum(q[1] for q in p) / len(p), len(p))
+    pink = sum(1 for i in range(w * h) if not bg[i]
+               and rgb[3 * i] > 200 and rgb[3 * i + 1] < 170 and rgb[3 * i + 2] < 200)
+    return {"bg": bg, "eyes": eyes, "pink": pink}
 
 
-def draw_cat(cv, eyes_open=True, blush=False):
-    """Кот в обычной позе: светлый силуэт, тёмные черты, усы наружу."""
-    hy, by = 27.0, 47.0
-    fill_ellipse(cv, CX, by, 21, 13)                       # тело
-    for fx in (CX - 9, CX + 9):                            # лапки
-        fill_ellipse(cv, fx, by + 12, 5, 3.5)
-    for side in (-1, 1):                                   # уши
-        base_out, base_in, tip = (CX + side * 27, hy - 6), (CX + side * 9, hy - 16), (CX + side * 22, hy - 25)
-        fill_poly(cv, [base_out, tip, base_in])
-        inner = [(base_out[0] - side * 4, base_out[1] - 3), (tip[0] - side * 1.5, tip[1] + 6),
-                 (base_in[0] + side * 4, base_in[1] + 1)]
-        fill_poly(cv, inner, on=False)
-    fill_ellipse(cv, CX, hy, 28, 19)                       # голова
-    for dx, top in ((-6, 0), (0, -1), (6, 0)):             # полоски на лбу
-        line(cv, CX + dx, hy - 17 + top, CX + dx, hy - 12, on=False)
-    ey = hy + 1
-    for ex in (CX - 11, CX + 11):
-        if eyes_open:
-            fill_ellipse(cv, ex, ey, 4.6, 5.6, on=False)
-            fill_ellipse(cv, ex + 1.6, ey - 2.2, 1.4, 1.4)  # блик
-        else:                                              # довольный прищур «^ ^»
+def draw_frame(a, w, h, prev, open_px, blush_px):
+    """Экранный кадр: силуэт (блоки UP x UP) + нарисованные черты."""
+    cv = oled.Canvas()
+    sw, sh = w // UP, h // UP
+    x0, y0 = (oled.W - sw) // 2, (oled.H - sh) // 2
+    bg = a["bg"]
+    for y in range(sh):
+        for x in range(sw):
+            n = sum(1 for dy in range(UP) for dx in range(UP)
+                    if not bg[(y * UP + dy) * w + x * UP + dx])
+            if n * 2 > UP * UP:
+                cv.pixel(x0 + x, y0 + y)
+
+    eyes = a["eyes"]
+    if len(eyes) == 2:
+        (lx, ly, ln), (rx, ry, rn) = eyes[-1], eyes[1]
+        is_open = min(ln, rn) >= open_px
+        lx, ly, rx, ry = x0 + lx / UP, y0 + ly / UP, x0 + rx / UP, y0 + ry / UP
+    elif prev is not None:                      # глаз не нашлось - прищур там же
+        (lx, ly), (rx, ry), _ = prev
+        is_open = False
+    else:
+        return cv, None
+    d = max(8.0, math.hypot(rx - lx, ry - ly))
+    ang = math.atan2(ry - ly, rx - lx)
+    ux, uy = math.cos(ang), math.sin(ang)       # вдоль глаз
+    vx, vy = -uy, ux                            # вниз по морде
+    er = 0.22 * d
+    for ex, ey in ((lx, ly), (rx, ry)):
+        if is_open:
+            fill_ellipse(cv, ex, ey, er * 0.85, er, on=False)
+            fill_ellipse(cv, ex + 0.3 * er, ey - 0.4 * er, max(1.0, 0.3 * er), max(1.0, 0.3 * er))
+        else:                                   # довольный прищур «^ ^»
             for k in (0, 1):
-                line(cv, ex - 5, ey + 2 + k, ex, ey - 2 + k, on=False)
-                line(cv, ex, ey - 2 + k, ex + 5, ey + 2 + k, on=False)
-    ny = hy + 7                                            # нос и рот «ω»
-    fill_poly(cv, [(CX - 2.5, ny), (CX + 2.5, ny), (CX, ny + 2.5)], on=False)
-    for side in (-1, 1):
-        for ddx, ddy in ((1, 3), (2, 4), (3, 4), (4, 3)):
-            cv.pixel(round(CX + side * ddx), round(ny + ddy), False)
-    if blush:
+                ax, ay = ex - er * ux + (0.4 * er + k) * vx, ey - er * uy + (0.4 * er + k) * vy
+                tx, ty = ex - (0.5 * er - k) * vx, ey - (0.5 * er - k) * vy
+                bx, by = ex + er * ux + (0.4 * er + k) * vx, ey + er * uy + (0.4 * er + k) * vy
+                line(cv, ax, ay, tx, ty, on=False)
+                line(cv, tx, ty, bx, by, on=False)
+    mx, my = (lx + rx) / 2, (ly + ry) / 2
+    nx, ny = mx + 0.45 * d * vx, my + 0.45 * d * vy           # нос
+    s = max(1.6, 0.11 * d)
+    fill_poly(cv, [(nx - s * ux, ny - s * uy), (nx + s * ux, ny + s * uy),
+                   (nx + s * vx, ny + s * vy)], on=False)
+    for side in (-1, 1):                                       # рот «ω»
+        for a_, b_ in ((0.4, 1.2), (0.9, 1.8), (1.5, 1.8), (2.0, 1.2)):
+            cv.pixel(round(nx + side * a_ * s * ux + b_ * s * vx),
+                     round(ny + side * a_ * s * uy + b_ * s * vy), False)
+    for k in (-1, 0, 1):                                       # полоски на лбу
+        bx, by = mx + k * 0.3 * d * ux - 0.6 * d * vx, my + k * 0.3 * d * uy - 0.6 * d * vy
+        line(cv, bx - 0.13 * d * vx, by - 0.13 * d * vy, bx + 0.13 * d * vx, by + 0.13 * d * vy, on=False)
+    if a["pink"] > blush_px:                                   # румянец
         for side in (-1, 1):
-            bx = CX + side * 18
-            for k in range(3):
-                line(cv, bx - 3 + k * 3, ny + 2, bx - 1 + k * 3, ny - 1, on=False)
-    for side in (-1, 1):                                   # усы
-        x0 = CX + side * 27
-        for dy, slope in ((-1, -2), (2, 0), (5, 2)):
-            line(cv, x0, ny - 2 + dy, x0 + side * 12, ny - 2 + dy + slope)
+            cx_, cy_ = mx + side * 0.8 * d * ux + 0.35 * d * vx, my + side * 0.8 * d * uy + 0.35 * d * vy
+            for k in (-1, 0, 1):
+                line(cv, cx_ + k * 2.2 - 1, cy_ + 1.5, cx_ + k * 2.2 + 1, cy_ - 1.5, on=False)
+    yy = int(round(ny))                                        # усы - от края силуэта наружу
+    if 0 <= yy < oled.H:
+        row = [x for x in range(oled.W) if cv.get(x, yy)]
+        if row:
+            for side, edge in ((-1, min(row)), (1, max(row))):
+                for dy, slope in ((-2, -2), (1, 0), (4, 2)):
+                    line(cv, edge + side, yy + dy, edge + side * 10, yy + dy + slope)
+    return cv, ((lx, ly), (rx, ry), is_open)
 
 
-def pose(model, out, dx, dy, tilt, sx, sy):
-    """out = model, повёрнутая на tilt°, растянутая в sx/sy раз вокруг
-    MODEL_C и сдвинутая на (dx, dy). Обратное отображение: для каждого
-    пикселя экрана - откуда он в модели (без дыр при растяжении)."""
-    a = math.radians(tilt)
-    ca, sa = math.cos(a), math.sin(a)
-    mx, my = MODEL_C
-    for y in range(oled.H):
-        for x in range(oled.W):
-            u, v = x - mx - dx, y - my - dy
-            ru, rv = u * ca + v * sa, -u * sa + v * ca        # обратный поворот
-            px, py = round(mx + ru / sx), round(my + rv / sy)
-            if 0 <= px < oled.W and 0 <= py < oled.H and model.get(px, py):
-                out.pixel(x, y)
-
-
-def frames():
-    # глаза: состояние меняется, только если держится 2 кадра (сжатие
-    # ролика давало одиночные «моргания»)
-    eyes = [t[5] for t in TRACK]
-    for i in range(1, len(eyes) - 1):
-        if eyes[i - 1] == eyes[i + 1] != eyes[i]:
-            eyes[i] = eyes[i - 1]
-    models = {}
-    out = []
-    for (dx, dy, tilt, sx, sy, _, blush), e in zip(TRACK, eyes):
-        key = (bool(e), bool(blush))
-        if key not in models:
-            m = oled.Canvas()
-            draw_cat(m, *key)
-            models[key] = m
-        cv = oled.Canvas()
-        pose(models[key], cv, dx, dy, tilt, sx, sy)
-        out.append(bytes(cv.buf))
-    return out
+def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64):
+    dst = oled_video.check_output(dst, src)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=width,height", "-of", "csv=p=0", src],
+                           capture_output=True, text=True, check=True).stdout.split(",")
+    if crop:
+        cw, ch = (int(float(v)) for v in crop.split(":")[:2])
+    else:
+        cw, ch = int(probe[0]), int(probe[1])
+    sh = min(oled.H, height)
+    sw = min(oled.W, round(cw * sh / ch / 2) * 2)
+    w, h = sw * UP, sh * UP
+    vf = (f"crop={crop}," if crop else "") + f"fps={fps},scale={w}:{h}:flags=area"
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(start)] + (["-t", str(dur)] if dur else []) +
+                         ["-i", src, "-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, check=True).stdout
+    size = w * h * 3
+    shots = [analyse(raw[i:i + size], w, h) for i in range(0, len(raw) - size + 1, size)]
+    # Силуэт «провалился» (белая грудка слилась с белым фоном - бывает в
+    # прыжке): ещё раз со строгим порогом фона, не помогло - силуэт соседа.
+    areas = [w * h - sum(s["bg"]) for s in shots]
+    med = sorted(areas)[len(areas) // 2]
+    for k, s in enumerate(shots):
+        if areas[k] >= 0.9 * med:
+            continue
+        again = analyse(raw[k * size:(k + 1) * size], w, h, bg_level=245)
+        if w * h - sum(again["bg"]) >= 0.9 * med:
+            shots[k] = again
+        elif k > 0:
+            s["bg"] = shots[k - 1]["bg"]
+    # «открытый» глаз - крупнее середины между прищуром и открытым в этом ролике
+    sizes = sorted(min(s["eyes"][-1][2], s["eyes"][1][2]) for s in shots if len(s["eyes"]) == 2)
+    open_px = (sizes[len(sizes) // 5] + sizes[-max(1, len(sizes) // 5)]) / 2 if sizes else 1e9
+    blush_px = 10 * UP * UP
+    frames, prev = [], None
+    for s in shots:
+        cv, prev = draw_frame(s, w, h, prev, open_px, blush_px)
+        frames.append(bytes(cv.buf))
+    with open(dst, "wb") as f:
+        f.write(oled_video.MAGIC + bytes([fps]) + b"".join(frames))
+    return dst, len(frames)
 
 
 def main():
-    dst = sys.argv[1] if len(sys.argv) > 1 else "cat.oledv"
-    fr = frames()
-    with open(os.path.expanduser(dst), "wb") as f:
-        f.write(oled_video.MAGIC + bytes([FPS]) + b"".join(fr))
-    print(f"{dst}: {len(fr)} кадров, {FPS} к/с, {len(fr) / FPS:.1f} с")
+    ap = argparse.ArgumentParser(description="Кот для дисплея: движение из ролика, черты нарисованы")
+    ap.add_argument("src", help="ролик (только читается)")
+    ap.add_argument("dst", help="результат, .oledv")
+    ap.add_argument("--start", type=float, default=0.0)
+    ap.add_argument("--dur", type=float)
+    ap.add_argument("--fps", type=int, default=10)
+    ap.add_argument("--crop", help="w:h:x:y по исходнику (ffmpeg crop)")
+    a = ap.parse_args()
+    dst, n = make(a.src, a.dst, a.start, a.dur, a.fps, a.crop)
+    print(f"{dst}: {n} кадров, {a.fps} к/с, {n / a.fps:.1f} с")
 
 
 if __name__ == "__main__":
