@@ -1,0 +1,12 @@
+{
+  "include": ["pi", "*.py"],
+  "exclude": ["**/__pycache__", ".pio", "components"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalCall": "none",
+  "reportOptionalOperand": "none",
+  "reportOptionalIterable": "none"
+}
