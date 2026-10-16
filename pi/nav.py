@@ -4162,11 +4162,7 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     trav = trav_mm()
     tcell = _cell_at(cell, hdg, watch_logic.cell_index(trav))
     wall_dir = watch_logic.wall_of(hdg, side)
-    try:
-        result = det.read_wall(tcell[0], tcell[1], wall_dir)
-    except Exception as e:
-        print(f"    [WARN] чтение метки ({side}): {e}")
-        result = None
+    result = _read_seen_mark(det, tcell[0], tcell[1], wall_dir, f"чтение метки ({side})")
     if result is not None and result.get("blink"):
         result = _confirm(det, tcell[0], tcell[1], wall_dir, result)
     if result is None:
@@ -4200,21 +4196,72 @@ KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
 CONFIRM_CONF = 0.7
 
 
+# Метку уже видели (наблюдатель на ходу, кадр на повороте), а кадр стоя пуст -
+# столько кадров всего, прежде чем отбраковать место. Отбракованное место
+# наблюдатель больше не смотрит, и одна осечка камеры теряла метку насовсем.
+MARK_READ_TRIES = 3
+
+
+def _read_seen_mark(det, cx, cy, wall_dir, what):
+    """read_wall() для метки, которую уже видели: пустой кадр - ещё кадр, до
+    MARK_READ_TRIES. Метка или None."""
+    for k in range(MARK_READ_TRIES):
+        try:
+            result = det.read_wall(cx, cy, wall_dir)
+        except Exception as e:
+            print(f"    [WARN] {what}: {e}")
+            result = None
+        if result is not None:
+            return result
+        if k + 1 < MARK_READ_TRIES:
+            print(f"    {what}: на кадре стоя метки нет - ещё кадр")
+    return None
+
+
 def _confirm(det, cx, cy, wall_dir, result):
     """Настоящая метка (blink) с низкой уверенностью - второй кадр стоя.
     Возвращает метку, по которой мигать (из двух кадров - уверенней), или
-    None - второй кадр её не увидел."""
+    None - второй кадр её не увидел. Второй кадр совсем пуст (осечка камеры,
+    а не другое прочтение) - решает третий."""
     if CONFIRM_CONF <= 0 or result.get("conf", 1.0) >= CONFIRM_CONF:
         return result
     try:
         again = det.read_wall(cx, cy, wall_dir)
+        if again is None:
+            print(f"    {result['label']} (conf {result['conf']:.2f}): второй кадр пуст - третий")
+            again = det.read_wall(cx, cy, wall_dir)
     except Exception as e:
         print(f"    [WARN] второй кадр: {e}")
         return result
     if again is None or not again.get("blink"):
         print(f"    {result['label']} (conf {result['conf']:.2f}) вторым кадром не подтвердилась - не мигаю")
         return None
+    if again.get("type") != result.get("type"):
+        return _vote_type(det, cx, cy, wall_dir, [result, again])
     return again if again.get("conf", 0.0) > result.get("conf", 0.0) else result
+
+
+def _vote_type(det, cx, cy, wall_dir, reads):
+    """Два кадра назвали разный тип жертвы - третий кадр, решает большинство.
+    Большинства нет - тип, которому положено больше комплектов: лишний
+    комплект не штрафуется (5.6.14 - «не относится к неверному числу
+    комплектов», очки - по минимуму из выданных и нужных), а недоданный -
+    это -10/-20 очков."""
+    try:
+        third = det.read_wall(cx, cy, wall_dir)
+    except Exception as e:
+        print(f"    [WARN] третий кадр: {e}")
+        third = None
+    if third is not None and third.get("blink"):
+        reads = reads + [third]
+    votes = {}
+    for r in reads:
+        votes.setdefault(r.get("type"), []).append(r)
+    best_t, best = max(votes.items(), key=lambda kv: (len(kv[1]), KITS_BY_TYPE.get(kv[0], 0)))
+    why = "большинство" if len(best) >= 2 else "больше комплектов"
+    print(f"    кадры спорят о типе ({', '.join(r['label'] for r in reads)}) - "
+          f"{best[0]['label']} ({why})")
+    return max(best, key=lambda r: r.get("conf", 0.0))
 
 
 def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
@@ -4258,11 +4305,7 @@ def _turn_marks(cx, cy, seen):
         print(f"    [W] на повороте: {side} {px:.0f}px, стена {_DIR_NAME[wall_dir]} "
               f"{along:.0f}мм - доворачиваю на {yf:.0f}°")
         turn_to(yf, label="к метке")
-        try:
-            result = det.read_wall(cx, cy, wall_dir)
-        except Exception as e:
-            print(f"    [WARN] чтение метки ({side}): {e}")
-            result = None
+        result = _read_seen_mark(det, cx, cy, wall_dir, f"чтение метки ({side})")
         if result is not None and result.get("blink"):
             result = _confirm(det, cx, cy, wall_dir, result)
         if result is None:
