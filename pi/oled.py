@@ -34,6 +34,7 @@ systemd (maze-oled.service рядом, установка - в нём): на э�
     ~/maze/venv/bin/python ~/maze/oled.py            # демон (обычно поднимается сам)
     ~/maze/venv/bin/python ~/maze/oled.py --test     # проверить ориентацию
     ~/maze/venv/bin/python ~/maze/oled.py --say "ШАПКА" "строка" ...   # из shell
+    ~/maze/venv/bin/python ~/maze/oled.py --play ~/maze/cat.oledv  # видео по кругу (--stop)
     python3 oled.py --png /tmp/oled                  # образцы экранов в PNG, без железа
 """
 from __future__ import annotations
@@ -268,10 +269,20 @@ class Ssd1306:
                 self._cmd(0x81, self.contrast)
                 self._sent_contrast = self.contrast
             for p, data in enumerate(cv.pages()):
-                if data != self.shown[p]:
-                    self._cmd(0x21, 0, W - 1, 0x22, p, p)
-                    os.write(self.fd, b"\x40" + data)
-                    self.shown[p] = data
+                old = self.shown[p]
+                if data == old:
+                    continue
+                # Только поменявшийся кусок страницы: видео (oled_video) на
+                # 100 кГц иначе упиралось бы в ~10 полных кадров в секунду.
+                a, b = 0, W - 1
+                if old is not None:
+                    while data[a] == old[a]:
+                        a += 1
+                    while data[b] == old[b]:
+                        b -= 1
+                self._cmd(0x21, a, b, 0x22, p, p)
+                os.write(self.fd, b"\x40" + data[a:b + 1])
+                self.shown[p] = data
             return True
         except OSError as e:
             self._fail(e)
@@ -284,16 +295,20 @@ class Ssd1306:
 _tx = None
 
 
-def say(title, lines=(), big=None, alert=False, small=False, ttl=MSG_TTL_S, port=MSG_PORT):
+def say(title, lines=(), big=None, alert=False, small=False, ttl=MSG_TTL_S, port=MSG_PORT,
+        video=None):
     """Показать экран на дисплее, пока его шлют (и ещё ttl секунд).
 
     title - шапка, lines - строки под ней (6x10: 5 строк по 21 символу,
     small=True - 5x8: 6 строк по 25), длинные прокручиваются сами. big -
     крупная строка (до 10 символов) вместо первых двух строк. alert -
-    шапка мигает. Никогда не бросает и не ждёт."""
+    шапка мигает. video - путь к файлу oled_video.py на Pi: вместо текста
+    этот ролик по кругу. Никогда не бросает и не ждёт."""
     global _tx
     msg = {"title": str(title), "lines": [str(s) for s in lines][:6], "big": big,
            "alert": bool(alert), "small": bool(small), "ttl": float(ttl)}
+    if video:
+        msg["video"] = os.path.abspath(os.path.expanduser(video))
     try:
         if _tx is None:
             _tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -990,7 +1005,13 @@ class Feed:
             threading.Thread(target=self._run, daemon=True, name="oled-feed").start()
 
     def _run(self):
-        import live
+        try:
+            import live
+        except ImportError:
+            # На Pi может стоять старый nav.py без живого потока - тогда
+            # экраны заезда недоступны, остальное работает.
+            _log("[WARN] нет live.py - экранов заезда не будет (nav.py без живого потока)")
+            return
         while True:
             try:
                 for s in live.read_lines(timeout=2.0):
@@ -1041,6 +1062,7 @@ class Inbox:
         self.port = self.sock.getsockname()[1]
         self.msg = None
         self.until = 0.0
+        self.since = 0.0             # когда пришло сообщение с другим содержимым
         threading.Thread(target=self._run, daemon=True, name="oled-inbox").start()
 
     def _run(self):
@@ -1051,7 +1073,10 @@ class Inbox:
             except (OSError, ValueError):
                 continue
             if isinstance(m, dict):
-                self.msg, self.until = m, time.monotonic() + float(m.get("ttl", MSG_TTL_S))
+                now = time.monotonic()
+                if m != self.msg or now >= self.until:
+                    self.since = now
+                self.msg, self.until = m, now + float(m.get("ttl", MSG_TTL_S))
 
     def current(self, now):
         return self.msg if now < self.until else None
@@ -1102,19 +1127,40 @@ class Daemon:
         self.tile = TileGuess()
         self.sys = SysInfo()
         self._idle_since = None
+        self._videos = {}            # путь -> (к/с, кадры)
 
     def state(self, now):
         return build_state(now, self.feed, self.sys, self.inbox.current(now), self.tile)
 
+    def video(self, path):
+        """(к/с, кадры) файла oled_video.py; не читается - None (и в лог)."""
+        v = self._videos.get(path)
+        if v is None:
+            try:
+                import oled_video
+                v = oled_video.load(path)
+            except (OSError, ValueError) as e:
+                _log(f"[WARN] видео {path}: {e}")
+                v = (0, [])
+            self._videos[path] = v
+        return v if v[1] else None
+
     def run(self):
         _log(f"дисплей: {I2C_DEV}, поворот {'180°' if self.oled.rot180 else '0°'}")
         cv = Canvas()
-        period = 1.0 / FPS
         while True:
             t0 = time.monotonic()
+            period = 1.0 / FPS
             try:
                 st = self.state(t0)
-                compose(cv, st)
+                m = st["msg"]
+                v = self.video(m["video"]) if m and m.get("video") else None
+                if v is not None:
+                    fps, frames = v
+                    period = 1.0 / max(1, fps)
+                    cv.buf[:] = frames[int((t0 - self.inbox.since) * fps) % len(frames)]
+                else:
+                    compose(cv, st)
                 # Простой (никто ничего не шлёт) дольше IDLE_DIM_S - тускло.
                 idle = st["msg"] is None and st["snap"] is None
                 dim = False
@@ -1226,6 +1272,21 @@ def main():
                 time.sleep(0.1)
         if rest:
             say(rest[0], rest[1:], ttl=10.0)
+        return
+    if "--play" in args or "--stop" in args:
+        # Видео по кругу (oled_video.py), пока не --stop или не перезапуск демона
+        if ensure_daemon() is not None:
+            for _ in range(30):
+                if daemon_running():
+                    break
+                time.sleep(0.1)
+        if "--stop" in args:
+            say("", ttl=0.0)
+            print("видео остановлено")
+        else:
+            path = args[args.index("--play") + 1]
+            say("", video=path, ttl=10 * 365 * 86400.0)
+            print(f"играет {path} по кругу; остановить: oled.py --stop")
         return
     if "--test" in args:
         # Через демон - заодно проверяется весь путь say() -> экран.

@@ -253,8 +253,8 @@ class TestDriver(unittest.TestCase):
         d.show(cv)
         data = [w for w in bus.writes if w[0] == 0x40]
         self.assertEqual(len(data), 1)
-        self.assertEqual(len(data[0]), 129)
-        self.assertIn(bytes((0x00, 0x21, 0, 127, 0x22, 2, 2)), bus.writes)
+        self.assertEqual(len(data[0]), 2)              # только столбец 10
+        self.assertIn(bytes((0x00, 0x21, 10, 10, 0x22, 2, 2)), bus.writes)
 
     def test_contrast_change_is_sent_once(self):
         bus = FakeBus(self)
@@ -290,6 +290,32 @@ class TestSysInfo(unittest.TestCase):
         si = oled.SysInfo(start=False)
         si.poll()                                   # на маке половина - None
         self.assertEqual(set(si.info), {"ip", "ssid", "temp", "mem", "uptime", "throttled"})
+
+
+class TestVideo(unittest.TestCase):
+    def test_file_roundtrip_and_daemon_frames(self):
+        import oled_video
+        fr = [bytes([k]) * 1024 for k in range(3)]
+        with tempfile.NamedTemporaryFile(suffix=".oledv", delete=False) as f:
+            f.write(oled_video.MAGIC + bytes([10]) + b"".join(fr))
+        self.addCleanup(os.unlink, f.name)
+        self.assertEqual(oled_video.load(f.name), (10, fr))
+
+    def test_contours_drop_background_and_stray_blobs(self):
+        import oled_video
+        w, h = 20, 16
+        g = bytearray([255]) * (w * h)                 # белый фон
+        for y in range(4, 12):
+            for x in range(4, 12):
+                g[y * w + x] = 120                     # «кот» 8x8
+        g[2 * w + 17] = 100                            # отдельная точка - значок
+        out = oled_video.frame_bits(bytes(g), w, h, edges=260)
+        cv = oled.Canvas()
+        cv.buf[:] = out
+        x0, y0 = (oled.W - w) // 2, (oled.H - h) // 2
+        self.assertTrue(cv.get(x0 + 4, y0 + 4))        # край силуэта горит
+        self.assertFalse(cv.get(x0 + 8, y0 + 8))       # середина - нет (только контуры)
+        self.assertFalse(cv.get(x0 + 17, y0 + 2))      # значок убран
 
 
 class TestMessages(unittest.TestCase):
