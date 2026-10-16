@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Кот для дисплея робота: движение - из ролика, черты - нарисованные.
 
-    python3 pi/oled_cat.py ролик.mp4 cat.oledv --dur 15.9 --crop 944:1040:0:30
+    python3 pi/oled_cat.py ролик.mp4 cat.oledv --dur 15.9 --crop 944:1040:0:30 --pad-top 100 --style v2b
 
 --dur - где кончается круг: там, где поза ближе всего к первому кадру. У
 ролика с котом это 15.8 с; дальше начинается последнее «сплющивание»,
@@ -143,18 +143,67 @@ def sticker_outline(cv):
         cv.pixel(x, y, False)
 
 
-def draw_frame(a, w, h, prev, open_px, blush_px):
+# Как рисовать кота. Выбирали по картинкам на одних и тех же кадрах:
+#   smooth - сколько раз сгладить край силуэта (большинство 3x3: срезает
+#            зубчики и бугры, из-за которых кот был похож на кляксу);
+#   neck   - тело ниже морды уже головы (голова читается отдельно);
+#   eye, nose, mouth - размер глаз, носа и рта «ω» от расстояния между глазами;
+#   squint_w - толщина прищура «^ ^», whisk - длина усов, пикс.
+STYLES = {
+    "v2": dict(smooth=2, neck=False, eye=0.34, squint_w=2, nose=0.15, mouth=0.26, whisk=12),
+    "v3": dict(smooth=2, neck=True, eye=0.34, squint_w=2, nose=0.15, mouth=0.26, whisk=12),
+    # выбран: как v2, черты чуть крупнее; собирать с --pad-top 100 (кот крупнее на экране)
+    "v2b": dict(smooth=2, neck=False, eye=0.37, squint_w=2, nose=0.16, mouth=0.28, whisk=12),
+}
+
+
+def _smooth(m, times):
+    for _ in range(times):
+        m = {(x, y) for x in range(oled.W) for y in range(oled.H)
+             if sum((x + i, y + j) in m for i in (-1, 0, 1) for j in (-1, 0, 1)) >= 5}
+    return m
+
+
+def _narrow_body(m, start=0.6, factor=0.84, ramp=6):
+    """Ниже start высоты силуэта - уже к центру, плавно за ramp строк."""
+    ys = [p[1] for p in m]
+    xs = [p[0] for p in m]
+    y0, y1 = min(ys), max(ys)
+    cx = (min(xs) + max(xs)) / 2
+    ycut = y0 + start * (y1 - y0)
+    rows = {}
+    for x, y in m:
+        rows.setdefault(y, []).append(x)
+    out = set()
+    for x, y in m:
+        if y < ycut:
+            out.add((x, y))
+            continue
+        f = 1 - (1 - factor) * min(1.0, (y - ycut) / ramp)
+        if cx + (min(rows[y]) - cx) * f <= x <= cx + (max(rows[y]) - cx) * f:
+            out.add((x, y))
+    return out
+
+
+def draw_frame(a, w, h, prev, open_px, blush_px, style=None):
     """Экранный кадр: силуэт (блоки UP x UP) + нарисованные черты."""
+    st = STYLES["v2"] if style is None else style
     cv = oled.Canvas()
     sw, sh = w // UP, h // UP
     x0, y0 = (oled.W - sw) // 2, (oled.H - sh) // 2
     bg = a["bg"]
+    m = set()
     for y in range(sh):
         for x in range(sw):
             n = sum(1 for dy in range(UP) for dx in range(UP)
                     if not bg[(y * UP + dy) * w + x * UP + dx])
             if n * 2 > UP * UP:
-                cv.pixel(x0 + x, y0 + y)
+                m.add((x0 + x, y0 + y))
+    m = _smooth(m, int(st["smooth"]))
+    if st["neck"] and m:
+        m = _narrow_body(m)
+    for x, y in m:
+        cv.pixel(x, y)
     sticker_outline(cv)
 
     eyes = a["eyes"]
@@ -168,51 +217,61 @@ def draw_frame(a, w, h, prev, open_px, blush_px):
     else:
         return cv, None
     d = max(8.0, math.hypot(rx - lx, ry - ly))
-    ang = math.atan2(ry - ly, rx - lx)
-    ux, uy = math.cos(ang), math.sin(ang)       # вдоль глаз
+    ux, uy = (rx - lx) / d, (ry - ly) / d       # вдоль глаз
     vx, vy = -uy, ux                            # вниз по морде
-    er = 0.22 * d
+    mx, my = (lx + rx) / 2, (ly + ry) / 2
+
+    def at(au, av):
+        return mx + au * d * ux + av * d * vx, my + au * d * uy + av * d * vy
+
+    eo = st["eye"] * d
     for ex, ey in ((lx, ly), (rx, ry)):
         if is_open:                             # крупные глаза, большой и маленький блик
-            eo = 0.29 * d
             fill_ellipse(cv, ex, ey, eo * 0.85, eo, on=False)
-            fill_ellipse(cv, ex + 0.3 * eo, ey - 0.4 * eo, max(1.0, 0.32 * eo), max(1.0, 0.32 * eo))
-            cv.pixel(round(ex - 0.3 * eo), round(ey + 0.35 * eo))
+            fill_ellipse(cv, ex + 0.3 * eo, ey - 0.38 * eo, max(1.0, 0.33 * eo), max(1.0, 0.33 * eo))
+            fill_ellipse(cv, ex - 0.3 * eo, ey + 0.4 * eo, max(0.7, 0.14 * eo), max(0.7, 0.14 * eo))
         else:                                   # довольный прищур «^ ^»
-            for k in (0, 1):
-                ax, ay = ex - er * ux + (0.4 * er + k) * vx, ey - er * uy + (0.4 * er + k) * vy
-                tx, ty = ex - (0.5 * er - k) * vx, ey - (0.5 * er - k) * vy
-                bx, by = ex + er * ux + (0.4 * er + k) * vx, ey + er * uy + (0.4 * er + k) * vy
+            for k in range(int(st["squint_w"])):
+                ax, ay = ex - eo * ux + (0.35 * eo + k) * vx, ey - eo * uy + (0.35 * eo + k) * vy
+                tx, ty = ex - (0.45 * eo - k) * vx, ey - (0.45 * eo - k) * vy
+                bx, by = ex + eo * ux + (0.35 * eo + k) * vx, ey + eo * uy + (0.35 * eo + k) * vy
                 line(cv, ax, ay, tx, ty, on=False)
                 line(cv, tx, ty, bx, by, on=False)
-    mx, my = (lx + rx) / 2, (ly + ry) / 2
-    nx, ny = mx + 0.45 * d * vx, my + 0.45 * d * vy           # нос
-    s = max(1.6, 0.11 * d)
+    s = st["nose"] * d                          # нос
+    nx, ny = at(0, 0.48)
     fill_poly(cv, [(nx - s * ux, ny - s * uy), (nx + s * ux, ny + s * uy),
-                   (nx + s * vx, ny + s * vy)], on=False)
-    for side in (-1, 1):                                       # рот «ω»
-        for a_, b_ in ((0.4, 1.2), (0.9, 1.8), (1.5, 1.8), (2.0, 1.2)):
-            cv.pixel(round(nx + side * a_ * s * ux + b_ * s * vx),
-                     round(ny + side * a_ * s * uy + b_ * s * vy), False)
-    for k in (-1, 0, 1):                                       # полоски на лбу
-        bx, by = mx + k * 0.3 * d * ux - 0.6 * d * vx, my + k * 0.3 * d * uy - 0.6 * d * vy
+                   (nx + 0.9 * s * vx, ny + 0.9 * s * vy)], on=False)
+    mw = st["mouth"] * d                        # рот «ω» - две дуги от носа
+    for side in (-1, 1):
+        cxm, cym = nx + side * 0.5 * mw * ux + 0.9 * s * vx, ny + side * 0.5 * mw * uy + 0.9 * s * vy
+        for k in range(9):
+            t = math.pi * k / 8
+            cv.pixel(round(cxm - side * 0.5 * mw * math.cos(t) * ux + 0.45 * mw * math.sin(t) * vx),
+                     round(cym - side * 0.5 * mw * math.cos(t) * uy + 0.45 * mw * math.sin(t) * vy), False)
+    for k in (-1, 0, 1):                        # полоски на лбу
+        bx, by = at(k * 0.3, -0.62)
         line(cv, bx - 0.13 * d * vx, by - 0.13 * d * vy, bx + 0.13 * d * vx, by + 0.13 * d * vy, on=False)
-    if a["pink"] > blush_px:                                   # румянец
+    if a["pink"] > blush_px:                    # румянец
         for side in (-1, 1):
-            cx_, cy_ = mx + side * 0.8 * d * ux + 0.35 * d * vx, my + side * 0.8 * d * uy + 0.35 * d * vy
+            cxb, cyb = at(side * 0.8, 0.38)
             for k in (-1, 0, 1):
-                line(cv, cx_ + k * 2.2 - 1, cy_ + 1.5, cx_ + k * 2.2 + 1, cy_ - 1.5, on=False)
-    yy = int(round(ny))                                        # усы - от края силуэта наружу
+                line(cv, cxb + k * 2.2 - 1, cyb + 1.5, cxb + k * 2.2 + 1, cyb - 1.5, on=False)
+    yy = int(round(ny))                         # усы - от края силуэта наружу, с изгибом
     if 0 <= yy < oled.H:
         row = [x for x in range(oled.W) if cv.get(x, yy)]
         if row:
+            L = st["whisk"]
             for side, edge in ((-1, min(row)), (1, max(row))):
-                for dy, slope in ((-2, -2), (1, 0), (4, 2)):
-                    line(cv, edge + side, yy + dy, edge + side * 10, yy + dy + slope)
+                for dy, bend in ((-2, -3), (1, 0), (4, 3)):
+                    pts = [(edge + side * (1 + L * t), yy + dy + bend * t * t) for t in (0, 0.33, 0.66, 1.0)]
+                    for (xa, ya), (xb, yb) in zip(pts, pts[1:]):
+                        line(cv, xa, ya, xb, yb)
     return cv, ((lx, ly), (rx, ry), is_open)
 
 
-def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64):
+def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64, pad_top=0, style="v2b"):
+    """pad_top - белое поле над кадром (пикс. исходника): кот меньше, сверху
+    воздух. style - ключ STYLES."""
     dst = oled_video.check_output(dst, src)
     probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                             "stream=width,height", "-of", "csv=p=0", src],
@@ -221,10 +280,12 @@ def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64):
         cw, ch = (int(float(v)) for v in crop.split(":")[:2])
     else:
         cw, ch = int(probe[0]), int(probe[1])
+    ch += pad_top
     sh = min(oled.H, height)
     sw = min(oled.W, round(cw * sh / ch / 2) * 2)
     w, h = sw * UP, sh * UP
-    vf = (f"crop={crop}," if crop else "") + f"fps={fps},scale={w}:{h}:flags=area"
+    vf = (f"crop={crop}," if crop else "") + \
+        (f"pad=iw:ih+{pad_top}:0:{pad_top}:white," if pad_top else "") + f"fps={fps},scale={w}:{h}:flags=area"
     raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(start)] + (["-t", str(dur)] if dur else []) +
                          ["-i", src, "-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                          capture_output=True, check=True).stdout
@@ -245,10 +306,10 @@ def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64):
     # «открытый» глаз - крупнее середины между прищуром и открытым в этом ролике
     sizes = sorted(min(s["eyes"][-1][2], s["eyes"][1][2]) for s in shots if len(s["eyes"]) == 2)
     open_px = (sizes[len(sizes) // 5] + sizes[-max(1, len(sizes) // 5)]) / 2 if sizes else 1e9
-    blush_px = 10 * UP * UP
+    blush_px = 10 * UP * UP * (sw / 58) ** 2      # порог подбирался на коте шириной 58
     frames, prev = [], None
     for s in shots:
-        cv, prev = draw_frame(s, w, h, prev, open_px, blush_px)
+        cv, prev = draw_frame(s, w, h, prev, open_px, blush_px, STYLES[style])
         frames.append(bytes(cv.buf))
     with open(dst, "wb") as f:
         f.write(oled_video.MAGIC + bytes([fps]) + b"".join(frames))
@@ -263,8 +324,10 @@ def main():
     ap.add_argument("--dur", type=float)
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--crop", help="w:h:x:y по исходнику (ffmpeg crop)")
+    ap.add_argument("--pad-top", type=int, default=0, help="белое поле над кадром, пикс. исходника")
+    ap.add_argument("--style", choices=sorted(STYLES), default="v2b")
     a = ap.parse_args()
-    dst, n = make(a.src, a.dst, a.start, a.dur, a.fps, a.crop)
+    dst, n = make(a.src, a.dst, a.start, a.dur, a.fps, a.crop, pad_top=a.pad_top, style=a.style)
     print(f"{dst}: {n} кадров, {a.fps} к/с, {n / a.fps:.1f} с")
 
 
