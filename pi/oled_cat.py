@@ -269,7 +269,57 @@ def draw_frame(a, w, h, prev, open_px, blush_px, style=None):
     return cv, ((lx, ly), (rx, ry), is_open)
 
 
-def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64, pad_top=0, style="v2b"):
+def sway_offsets(shots, w, fps, gain=3.0, max_px=4.0, level=0.35, min_s=0.4):
+    """Добавочный сдвиг вбок для каждого кадра, пикс. экрана.
+
+    В ролике есть участки, где кот, как стикер, быстро переключается между
+    позами «наклон» и «прямо» - центр силуэта скачет всего на ~1 пикс.
+    экрана, и покачивание почти не видно. На таких участках (разброс центра
+    в окне ±0.15 с больше level, дольше min_s) кадр целиком сдвигается так,
+    чтобы размах стал в gain раз больше. Тайминг и позы - ролика: ничего не
+    придумывается, кадр не поворачивается и не режется на строки."""
+    cx = []
+    for s in shots:
+        xs = [i % w for i, b in enumerate(s["bg"]) if not b]
+        cx.append(sum(xs) / len(xs) / UP if xs else 0.0)
+    half = max(1, round(0.15 * fps))
+    spread = []
+    for k in range(len(cx)):
+        win = cx[max(0, k - half):k + half + 1]
+        mu = sum(win) / len(win)
+        spread.append((sum((v - mu) ** 2 for v in win) / len(win)) ** 0.5)
+    out = [0.0] * len(shots)
+    k = 0
+    while k < len(spread):
+        if spread[k] <= level:
+            k += 1
+            continue
+        j = k
+        while j < len(spread) and spread[j] > level:
+            j += 1
+        if j - k >= min_s * fps:
+            base = sum(cx[k:j]) / (j - k)
+            for i in range(k, j):
+                out[i] = max(-max_px, min(max_px, (gain - 1) * (cx[i] - base)))
+        k = j
+    return out
+
+
+def shift_frame(cv, dx):
+    """Кадр целиком на dx пикс. вбок."""
+    dx = int(round(dx))
+    if dx == 0:
+        return cv
+    out = oled.Canvas()
+    for y in range(oled.H):
+        for x in range(oled.W):
+            if cv.get(x, y):
+                out.pixel(x + dx, y)
+    return out
+
+
+def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64, pad_top=0, style="v2b",
+         sway_gain=1.0):
     """pad_top - белое поле над кадром (пикс. исходника): кот меньше, сверху
     воздух. style - ключ STYLES."""
     dst = oled_video.check_output(dst, src)
@@ -307,10 +357,11 @@ def make(src, dst, start=0.0, dur=None, fps=10, crop=None, height=64, pad_top=0,
     sizes = sorted(min(s["eyes"][-1][2], s["eyes"][1][2]) for s in shots if len(s["eyes"]) == 2)
     open_px = (sizes[len(sizes) // 5] + sizes[-max(1, len(sizes) // 5)]) / 2 if sizes else 1e9
     blush_px = 10 * UP * UP * (sw / 58) ** 2      # порог подбирался на коте шириной 58
+    sway = sway_offsets(shots, w, fps, gain=sway_gain) if sway_gain > 1 else [0.0] * len(shots)
     frames, prev = [], None
-    for s in shots:
+    for s, dx in zip(shots, sway):
         cv, prev = draw_frame(s, w, h, prev, open_px, blush_px, STYLES[style])
-        frames.append(bytes(cv.buf))
+        frames.append(bytes(shift_frame(cv, dx).buf))
     with open(dst, "wb") as f:
         f.write(oled_video.MAGIC + bytes([fps]) + b"".join(frames))
     return dst, len(frames)
@@ -326,8 +377,11 @@ def main():
     ap.add_argument("--crop", help="w:h:x:y по исходнику (ffmpeg crop)")
     ap.add_argument("--pad-top", type=int, default=0, help="белое поле над кадром, пикс. исходника")
     ap.add_argument("--style", choices=sorted(STYLES), default="v2b")
+    ap.add_argument("--sway", type=float, default=1.0,
+                    help="во сколько раз усилить покачивания (1 - как в ролике; 3 пробовали - хуже)")
     a = ap.parse_args()
-    dst, n = make(a.src, a.dst, a.start, a.dur, a.fps, a.crop, pad_top=a.pad_top, style=a.style)
+    dst, n = make(a.src, a.dst, a.start, a.dur, a.fps, a.crop, pad_top=a.pad_top, style=a.style,
+                  sway_gain=a.sway)
     print(f"{dst}: {n} кадров, {a.fps} к/с, {n / a.fps:.1f} с")
 
 
