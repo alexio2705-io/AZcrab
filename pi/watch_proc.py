@@ -33,6 +33,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+import watch_logic as wl  # noqa: E402
 from victim_watch import attach_shm  # noqa: E402
 
 IMGSZ = 320
@@ -101,11 +102,15 @@ def main():
         t0 = time.monotonic()
         res = model.predict(frame, imgsz=IMGSZ, conf=conf, verbose=False)[0]
         ms = (time.monotonic() - t0) * 1000.0
-        boxes = [{'cls': str(model.names[int(b.cls[0])]),
+        found = [{'cls': str(model.names[int(b.cls[0])]),
                   'conf': round(float(b.conf[0]), 3),
                   'xyxy': [round(float(v), 1) for v in b.xyxy[0].tolist()]}
                  for b in res.boxes]
-        img = save(frame, boxes, save_dir, idx) if boxes else None
+        # В nav уходят только жертвы; сохраняется кадр с любой рамкой - ложные
+        # метки (H/S/U/letter) на кадрах нужны для дообучения
+        boxes = [{'cls': c, 'conf': p, 'xyxy': x} for c, p, x in
+                 wl.victim_boxes([(b['cls'], b['conf'], b['xyxy']) for b in found])]
+        img = save(frame, found, save_dir, idx) if found else None
         print(json.dumps({'cam': idx, 'id': fid, 'arm': arm, 'boxes': boxes,
                           'ms': round(ms, 1), 'img': img}), flush=True)
 

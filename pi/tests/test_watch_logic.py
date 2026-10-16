@@ -235,6 +235,31 @@ class TestPreferNcnn(unittest.TestCase):
             self.assertEqual(wl.prefer_ncnn(pt), os.path.join(d, "maze_v26n_B_ncnn_model"))
 
 
+class TestVictimBoxes(unittest.TestCase):
+    BOX = (100.0, 100.0, 160.0, 160.0)
+
+    def test_old_model_boxes_pass_unchanged(self):
+        boxes = [("phi", 0.8, self.BOX), ("cognetive", 0.6, (0.0, 0.0, 50.0, 50.0))]
+        self.assertEqual(wl.victim_boxes(boxes), boxes)
+
+    def test_decoy_classes_are_dropped(self):
+        boxes = [("H", 0.9, self.BOX), ("letter", 0.7, (0.0, 0.0, 50.0, 50.0))]
+        self.assertEqual(wl.victim_boxes(boxes), [])
+
+    def test_victim_under_stronger_decoy_is_dropped(self):
+        # одна U приходит и как U 0.9, и как omega 0.5 (topk по якорь×класс)
+        boxes = [("U", 0.9, self.BOX), ("omega", 0.5, (102.0, 101.0, 161.0, 158.0))]
+        self.assertEqual(wl.victim_boxes(boxes), [])
+
+    def test_victim_stronger_than_decoy_stays(self):
+        omega = ("omega", 0.8, self.BOX)
+        self.assertEqual(wl.victim_boxes([("U", 0.4, self.BOX), omega]), [omega])
+
+    def test_decoy_elsewhere_does_not_hide_victim(self):
+        phi = ("phi", 0.5, self.BOX)
+        self.assertEqual(wl.victim_boxes([("S", 0.95, (0.0, 0.0, 50.0, 50.0)), phi]), [phi])
+
+
 class TestWatchAllowed(unittest.TestCase):
     def ok(self, **kw):
         a = dict(ramp_state=None, bump_on=False, assist_mode=None, pitch_delta=0.5,

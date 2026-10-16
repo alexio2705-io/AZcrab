@@ -10,6 +10,8 @@ cam_idx=0 — правая камера, cam_idx=1 — левая.
   'omega'     → Ω → unharmed → 0 аптечек
   'cognetive' → когнитивная цель: цвета 5 колец (ring_colors.py), сумма
                 2 → damaged, 1 → stable, 0 → unharmed, иначе фейк (не жертва)
+Модель C (maze_v26n_C.pt) знает ещё ложные метки 'H', 'S', 'U', 'letter' -
+они не жертвы и отбрасываются в _best (watch_logic.victim_boxes).
 
 Скан стены: быстрый проход по обычному кадру 320x320; если что-то есть —
 отдельный снимок 960x960 с выдержкой 500 мс (та же область сенсора, втрое
@@ -26,6 +28,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import cv2  # noqa: E402
 
 import ring_colors as rc  # noqa: E402
+import watch_logic as wl  # noqa: E402
 from dataset_web import STILL_SIZE, Camera  # noqa: E402
 
 # Модель можно переключить без правки кода: MAZE_MODEL=A ~/maze/venv/bin/python nav.py
@@ -93,17 +96,20 @@ class VictimDetector:
         print(f'[VD] Готов ({side})')
 
     def _best(self, frame, conf):
-        """Лучшая рамка: (класс, уверенность, xyxy в координатах frame) или None."""
+        """Лучшая рамка жертвы: (класс, уверенность, xyxy в координатах frame)
+        или None. Ложные метки (H/S/U/letter у модели C) отбрасываются вместе
+        с рамками жертв под ними - см. watch_logic.victim_boxes."""
         small = frame if frame.shape[1] == IMGSZ else cv2.resize(
             frame, (IMGSZ, IMGSZ), interpolation=cv2.INTER_AREA)
         boxes = self.model.predict(small, imgsz=IMGSZ, conf=conf,
                                    save=False, verbose=False)[0].boxes
-        if len(boxes) == 0:
+        found = wl.victim_boxes([(str(self.model.names[int(b.cls[0])]), float(b.conf[0]),
+                                  b.xyxy[0].tolist()) for b in boxes])
+        if not found:
             return None
-        b = max(boxes, key=lambda b: float(b.conf[0]))
+        cls_name, c, xyxy = max(found, key=lambda b: b[1])
         k = frame.shape[1] / IMGSZ
-        return (str(self.model.names[int(b.cls[0])]), float(b.conf[0]),
-                [float(v) * k for v in b.xyxy[0].tolist()])
+        return cls_name, c, [float(v) * k for v in xyxy]
 
     def scan(self, cell_x: int, cell_y: int, wall_dir=None):
         """
