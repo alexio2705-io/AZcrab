@@ -109,20 +109,14 @@ class TestPostError(unittest.TestCase):
     def wall(lo, hi):
         return [lo + i * 5.0 for i in range(int((hi - lo) / 5.0) + 1)]
 
-    # Стена толщиной 20 мм: на идеальной одометрии она кончается на
-    # полтолщины ЗА границей клеток (столбик), а начинается - на полтолщины ДО.
-    def test_perfect_post_has_no_error(self):
-        self.assertEqual(cr.post_error(self.wall(300, 460), 450.0, True, False), 0.0)
-        self.assertEqual(cr.post_error(self.wall(440, 600), 450.0, False, True), 0.0)
-
     def test_wall_ends_later_than_expected(self):
-        self.assertEqual(cr.post_error(self.wall(300, 475), 450.0, True, False), 15.0)
+        self.assertEqual(cr.post_error(self.wall(300, 465), 450.0, True, False), 15.0)
 
     def test_wall_starts_earlier_than_expected(self):
-        self.assertEqual(cr.post_error(self.wall(430, 600), 450.0, False, True), -10.0)
+        self.assertEqual(cr.post_error(self.wall(440, 600), 450.0, False, True), -10.0)
 
     def test_too_far_is_ignored(self):
-        self.assertIsNone(cr.post_error(self.wall(300, 510), 450.0, True, False))
+        self.assertIsNone(cr.post_error(self.wall(300, 500), 450.0, True, False))
 
     def test_same_sides_have_no_post(self):
         self.assertIsNone(cr.post_error(self.wall(300, 600), 450.0, True, True))

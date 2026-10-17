@@ -48,7 +48,7 @@ flood_fill_run() ищет по уже известным открытым рёб
 
 На каждой клетке, где по бокам есть стена, эта стена сканируется на метку
 жертвы - ОБЕ стороны сразу, каждая своей камерой через YOLO
-(какая камера на какой стороне - watch_logic.CAM_IDX). При жертве - буквенной
+(victim_detect.py: cam_idx=0 правая, cam_idx=1 левая). При жертве - буквенной
 метке (Φ/Ψ/Ω) или когнитивной цели с суммой колец 0/1/2 - включается
 индикация лентой (leds.py) на 5+ секунд, как требуют правила, а при 1-2
 аптечках они ещё и высыпаются. Когнитивная цель с другой суммой - фейк:
@@ -91,7 +91,6 @@ from ld19 import DEFAULT_PORT as LIDAR_PORT, BAUDRATE as LIDAR_BAUD
 from walls import WALL_THRESH, SIDE_THRESH, BACK_THRESH, MASKS as _WALLS_MASKS
 import tile_classify
 import corridor
-import manhattan
 import runplan
 import watch_logic
 from victim_watch import VictimWatcher
@@ -204,13 +203,6 @@ OBSTACLE_TORQUE_MAX_S = 0.65
 #   3) пока нос задран или опущен - ход ограничен (заезд и спуск без разгона).
 OBSTACLE_CAP_CMS = 35.0        # потолок скорости колеса в режиме момента
 OBSTACLE_SLOW_FRAC = 0.6       # импульс, только если едем медленнее этой доли
-# ...и так не меньше OBSTACLE_SLOW_S подряд при заданном ходе от
-# OBSTACLE_MIN_FWD_CMS. Домашний заезд 17.10 (пол с уклоном 5-8°): импульс
-# давался с места (v=0 при fwd~0 - "v=0/0см/с"), а на ходу шёл цикл "импульс
-# -> разгон выше потолка -> ассист снят -> петля скорости тормозит ниже 60% ->
-# импульс" каждые ~0.4 с - рывки на прямых.
-OBSTACLE_SLOW_S = 0.15
-OBSTACLE_MIN_FWD_CMS = 12.0
 TILT_CAP_CMS = 35.0            # ход, пока нос задран на препятствии/горке
 DESCENT_CAP_CMS = 28.0         # ход, пока нос опущен (съезд с препятствия)
 SPEED_WIN_S = 0.06             # окно оценки скорости по одометрии
@@ -315,10 +307,6 @@ RAMP_EXIT_MIN_MM = 50.0
 # плане сдвинут почти на полклетки, и две горки могут округлиться по-разному:
 # печатаем, а record_ramp() ещё сверяет стены на приезде.
 RAMP_PLAN_WARN_FRAC = 0.35
-# План ближе этого к целому числу клеток - ему и верим, без сверки по стенам:
-# сверка слабая (хватает двух совпавших сторон), у соседних клеток стены часто
-# одинаковые, и она "поправляла" верную клетку на соседнюю.
-RAMP_PLAN_SURE_FRAC = 0.2
 RAMP_GAP_CM = 3.0              # провалы наклона короче этого - дрожь, не конец горки
 # Горка - это целые плитки, то есть не короче ~30см по уклону (замер 1
 # плитки в симуляции - 31..34см). Крутая лестница (ступеньки 2см через
@@ -545,48 +533,6 @@ BUMPER_BACKOFF_MM = 70.0
 # поворота на 45° - большого хода не нужно, 70мм в этом манёвре оказалось
 # заметно больше, чем требуется.
 BUMPER_SIDE_BACKOFF_MM = 30.0
-
-# Откат, когда упёрлись бампером, уже заехав в клетку (bumper_entered):
-# клетка засчитана, перед роботу не нужен - только отпустить концевики и
-# не задеть препятствие на повороте. Больше - робот стоит далеко от центра
-# клетки и на повороте к соседней цепляет углом её стену.
-BUMPER_ENTERED_BACKOFF_MM = 25.0
-# Засчитываем клетку, только если после отката до её центра не больше
-# 100 мм (центр робота на 200 мм за центром прежней). Упор у самой границы
-# (сбоку задели препятствие, ехали со смещением) - прежняя клетка: из точки
-# на границе не доехать до центра ни той, ни другой.
-BUMPER_ENTER_MM = 200.0
-# Однобокий удар (bumper_left/right): назад в центр клетки и повтор того же
-# ребра со сдвигом от задетого бока на столько - препятствие у стены выступает
-# в проход не больше чем на ~9 см (3.4.4b), робот в центре занимает ±62 мм из
-# ±140; сдвиг держит центровка (цель - не ось прохода).
-BUMPER_SIDE_SHIFT_MM = 35.0
-# Упёрлись одним боком ближе этого от старта - сдвиг рулём не успеет: шаг
-# вбок манёвром (поворот 90°, проезд, поворот обратно). Было 80: препятствие
-# у стены в начале следующей клетки бьёт на ~140 мм, руль за это время уводит
-# в сторону на считанные мм, и три попытки подряд кончались «ребро
-# непроезжее» - в симуляторе поле 2404 закрывалось после 2 клеток из 40.
-# 250: на 192 полях с препятствиями хуже ни разу, катастрофы ушли (0 -> 490
-# очков), цена - ~0.2 с на заезд.
-BUMPER_SIDE_ROOM_MM = 250.0
-_last_bump_mm = 0.0         # где сработал бампер в последней поездке, мм от её начала
-
-# Встали "у стены", а стена ближе, чем по одометрии, больше чем на это - перед
-# нами, скорее всего, препятствие у стены (3.4.4b), и до центра клетки робот
-# не доехал. Помним смещение (мм, x - восток, y - север): следующая поездка
-# считает путь с него, доводка по передней/задней "стене" вдоль этой оси не
-# делается (она выровняла бы по грани препятствия). Иначе одометрия всех
-# следующих поездок съезжала на 4-6 см, и чёрная приписывалась не той клетке.
-OBST_SHORT_MM = 25.0
-# "Горка" оказалась препятствием, а робот, пока ехал по ней без остановок,
-# проскочил центр клетки больше, чем на это: после остановки - назад к центру.
-NOT_RAMP_BACK_MM = 60.0
-_pos_off = [0.0, 0.0]
-
-
-def _off_along(hdg):
-    """Смещение робота от центра клетки вдоль курса hdg, мм (вперёд > 0)."""
-    return _pos_off[0] * _DX[hdg] + _pos_off[1] * _DY[hdg]
 
 # Если робот крутится не в ту сторону (гироскоп намотан зеркально) -
 # поменять на -1, это единственное место со знаком поворота.
@@ -840,52 +786,13 @@ BLACK_FRACTION = 0.15
 # под этот порог, то есть стала бы "не знаю" вместо "нельзя". 8 даёт 3.4x.
 TILE_MIN_C = 8             # ниже - датчик ничего не видит, не гадаем
 
-# Датчик цвета стоит на переднем бампере по центру - на 9 см впереди центра
-# робота. Плитка, которую он видит, - под ним, а не под центром: на ходу он
-# заезжает на следующую клетку на 9 см раньше центра (см. black_retreat).
-COLOR_SENSOR_FWD_CM = 9.0
-
 # Когда передние колёса заезжают на препятствие, нос поднимается и датчик
 # цвета отдаляется от пола. Малый C в этот момент — не чёрная плитка.
 # После возврата в горизонт даём подвеске/датчику короткое время опуститься.
 PITCH_COLOR_GUARD_DEG = 3.0
 COLOR_RECOVER_S = 0.35
-# Пока датчик слеп (бугорок, COLOR_RECOVER_S), центр робота не заезжает за
-# границу клетки, цвет которой ещё не прочитан: тормозим так, чтобы встать
-# за BLIND_MARGIN_CM до неё, ждём, пока датчик (он на 9 см впереди - уже над
-# той клеткой) прочитает цвет, и едем дальше; чёрная - обычный откат. Иначе
-# решение "цвет не прочитан - стоп" приходило, когда робот уже больше чем
-# наполовину на следующей клетке - на чёрной это LoP. Дольше BLIND_HOLD_MAX_S
-# не ждём (стоим на бугорке и датчик не прозреет).
-BLIND_MARGIN_CM = 3.0
-BLIND_HOLD_MAX_S = 1.5
 
-# Стоянка на синей: регламент 3.2.5b/5.5.1c - 5 с подряд без движения, иначе
-# LoP. Запас как у мигания на метке (VICTIM_STOP_S + MARGIN_S). Отсчёт - с
-# момента, когда робот встал в клетке (замер стен стоя тоже стоянка).
-BLUE_STOP_S = 5.3
-# Цена маршрута - время, с (runplan.bfs_path, route_cost). Замеры по логам
-# симулятора: клетка прямо на крейсерской ~0.55 с; поворот на 90° - сам
-# поворот ~1 с плюс торможение, доводка и замер стоя - ~1.8 с; разворот -
-# два поворота со сканом между ними, ~3 с.
-ROUTE_CELL_S = 0.55
-ROUTE_TURN_S = 1.8
-ROUTE_UTURN_S = 3.0
-# Повторный заезд на ту же синюю - минус 10 очков (5.6.6) и ещё стоянка
-# 5.3 с: ~15 с объезда того стоят. Синюю, которая единственный проход,
-# маршрут всё равно берёт.
-BLUE_REVISIT_COST = 15.0
-
-# Лимит заезда (5.3.1): 8 минут на игру вместе с калибровкой. Бонус за выход
-# (5.6.12: 10 за метку, 10 за синюю, 5 за горку) есть, только если робот
-# вернулся на старт и мигнул 10 с. Перед каждой следующей целью разведки:
-# хватит ли времени доехать до неё и потом домой (по цене маршрута, с
-# запасом) - нет, едем домой сейчас. Отсчёт - от старта заезда (_t_run).
-RUN_BUDGET_S = 470.0          # 480 с игры минус старт с кнопки
-HOME_TIME_FACTOR = 1.3        # маршрут дольше оценки: метки, доводки, бугорки
-HOME_MARGIN_S = 15.0
-FINISH_BLINK_S = 10.5         # мигание на старте (leds.blink_return)
-NEW_CELL_S = 2.0              # приезд в новую клетку: замер стен, камеры
+BLUE_STOP_S = 6.0          # стоянка на синей плитке
 
 # ── Чекпоинт: красная плитка ─────────────────────────────────
 # Красный проверяется ПЕРЕД чёрным, и это не косметика: красная плитка
@@ -1015,34 +922,6 @@ _blocked = set()   # клетки за рёбрами, которые оказа
 WALL_VOTE_CAP = 3
 _wall_votes = {}
 _edge_fixed = {}
-# Запреты двух сортов. Чёрная плитка - настоящая яма, туда нельзя никогда
-# (_black_cells). Всё остальное, закрытое "по факту" (бампер, препятствие,
-# застряли, стена вплотную), - мягкое (_soft_edges): если путь к старту
-# иначе не находится, BFS попробует и через них (см. find_home_path). Заезд
-# кончается только на старте - сдаваться по карте нельзя.
-_black_cells = set()
-_soft_edges = set()
-# Чёрные, пойманные, когда датчик был у самой границы клеток (BLACK_AMBIG_CM):
-# какой клетке она принадлежит, решила одометрия, а она могла уйти (старт не
-# из центра - встали у препятствия, приняв его за стену). Путь домой может
-# пройти через такую, только если иначе пути нет совсем: поле проходимо
-# (5.3.7), значит, какая-то чёрная приписана не той клетке.
-_black_unsure = set()
-BLACK_AMBIG_CM = 4.0
-_last_black_ambig = False
-# Сколько раз мягкий запрет не пустил на пути домой (ребро -> попыток). Ребро,
-# что не пустило HOME_EDGE_TRIES раз, обходной путь домой больше не берёт,
-# пока есть другие: иначе робот бился в одно место до конца заезда, на
-# каждом откате заезжая на соседнюю плитку (с синей - LoP и повтор). После
-# HOME_EDGE_MAX_TRIES не берёт совсем: дальше - разведка того, что ещё не
-# видели (return_to_start). Раньше последний уровень обнулял счёт, и одно и
-# то же ребро чередовалось уровнями до конца заезда (17.10, "СТЕНА
-# ВПЛОТНУЮ d=0" десятки раз). Новый круг попыток - только когда и
-# разведывать нечего, после HOME_LOST_REMEASURES перемеров клетки.
-_home_fails = {}
-HOME_EDGE_TRIES = 2
-HOME_EDGE_MAX_TRIES = 4
-HOME_LOST_REMEASURES = 6
 # Горки: (cx, cy, d) -> (bx, by, плиток, +1 вверх/-1 вниз). Ребро из клетки
 # у подножия (или гребня) по направлению d ведёт не в соседа, а сразу в
 # клетку на другом конце горки, на другом этаже (см. LEVEL_STRIDE). Сами
@@ -1074,16 +953,6 @@ _marks = watch_logic.MarkRegistry()
 # мешает ли инференс петле управления (итог - в конце заезда).
 _tick_ms = {"вкл": watch_logic.Stats(), "выкл": watch_logic.Stats()}
 
-# Для пульта (live.py / dash_web.py): поза и фаза с последнего _write_state,
-# ход drive_cells (обновляется вместе со строкой статуса, ≤10 Гц), начало
-# заезда. Только простые присваивания - поток пульта их лишь читает.
-_live = {"cx": 0, "cy": 0, "hdg": 0, "cp": (0, 0, 0), "phase": "boot", "map_ver": 0}
-_drive_live = None          # {"cell", "rem_mm", "spd", "steer", "mode", "t"} или None
-_t_run = None               # time.monotonic() старта заезда
-_tile_last = None           # последний результат tile_color()
-_live_pub = None
-_live_tee = None
-
 # Снимок карты/меток для веб-страницы. Пишется маленьким JSON-файлом в
 # редкие моменты (приезд в клетку, находка метки), а не каждый тик петли
 # управления - в тайминг самого контура (см. STOP_LEAD_S, MOTOR_CMD_HZ)
@@ -1091,6 +960,17 @@ _live_tee = None
 # файл читает и раздаёт странице - тот же приём, что и у camera_web/app.py
 # и detect_app.py, только без Flask внутри самого nav.py.
 STATE_PATH = os.path.expanduser("~/maze/state.json")
+
+# Для пульта (live.py / dash_web.py) и дисплея сзади (oled.py): поза и фаза с
+# последнего _write_state, ход drive_cells (обновляется вместе со строкой
+# статуса, ≤10 Гц), начало заезда. Только простые присваивания - поток пульта
+# их лишь читает.
+_live = {"cx": 0, "cy": 0, "hdg": 0, "cp": (0, 0, 0), "phase": "boot", "map_ver": 0}
+_drive_live = None          # {"cell", "rem_mm", "spd", "steer", "mode", "t"} или None
+_t_run = None               # time.monotonic() старта заезда
+_tile_last = None           # последний результат tile_color()
+_live_pub = None
+_live_tee = None
 
 _lock = threading.Lock()
 _state = {
@@ -1341,7 +1221,6 @@ def _lidar_thread():
                 _lidar_dropped = msg.get("dropped", 0)
                 _state["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
                 _scan_cnt += 1
-                _note_scan()
                 pts = msg.get("pts")
                 if pts is not None:
                     _scan_pts.append((_scan_cnt, msg.get("t"), msg.get("trev", 0.1), pts))
@@ -1542,7 +1421,7 @@ def _tile_color():
 
 
 @_timed("синяя")
-def blue_stop(cell, since=None):
+def blue_stop(cell):
     """Стоянка на синей плитке - КАЖДЫЙ раз, когда робот на ней оказывается,
     а не только при первом распознавании: если клетка хоть раз была
     распознана как синяя, это помнится навсегда (_blue_cells), и стоянка
@@ -1559,19 +1438,15 @@ def blue_stop(cell, since=None):
     Фиксацию моторов переподтверждаем: удержание на ESP само отпускает через
     3 секунды (BRAKE_HOLD_US), а стоять надо дольше - на наклонном поле робот
     иначе потихоньку поедет.
-
-    since - когда робот встал в клетке (time.monotonic()); стоянка с этого
-    момента, а не с вызова: замер стен до неё тоже стоя.
     """
     _blue_cells.add(cell)
-    now = time.monotonic()
-    end = (now if since is None else min(since, now)) + BLUE_STOP_S
-    print(f"  ■ СИНЯЯ {cell}: стоим {BLUE_STOP_S:.1f}с (ещё {max(0.0, end - now):.1f}с)")
-    while time.monotonic() < end:
+    print(f"  ■ СИНЯЯ {cell}: стоим {BLUE_STOP_S:.0f}с")
+    end = time.time() + BLUE_STOP_S
+    while time.time() < end:
         if interrupted():
             return
         brake()
-        time.sleep(min(0.5, max(0.0, end - time.monotonic())))
+        time.sleep(min(0.5, max(0.0, end - time.time())))
 
 
 def load_tile_calib():
@@ -2043,12 +1918,7 @@ def record_ramp(cx, cy, d, info, measure=None):
 
     bx, by = dest(k)
     cands = [kk for kk in (k, k - 1, k + 1) if kk >= 1]
-    sure = abs(info.get("plan_cells", k) - k) <= RAMP_PLAN_SURE_FRAC
-    if floor_known and sure:
-        # и когда сама клетка ещё не посещена: иначе сверка выбирала
-        # посещённую соседнюю, у которой стены совпали случайно
-        print(f"    горка: план {info.get('plan_cells', k):.2f} кл. - верю, этаж {z} знакомый")
-    elif floor_known and measure is not None and any(dest(kk) in _visited for kk in cands):
+    if floor_known and measure is not None and any(dest(kk) in _visited for kk in cands):
         walls = measure()
         pick = next((kk for kk in cands
                      if dest(kk) in _visited and _walls_match(dest(kk), d, walls)), None)
@@ -2117,13 +1987,9 @@ def vote_wall(cx, cy, d, present):
     _set_wall(cx, cy, d, new)
 
 
-def close_edge(cx, cy, d, soft=True):
-    """Ребро непроезжее по факту (упёрлись) - голоса больше не в счёт.
-    soft - закрыто не чёрной плиткой: открыть его снова может проезд."""
-    key = _edge_key(cx, cy, d)
-    _edge_fixed[key] = True
-    if soft:
-        _soft_edges.add(key)
+def close_edge(cx, cy, d):
+    """Ребро непроезжее по факту (упёрлись) - навсегда, голоса не в счёт."""
+    _edge_fixed[_edge_key(cx, cy, d)] = True
     _set_wall(cx, cy, d, True)
 
 
@@ -2132,14 +1998,7 @@ def open_edge(cx, cy, d):
     оно уже было закрыто по факту, это сильнее: туда упирались."""
     key = _edge_key(cx, cy, d)
     if _edge_fixed.get(key) is True:
-        if key not in _soft_edges:
-            return
-        # Мягкий запрет, а мы проехали (BFS повёл через него, когда иначе
-        # пути не было) - значит, проход: бампер/застревание были случайностью.
-        _soft_edges.discard(key)
-        n = _next_cell(cx, cy, d)
-        if n not in _black_cells:
-            _blocked.discard(n)
+        return
     _edge_fixed[key] = False
     _set_wall(cx, cy, d, False)
 
@@ -2154,26 +2013,13 @@ def set_cell_walls(cx, cy, hdg, walls_rel):
         vote_wall(cx, cy, rel_to_abs[rel], present)
 
 
-def block_black(cx, cy, d):
-    """Ребро в чёрную, пойманную на ходу (drive_cells, reason 'black')."""
-    block_direction(cx, cy, d, black=True)
-    if _last_black_ambig:
-        n = _next_cell(cx, cy, d)
-        _black_unsure.add(n)
-        print(f"    чёрная у самой границы клеток - {n} под сомнением")
-
-
-def block_direction(cx, cy, d, black=False):
+def block_direction(cx, cy, d):
     """Считать ребро (cx,cy)->d непроезжим, хотя лидар мог видеть его как
     открытое - для случаев, которые лидар не предсказывает (чёрная плитка,
     непреодолённое препятствие, бампер вплотную). BFS будет обходить его
-    так же, как настоящую стену. black - за ребром чёрная: запрет жёсткий,
-    остальные мягкие (см. _soft_edges)."""
-    close_edge(cx, cy, d, soft=not black)
-    n = _next_cell(cx, cy, d)
-    _blocked.add(n)
-    if black:
-        _black_cells.add(n)
+    так же, как настоящую стену."""
+    close_edge(cx, cy, d)
+    _blocked.add(_next_cell(cx, cy, d))
 
 
 def open_dirs(cx, cy):
@@ -2184,53 +2030,6 @@ def open_dirs(cx, cy):
         return []
     return [d for d in range(4)
             if cell[d] is False and _next_cell(cx, cy, d) not in _blocked]
-
-
-def route_cost(cell, h, d, nxt):
-    """Цена шага маршрута из cell (въехали курсом h) в nxt по направлению d,
-    в секундах (runplan.bfs_path): клетка прямо, поворот перед ней, а синяя,
-    где уже стояли, - ещё BLUE_REVISIT_COST (повтор - минус 10 очков)."""
-    turn_s = (0.0, ROUTE_TURN_S, ROUTE_UTURN_S, ROUTE_TURN_S)[(d - h) % 4]
-    return ROUTE_CELL_S + turn_s + (BLUE_REVISIT_COST if nxt in _blue_cells else 0.0)
-
-
-def path_time(start, hdg, path):
-    """Сколько секунд ехать по path (направления от start курсом hdg): та же
-    цена, что у маршрута, но вместо штрафа за повторную синюю - её стоянка."""
-    t, (cx, cy), h = 0.0, start, hdg
-    for d in path:
-        n = _next_cell(cx, cy, d)
-        t += ROUTE_CELL_S + (0.0, ROUTE_TURN_S, ROUTE_UTURN_S, ROUTE_TURN_S)[(d - h) % 4]
-        if n in _blue_cells:
-            t += BLUE_STOP_S
-        (cx, cy), h = n, d
-    return t
-
-
-def time_left():
-    """Сколько секунд заезда осталось (RUN_BUDGET_S от _t_run); None - не идёт."""
-    if _t_run is None:
-        return None
-    return RUN_BUDGET_S - (time.monotonic() - _t_run)
-
-
-def must_go_home(cx, cy, hdg, path):
-    """Не успеть доехать по path до следующей цели разведки и оттуда домой
-    (с запасом) - пора домой. Возвращает (пора, причина для лога)."""
-    left = time_left()
-    if left is None:
-        return False, ""
-    t_go = path_time((cx, cy), hdg, path)
-    goal, h = (cx, cy), hdg
-    for d in path:
-        goal, h = _next_cell(goal[0], goal[1], d), d
-    home = find_path_bfs(goal, lambda c: c == (0, 0), h)
-    if home is None:              # отсюда по карте - как отсюда же
-        home, goal, h = find_path_bfs((cx, cy), lambda c: c == (0, 0), hdg) or [], (cx, cy), hdg
-    t_home = path_time(goal, h, home)
-    need = (t_go + NEW_CELL_S + t_home) * HOME_TIME_FACTOR + FINISH_BLINK_S + HOME_MARGIN_S
-    return need > left, (f"осталось {left:.0f}с, до цели {t_go:.0f}с + домой оттуда "
-                         f"{t_home:.0f}с, с запасом {need:.0f}с")
 
 
 def find_path_bfs(start, goal_test, hdg=0):
@@ -2246,56 +2045,7 @@ def find_path_bfs(start, goal_test, hdg=0):
     шаг - первый элемент) или None, если ни одна подходящая клетка не
     достижима по разведанной части лабиринта."""
     return runplan.bfs_path(start, hdg, open_dirs, _next_cell, goal_test,
-                            SIDE_ORDER[_side_pref], route_cost)
-
-
-def _open_dirs_relaxed(level, tries=None):
-    """open_dirs() с ослабленными запретами: level 1 - мягко закрытые рёбра
-    (бампер, препятствие, застревание) и клетки за ними тоже проезжие;
-    level 2 - ещё и рёбра, про которые ничего не известно. Чёрные - никогда.
-    tries - мягкие рёбра, что уже столько раз не пустили домой, не берём."""
-    def dirs(cx, cy):
-        cell = _maze.get((cx, cy))
-        if cell is None:
-            return []
-        out = []
-        for d in range(4):
-            n = _next_cell(cx, cy, d)
-            if n in _black_cells and not (level >= 3 and n in _black_unsure):
-                continue
-            key = _edge_key(cx, cy, d)
-            ok = (cell[d] is False
-                  or (key in _soft_edges and (tries is None or _home_fails.get(key, 0) < tries))
-                  or (level >= 2 and cell[d] is None)
-                  or (level >= 3 and n in _black_unsure))
-            if ok:
-                out.append(d)
-        return out
-    return dirs
-
-
-def find_home_path(cx, cy, hdg):
-    """Путь на старт: обычный BFS, а если по карте его нет - с ослабленными
-    запретами. Настоящий лабиринт связный, и раскладку чёрных судьи проверяют
-    на проходимость - значит, "старт недостижим" - это ошибка в карте (мягкий
-    запрет, недомер), а не повод прекращать заезд. None - не нашлось и так:
-    мягкие рёбра исчерпаны (HOME_EDGE_MAX_TRIES), пора разведывать."""
-    goal = lambda c: c == (0, 0)     # noqa: E731
-    path = find_path_bfs((cx, cy), goal, hdg)
-    if path is not None:
-        return path
-    # Сначала - без мягких рёбер, что уже не пустили (_home_fails); не
-    # нашлось - и через них, но не больше HOME_EDGE_MAX_TRIES раз на ребро.
-    for level, tries, why in ((1, HOME_EDGE_TRIES, "через мягко закрытые рёбра"),
-                              (2, HOME_EDGE_TRIES, "и через неизвестные рёбра"),
-                              (2, HOME_EDGE_MAX_TRIES, "через мягкие рёбра ещё раз"),
-                              (3, HOME_EDGE_MAX_TRIES, "через чёрную под сомнением")):
-        path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level, tries), _next_cell, goal,
-                                SIDE_ORDER[_side_pref], route_cost)
-        if path is not None:
-            print(f"  [WARN] по карте старт недостижим - пробую путь {why}")
-            return path
-    return None
+                            SIDE_ORDER[_side_pref])
 
 
 def find_frontier_path(cx, cy, hdg=0):
@@ -2550,52 +2300,6 @@ def restart_from_checkpoint(checkpoint):
     return cx, cy, hdg
 
 
-# Замеры стен по оборотам с подъезда (задача 5): после каждого оборота -
-# (номер, одометрия, курс, стены стоя). Замер стоя берёт обороты последних
-# WALLS_APPROACH_MM пути без поворота и поправляет перед/зад на пройденное с
-# тех пор, а не ждёт 3 свежих оборота (~0.3 с на каждой остановке).
-# 0 - прежнее поведение: только свежие обороты.
-WALLS_APPROACH_MM = 0.0           # 40 проверено (2026-10-11): домой 99.7→96.7%, время не меньше - выключено
-WALLS_APPROACH_DEG = 1.5
-_wall_hist = deque(maxlen=8)
-
-
-def _note_scan():
-    """Вызывать после каждого оборота лидара, когда стены уже в _state."""
-    try:
-        l, r = get_odo()
-        with _lock:
-            w = dict(_state["wall_still"])
-        _wall_hist.append((_scan_cnt, (l + r) / 2.0, get_yaw(), w))
-    except Exception:          # noqa: BLE001 - поток лидара не должен падать из-за учёта
-        pass
-
-
-def _approach_walls(n):
-    """До n замеров из недавних оборотов, годных для текущей позы: путь с тех
-    пор не больше WALLS_APPROACH_MM, курс тот же. Перед/зад поправлены на
-    пройденное. Самые свежие первыми."""
-    if WALLS_APPROACH_MM <= 0 or not _wall_hist:
-        return []
-    l, r = get_odo()
-    odo = (l + r) / 2.0
-    yaw = get_yaw()
-    out = []
-    for cnt, o, y, w in reversed(_wall_hist):
-        moved_mm = (odo - o) * 10.0
-        if abs(moved_mm) > WALLS_APPROACH_MM or abs(angle_err(yaw, y)) > WALLS_APPROACH_DEG:
-            break
-        w = dict(w)
-        if w.get("front") is not None:
-            w["front"] = w["front"] - moved_mm
-        if w.get("back") is not None:
-            w["back"] = w["back"] + moved_mm
-        out.append(w)
-        if len(out) >= n:
-            break
-    return out
-
-
 def wait_scan(n=2, timeout=3.0):
     """False - свежих сканов нет (лидар молчит): get_walls*() отдаст старое."""
     start = _scan_cnt
@@ -2652,11 +2356,7 @@ def measure_walls(n=WALL_VOTE_SCANS, fresh=False):
     odo0, yaw0 = get_odo(), get_yaw()
     samples = {"front": [], "right": [], "left": [], "back": []}
     fresh_ok = True
-    ready = _approach_walls(max(1, n) - 1) if not fresh else []
-    for w in ready:                      # обороты с подъезда - без ожидания
-        for k in samples:
-            samples[k].append(w[k] if w[k] is not None else FAR)
-    for _ in range(max(1, n) - len(ready)):
+    for _ in range(max(1, n)):
         fresh_ok &= wait_scan(1)
         w = get_walls_still()
         for k in samples:
@@ -2715,7 +2415,7 @@ def gyro_heading():
 
 
 @_timed("поворот")
-def turn_to(target, label=None, seen=None):
+def turn_to(target, label=None):
     """Поворот на АБСОЛЮТНЫЙ курс target (град), без привязки к сетке 90°.
 
     Нужен отдельно от turn(): у объезда препятствия (bumper_side) курс после
@@ -2727,32 +2427,9 @@ def turn_to(target, label=None, seen=None):
     Возвращает True, если доехал до цели; False - прервали (пауза, пропала
     телеметрия) или вышел TURN_TIMEOUT_S. Тогда курс в карте "как просили"
     считать нельзя - вызывающий берёт его с гироскопа (gyro_heading()).
-
-    seen - список: на повороте включён наблюдатель меток (обе стороны), и
-    сюда пишутся уверенные рамки (сторона, курс в момент кадра, рамка) -
-    см. _turn_marks(). Стоя в центре клетки камера видит ~125 мм из 280 мм
-    стены, а на повороте её проносит вдоль всей стены.
     """
     global _turn_ff
     settled = 0
-    watch = (seen is not None and _watcher is not None and not _watcher.dead
-             and _watcher.arm({"left", "right"}))
-    yaw_hist = watch_logic.OdoHistory(keep_s=2.0)
-    yaw_unw = last_yaw = get_yaw()      # без перескока 360 -> 0
-
-    def _watch_poll():
-        nonlocal yaw_unw, last_yaw
-        y = get_yaw()
-        yaw_unw += angle_err(y, last_yaw)
-        last_yaw = y
-        yaw_hist.add(time.monotonic(), yaw_unw)
-        for b in _watcher.poll():
-            x1, y1, x2, y2 = b.xyxy
-            # по высоте не меньше 1/8 кадра - как требует чтение стоя: рамку,
-            # обрезанную краем до полоски, стоя не прочитать
-            if (b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
-                    and y2 - y1 >= watch_logic.FRAME_PX * 0.125):
-                seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf, b.cls))
     tag = label if label is not None else f"{target:.1f}°"
 
     print(f"    поворот {tag}  цель={target:.1f}°  yaw={get_yaw():.1f}°")
@@ -2781,8 +2458,6 @@ def turn_to(target, label=None, seen=None):
         now = time.monotonic()
         elapsed = now - t_ramp
         rate = get_yaw_rate()
-        if watch:
-            _watch_poll()
         # Остаток угла В СТОРОНУ ЦЕЛИ (>0 - крутиться по часовой), и он же с
         # поправкой на запаздывание: к моменту исполнения команды робот уже
         # довернётся на rate * TURN_LEAD_S.
@@ -2880,9 +2555,6 @@ def turn_to(target, label=None, seen=None):
         telem_seq = wait_telem(telem_seq, TURN_DT)
 
     settle_brake(0.10)
-    if watch:
-        _watch_poll()               # кадры, что ещё в обработке
-        _watcher.arm(set())
     done = settled >= TURN_SETTLE
     print(f"    итог yaw={get_yaw():.1f}°  ошибка={angle_err(get_yaw(), target):+.1f}°  "
           f"за {time.monotonic() - t0:.2f}с  TURN_FF={_turn_ff:.3f}"
@@ -2894,7 +2566,7 @@ def turn_to(target, label=None, seen=None):
 # ══════════════════════════════════════════════════════════════
 #  Непрерывный проезд: клетки подряд, без остановки между ними
 # ══════════════════════════════════════════════════════════════
-def _ramp_measure(log, sign, origin_cm=0.0):
+def _ramp_measure(log, sign):
     """Длина горки по записи (одометрия_см, pitch) за проезд.
 
     Подножие и гребень - по пересечению ПОЛОВИНЫ установившегося наклона:
@@ -2904,12 +2576,8 @@ def _ramp_measure(log, sign, origin_cm=0.0):
     Порог по половине реального уклона, а не константой, чтобы горки 25° и
     30° мерились одинаково.
 
-    origin_cm - одометрия центра клетки у подножия: проезд без остановок
-    начинается раньше, на клетку или несколько, а клетка островка
-    отсчитывается от клетки у подножия (record_ramp).
-
     Возвращает dict: sign, tiles, len_cm, slope, foot_cm, crest_cm,
-    start_known (False - поехали уже с горки, длина замерена не вся)."""
+    start_known (False - поехали уже с горки, длина занижена)."""
     ps = [p * sign for _, p in log]
     ds = [d for d, _ in log]
     on = sorted(p for p in ps if p >= RAMP_MAP_DEG)
@@ -2940,8 +2608,8 @@ def _ramp_measure(log, sign, origin_cm=0.0):
         j1 += 1
     rise_cm = sign * sum((ds[i] - ds[i - 1]) * math.sin(math.radians(ps[i]))
                          for i in range(j0 + 1, j1 + 1))
-    # Путь в плане от центра клетки у подножия до гребня.
-    plan_crest_cm = ds[0] - origin_cm + sum((ds[i] - ds[i - 1]) * math.cos(math.radians(ps[i]))
+    # Путь в плане от старта проезда (центр клетки у подножия) до гребня.
+    plan_crest_cm = ds[0] + sum((ds[i] - ds[i - 1]) * math.cos(math.radians(ps[i]))
                                 for i in range(1, i_end + 1))
     plan_cells = (plan_crest_cm + cell_cm * 0.5) / cell_cm
     k = max(1, int(round(plan_cells)))
@@ -2964,7 +2632,7 @@ STATUS_PERIOD_S = 0.1     # строка статуса в drive_cells не ча
 
 
 @_timed("ход")
-def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None, bias_mm=0.0):
+def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None):
     """См. _drive_cells. cell, hdg - клетка, из которой едем, и курс по карте:
     без них наблюдатель меток на ходу не включается (victim_watch.py). Что бы
     ни остановило поездку, наблюдатель после неё выключен.
@@ -2972,13 +2640,10 @@ def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None, bi
     plan (_DrivePlan) - проезд без остановок: в каждой клетке решает план
     ("прямо или стоп", по стенам впереди из corridor.py), а не прежнее
     "справа открыто или спереди стена"; проеханные клетки план сам заносит в
-    карту. Без plan - прежнее поведение.
-
-    bias_mm - держаться на столько правее оси прохода (влево - минус): объезд
-    препятствия, задетого одним боком бампера (BUMPER_SIDE_SHIFT_MM)."""
+    карту. Без plan - прежнее поведение."""
     global _drive_live
     try:
-        return _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm)
+        return _drive_cells(max_cells, expect_ramp, cell, hdg, plan)
     finally:
         _drive_live = None
         if _watcher is not None:
@@ -2988,7 +2653,7 @@ def drive_cells(max_cells, expect_ramp=False, cell=None, hdg=None, plan=None, bi
                 print(line)
 
 
-def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
+def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
     """Едет вперёд, пересекая границы клеток БЕЗ остановки, пока очередная
     клетка не потребует поворота (справа открылось или спереди стена), пока
     не кончится лимит клеток, или пока не вмешается бампер/авария/пауза.
@@ -3019,8 +2684,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
       'front_obstacle' - впереди внезапно что-то близко (не на границе
                          клетки), остановились, не доехав до середины;
                          робот уже вернулся в центр исходной клетки
-      'bumper_*'       - концевики; 'bumper_entered' - упёрлись, уже заехав в
-                         следующую клетку (засчитана, робот откатился)
+      'bumper_*'       - концевики
     """
     z0 = get_z_cnt()
     zero_odo()
@@ -3032,12 +2696,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     target_yaw = snap_target()
 
     last_l, last_r = get_odo()
-    # Старт не из центра (встали у препятствия - см. OBST_SHORT_MM): путь -
-    # от центра клетки, как его и считают границы и решения.
-    traveled_cm = _off_along(gyro_heading()) / 10.0
-    if abs(traveled_cm) > 0.5:
-        print(f"    старт не из центра: {traveled_cm * 10:+.0f}мм по ходу")
-    _pos_off[0] = _pos_off[1] = 0.0
+    traveled_cm = 0.0
     head_off_f = 0.0
     last_steer = 0.0
     cell_cm = CELL_MM / 10.0
@@ -3058,9 +2717,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     assist_t0 = assist_total_t0 = 0.0
     assist_kicks = 0
     assist_gap_until = 0.0
-    short_at_wall = False      # встали у стены раньше, чем ждали (см. _phantom_cells)
-    overshoot_back = False     # "не горка" увезла за цель - после остановки назад
-    slow_since = None          # с какого такта едем медленнее OBSTACLE_SLOW_FRAC
     push_tries = 0             # PUSH_THROUGH_SMALL: сколько раз уже дотолкивали
     assist_progress_cm = 0.0
     assist_progress_t = 0.0
@@ -3083,7 +2739,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     ramp_saved = None
     ramp_log = []
     ramp_cells0 = 0         # сколько клеток проехали до начала горки
-    ramp_origin_cm = 0.0    # одометрия центра клетки у подножия
     # Всплески наклона на ступеньках/лежачих - см. BUMP_EXTRA_MM.
     bump_on = False
     bump_extra_cm = 0.0
@@ -3100,8 +2755,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     reason = "done" if one_cell else "stop"
     v_max = MOVE_MAX_CMS if one_cell else MOVE_MAX_NONSTOP_CMS
     black_back_cm = 0.0     # сколько отъехать назад, если поймали чёрное
-    bump_back_cm = 0.0      # однобокий бампер: сколько назад до центра прежней клетки
-    blind_since = None      # с какого момента ждём датчик цвета у границы
 
     # Скорость по одометрии (для ассиста): окно SPEED_WIN_S, см. v_meas.
     odo_hist = deque()
@@ -3124,7 +2777,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     # watcher = None - в этой поездке наблюдателя нет (или он умер).
     watcher = (_watcher if cell is not None and hdg is not None and not expect_ramp
                else None)
-    side_hold = watch_logic.SideHold(t0=time.monotonic())
+    side_hold = watch_logic.SideHold()
     odo_t = watch_logic.OdoHistory()
     vmark = None
 
@@ -3242,32 +2895,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             side = bumper_side()
             reason = {"left": "bumper_left", "right": "bumper_right"}.get(side, "bumper_both")
             print(f"\n    БАМПЕР ({side}) на {traveled_cm*10:.0f}мм")
-            global _last_bump_mm
-            _last_bump_mm = traveled_cm * 10.0
-            # Упёрлись, заехав в следующую клетку, и после отката останемся
-            # близко к её центру (BUMPER_ENTER_MM) - значит, мы в ней: препятствие
-            # у её дальнего края (3.4.4b - до 10 см от стены). Раньше клетка
-            # не засчитывалась, робот считал себя в прежней, и карта съезжала
-            # на клетку (почти все потери положения в симуляторе при шуме 0).
-            back_mm = BUMPER_ENTERED_BACKOFF_MM if reason == "bumper_both" else BUMPER_SIDE_BACKOFF_MM
-            from_cm = forced_from_cm if wall_forced else boundary_cm - cell_cm
-            past_mm = (traveled_cm - from_cm) * 10.0 - back_mm
-            if ramp_state is None and past_mm >= BUMPER_ENTER_MM:
-                cells += 1
-                if reason == "bumper_both":
-                    reason = "bumper_entered"
-                else:
-                    reason += "_in"         # однобокий, клетка засчитана
-                print(f"    уже в следующей клетке ({past_mm:.0f}мм за центром после отката) - засчитываю")
-            elif reason != "bumper_both":
-                # назад - в центр клетки позади: если план уже засчитал эту
-                # клетку на ходу, а до её центра не доехали (упор раньше), -
-                # в предыдущую, иначе повтор начался бы вплотную к препятствию
-                back_to = from_cm
-                if traveled_cm < from_cm - 1.0 and cells >= 1:
-                    cells -= 1
-                    back_to = from_cm - cell_cm
-                bump_back_cm = traveled_cm - back_to
             break
 
         # ── Чёрная плитка: заезжать нельзя ────────────────────
@@ -3281,28 +2908,19 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             # Назад - в центр клетки перед чёрной. Без остановок чёрная бывает
             # и над клеткой, которую план уже засчитал пройденной.
             cells, black_back_cm = runplan.black_retreat(traveled_cm, boundary_cm,
-                                                         cells, cell_cm,
-                                                         COLOR_SENSOR_FWD_CM)
-            global _last_black_ambig
-            _last_black_ambig = abs(traveled_cm + COLOR_SENSOR_FWD_CM
-                                    - (boundary_cm - cell_cm / 2.0)) < BLACK_AMBIG_CM
+                                                         cells, cell_cm)
             print(f"\n    ЧЁРНАЯ (C={get_rgbc()[3]}) на {traveled_cm*10:.0f}мм - "
                   f"откат {black_back_cm*10:.0f}мм")
             break
         if plan is not None and tile != TILE_UNKNOWN:
-            # Над какой клеткой датчик (он на бампере, впереди центра): N -
-            # уже за её границей (+15мм).
-            k_under = runplan.sensor_cell(traveled_cm, boundary_cm, cells, cell_cm,
-                                          COLOR_SENSOR_FWD_CM)
+            # Над какой клеткой датчик: N - уже за её границей (+15мм).
+            k_under = cells + 1 if traveled_cm >= boundary_cm - cell_cm / 2.0 + 1.5 else cells
             tiles.setdefault(k_under, set()).add(tile)
             if (tile == TILE_BLUE and k_under == cells >= 1 and not stopping
                     and traveled_cm < boundary_cm - cell_cm - 3.0):
                 # Синюю заметили уже после решения "прямо": её центр ещё
-                # впереди - встаём там (правила: стоянка на синей). Счёт
-                # клеток - тоже на одну назад: остановка засчитает клетку
-                # сама (cells += 1), иначе робот считал себя клеткой дальше.
+                # впереди - встаём там (правила: стоянка на синей).
                 boundary_cm -= cell_cm
-                cells -= 1
                 stopping, pending, reason = True, False, "stop"
                 print(f"\n    → кл.{cells}: синяя после решения - стоп в её центре")
             if tile == CHECKPOINT_TILE and 1 <= k_under <= cells and k_under not in cp_done:
@@ -3341,7 +2959,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             elif traveled_cm - ramp_cand_cm >= RAMP_CONFIRM_CM:
                 ramp_state = 'on'
                 ramp_cells0 = cells
-                ramp_origin_cm = boundary_cm - cell_cm   # центр клетки у подножия
                 stopping = pending = False
                 print(f"\n    ГОРКА {'ВВЕРХ' if ramp_sign > 0 else 'ВНИЗ'} "
                       f"({pitch_f:+.1f}°) - еду без остановок до гребня")
@@ -3350,7 +2967,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 if ramp_flat_cm is None:
                     ramp_flat_cm = traveled_cm
                 elif traveled_cm - ramp_flat_cm >= RAMP_FLAT_CM:
-                    info = _ramp_measure(ramp_log, ramp_sign, ramp_origin_cm)
+                    info = _ramp_measure(ramp_log, ramp_sign)
                     f_anchor = None      # всё, что лидар видел на склоне, - мусор
                     if not expect_ramp and (info["len_cm"] < RAMP_MIN_LEN_CM
                             or abs(info["rise_cm"]) < RAMP_MIN_RISE_CM):
@@ -3360,12 +2977,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                               f"высота {info['rise_cm']*10:+.0f}мм - "
                               f"лестница/препятствие")
                         boundary_cm, stopping, pending, reason = ramp_saved
-                        if traveled_cm - boundary_cm > NOT_RAMP_BACK_MM / 10.0:
-                            # "Горка" ехала без остановок и увезла за цель
-                            # (заезд 17:12: на 33 см - целую клетку, которую
-                            # карта не засчитала). Встанем - сдадим назад.
-                            overshoot_back = True
-                            stopping, pending = True, False
                         ramp_state = None
                         ramp_flat_cm = None
                         ramp_log = []
@@ -3476,11 +3087,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                                                  pitch_delta, OBSTACLE_REARM_DEG, wall_forced)
                 watch_armed = watcher.arm(sides if flat and vmark is None else set())
                 for b in watcher.poll():
-                    # Кадр с поворота перед поездкой (наблюдатель там смотрит
-                    # в обе стороны) или со стороны без стены - метка в
-                    # проёме, на дальней стене (домашний заезд 17.10).
-                    if not side_hold.frame_ok(b.side, b.t_frame):
-                        continue
                     m = _watch_decide(b, cell, hdg, odo_t, vmark is not None)
                     if m is not None:
                         # Тормозим К МЕТКЕ: встать с ней в центре кадра, тем
@@ -3576,17 +3182,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 fv, fn = front_votes
                 f_wall = (True if get_bumper() or (fv >= 2 and fv > fn) else
                           False if fn >= 2 and fn > fv else None)
-                if TILE_BLUE in tiles.get(kN, ()) or plan.cell(kN) in _blue_cells:
-                    # и уже известная синяя: на бугорке датчик слепнет, а
-                    # стоянка нужна на каждом визите (3.2.5b)
+                if TILE_BLUE in tiles.get(kN, ()):
                     print(f"\n    → кл.{kN}: синяя - стоп в её центре")
-                    go, walls_rel = False, {}
-                elif USE_COLOR_SENSOR and not tiles.get(kN):
-                    # Над клеткой датчик ни разу не прочитал цвет - он был
-                    # слеп (нос задран на бугорке, PITCH_COLOR_GUARD_DEG). Это
-                    # может быть синяя (нужна стоянка) или чёрная - прямо не
-                    # едем, встаём в центре и смотрим стоя (arrive()).
-                    print(f"\n    → кл.{kN}: цвет не прочитан (датчик был слеп) - стоп")
                     go, walls_rel = False, {}
                 else:
                     go, walls_rel = plan.decide(kN, res, (f_wall, fv, fn))
@@ -3664,7 +3261,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 # Обороты за время стоянки сняты с подъезда и поворотов к
                 # аптечкам - для стен впереди они не годятся.
                 scan_mark = _scan_cnt
-                side_hold.reset(time.monotonic())
+                side_hold.reset()
                 left_cm = boundary_cm - traveled_cm
                 print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
                 if stopping and left_cm * 10.0 < ALIGN_TOL_MM:
@@ -3690,14 +3287,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             cells += 1
             if at_wall:
                 print(f"\n    у стены: f={f_est:.0f}мм")
-                short_mm = (boundary_cm - traveled_cm) * 10.0
-                if short_mm > OBST_SHORT_MM and ramp_state is None:
-                    short_at_wall = True
-                    h_now = gyro_heading()
-                    _pos_off[0] = -short_mm * _DX[h_now]
-                    _pos_off[1] = -short_mm * _DY[h_now]
-                    print(f"    стена ближе, чем по одометрии, на {short_mm:.0f}мм - "
-                          f"препятствие? до центра не доехали")
             break
 
         # ── Профиль скорости ──────────────────────────────────
@@ -3735,22 +3324,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
         else:
             fwd = ramp_up
 
-        # ── Слепой датчик цвета у границы непрочитанной клетки ─
-        if (plan is not None and USE_COLOR_SENSOR and ramp_state is None
-                and tile == TILE_UNKNOWN and not tiles.get(cells + 1)):
-            lim_cm = (boundary_cm - cell_cm / 2.0 - BLIND_MARGIN_CM - traveled_cm
-                      - fwd * STOP_LEAD_S)        # запаздывание петли - как у остановки
-            v_lim = math.sqrt(2.0 * BRAKE_DECEL_CMS2 * max(0.0, lim_cm))
-            if v_lim < fwd:
-                if blind_since is None:
-                    blind_since = now_m
-                    print(f"\n    датчик цвета слеп - не заезжаю в кл.{cells + 1}, пока не прочитает")
-                if now_m - blind_since < BLIND_HOLD_MAX_S:
-                    fwd = v_lim
-                    last_progress_t = now_m          # ждём датчик, а не застряли
-        else:
-            blind_since = None
-
         # ── Центровка: сдвигает цель курса, а не руль ─────────
         wl, wr = walls["left"], walls["right"]
         wall_l = wl is not None and wl < WALL_CENTER_MM
@@ -3764,8 +3337,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
             wall_e = wr - SIDE_CENTER_MM
         else:
             wall_e = 0.0
-        if bias_mm and (wall_l or wall_r):
-            wall_e += bias_mm               # цель - не ось, а bias_mm правее неё
         if abs(wall_e) < WALL_DEADBAND_MM:
             wall_e = 0.0
 
@@ -3819,11 +3390,6 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
         # ниже заданного, см. OBSTACLE_SLOW_FRAC), и снимается сразу, как
         # робот разогнался выше потолка: значит, препятствие уже позади.
         pitch_up = pitch_delta
-        if v_meas < fwd * OBSTACLE_SLOW_FRAC and fwd >= OBSTACLE_MIN_FWD_CMS:
-            if slow_since is None:
-                slow_since = now_m
-        else:
-            slow_since = None
 
         if pitch_up < OBSTACLE_REARM_DEG:
             assist_mode = None
@@ -3838,15 +3404,13 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 if v_meas > cap * 1.15:
                     print(f"\n    ассист снят: {v_meas:.0f}см/с > потолка {cap:.0f} - "
                           f"препятствие позади")
-                    # Попытки не обнуляем: разогнались - значит, импульс
-                    # сработал, и на длинном уклоне без препятствия новый
-                    # импульс - только рывок. Перевзвод - по горизонту.
                     assist_mode = None
+                    assist_kicks = 0
                     assist_gap_until = now_m + OBSTACLE_KICK_GAP_S
                     ramp_announced = False
 
             if (assist_mode is None and pitch_up >= OBSTACLE_PITCH_DEG
-                    and slow_since is not None and now_m - slow_since >= OBSTACLE_SLOW_S
+                    and v_meas < fwd * OBSTACLE_SLOW_FRAC
                     and now_m >= assist_gap_until
                     and assist_kicks < OBSTACLE_KICKS_MAX):
                 assist_mode = 'kick'
@@ -3984,43 +3548,13 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
         # робота обратно к чёрному.
         if black_back_cm > 0.2:
             creep_mm(-black_back_cm * 10.0, target_yaw)
-    elif reason in ("bumper_left", "bumper_right"):
-        # Однобокий удар, клетку не засчитали: назад в центр прежней клетки -
-        # позиция в карте честная, и следующая попытка (со сдвигом вбок,
-        # bias_mm) начнётся оттуда, а не с полпути.
-        if bump_back_cm > 0.2:
-            creep_mm(-bump_back_cm * 10.0, target_yaw,
-                     timeout_s=2.0 + 1.5 * bump_back_cm / ALIGN_SPEED_CMS)
-    elif reason in ("bumper_left_in", "bumper_right_in"):
-        creep_mm(-BUMPER_SIDE_BACKOFF_MM, target_yaw)
-    elif reason == "bumper_entered":
-        # Клетка засчитана, впереди препятствие: только отпустить концевики.
-        # Доводку не делаем - по стене за препятствием она снова повела бы
-        # носом в него (в центр этой клетки не встать).
-        creep_mm(-BUMPER_ENTERED_BACKOFF_MM, target_yaw)
     else:
-        over_mm = (traveled_cm - boundary_cm) * 10.0
-        if overshoot_back and over_mm > NOT_RAMP_BACK_MM:
-            print(f"    проскочили центр клетки на {over_mm:.0f}мм (ехали как по горке) - назад")
-            creep_mm(-over_mm, target_yaw, timeout_s=2.0 + 1.5 * over_mm / 10.0 / ALIGN_SPEED_CMS)
-        if short_at_wall:
-            # Стена ближе, чем по одометрии: препятствие в новой клетке или
-            # стена старой, до которой одометрия "переехала" на клетку?
-            # Решает задняя стена.
-            n_real = _phantom_cells(cell, hdg, cells)
-            if n_real is not None and n_real < cells:
-                print(f"    по задней стене это клетка {n_real} поездки, а не {cells}: "
-                      f"впереди стена, лишнюю клетку не засчитываю")
-                cells = n_real
-                _pos_off[0] = _pos_off[1] = 0.0
         # Проверяем СВЕЖИМ замером всегда. Раньше остановка "по стене" считалась
         # заведомо точной и доводка пропускалась - но дистанция там берётся из
         # f_est, продлённой одометрией между сканами лидара. Если та оценка
         # врала, ошибка ничем не ловилась, и следующий проезд начинался ближе к
         # стене, чем робот думал - ровно так он и попал бампером в стену.
-        align_at_wall(target_yaw,
-                      None if cell is None or hdg is None else _cell_at(cell, hdg, cells),
-                      cells)
+        align_at_wall(target_yaw)
     print()
     return cells, reason
 
@@ -4061,85 +3595,10 @@ def creep_mm(dist_mm, target_yaw, timeout_s=2.0):
     time.sleep(0.08)
 
 
-# Доводка по дальней задней стене: на сколько клеток назад искать по карте
-# известную стену. Дальше - лидар видит её хуже, а разница шага клеток
-# (домашнее поле 17.10: ~315 мм вместо 300) копится по 15 мм на клетку.
-FAR_BACK_CELLS = 3
-
-
-def _far_back_wall(cell, hdg, driven):
-    """Через сколько клеток позади cell (курс hdg) известная по карте стена:
-    k >= 1 или None. Первые driven клеток назад - путь только что
-    проеханной поездки (их стены в карте может ещё не быть, но рёбра по ходу
-    открыты); дальше - только посещённые клетки с известными рёбрами. Через
-    горку не считаем: там другой шаг и другой этаж."""
-    back = (hdg + 2) % 4
-    cx, cy = cell
-    for k in range(1, FAR_BACK_CELLS + 1):
-        if (cx, cy, back) in _ramps:
-            return None
-        cx, cy = cx + _DX[back], cy + _DY[back]
-        if k < driven:
-            continue
-        w = _maze.get((cx, cy))
-        if w is None or w[back] is None:
-            return None
-        if w[back] is True:
-            return k
-    return None
-
-
-def _cells_from_back_wall(cell, hdg):
-    """Через сколько клеток позади cell (курс hdg) известная по карте стена:
-    0 - у самой cell, None - не знаем (дальше FAR_BACK_CELLS, неизвестное
-    ребро, горка)."""
-    back = (hdg + 2) % 4
-    cx, cy = cell
-    for j in range(FAR_BACK_CELLS + 1):
-        w = _maze.get((cx, cy))
-        if w is None or w[back] is None or (cx, cy, back) in _ramps:
-            return None
-        if w[back] is True:
-            return j
-        cx, cy = cx + _DX[back], cy + _DY[back]
-    return None
-
-
-def _phantom_cells(cell, hdg, cells):
-    """Встали у стены раньше, чем ждали по одометрии: сколько клеток поездки
-    на самом деле позади - по задней стене, известной по карте (B стоя против
-    BACK_CENTER_MM + клетки * CELL_MM). None - сверить не с чем. Домашний
-    заезд 17.10: клетки ~315 мм, к концу коридора из четырёх одометрия
-    отставала на 11-13 см, и стену в его конце робот принимал за
-    "препятствие у стены в пятой клетке"."""
-    if cell is None or hdg is None:
-        return None
-    j = _cells_from_back_wall(cell, hdg)
-    if j is None or j + cells > FAR_BACK_CELLS + 1:
-        return None
-    b = measure_walls(WALL_VOTE_SCANS)["back"]
-    if b is None:
-        return None
-    n = int(round((b - BACK_CENTER_MM) / CELL_MM)) - j
-    return n if 0 <= n <= cells else None
-
-
 @_timed("доводка")
-def align_at_wall(target_yaw, cell=None, driven=0):
+def align_at_wall(target_yaw):
     """Доводка вдоль движения: встать в центр клетки по передней стене, а
-    если её нет (например, после разворота) - по задней. cell - клетка, где
-    робот встал после поездки на driven клеток: тогда, если вплотную стен нет,
-    - по известной стене в нескольких клетках позади (_far_back_wall).
-    Домашний заезд 17.10: клетки ~315 мм, одометрия считала по 300, и к
-    третьей клетке прямой робот недоезжал 13 см - стену в конце коридора
-    принимал за "ещё одну клетку" и записывал в карту пятую клетку из четырёх.
-    """
-    off = _off_along(int(round(angle_err(target_yaw, YAW_ORIGIN) / 90.0)) % 4)
-    if abs(off) > 10.0:
-        # стоим не в центре из-за препятствия (OBST_SHORT_MM): по его грани
-        # не выравниваемся, путь следующей поездки учтёт смещение
-        print(f"    [выр] не по стене: до центра {-off:+.0f}мм (препятствие)")
-        return
+    если её нет (например, после разворота) - по задней."""
     on_slope = abs(get_pitch() - _pitch_level) > SLOPE_BACK_GUARD_DEG
     for it in range(ALIGN_TRIES):
         if interrupted():
@@ -4152,24 +3611,12 @@ def align_at_wall(target_yaw, cell=None, driven=0):
         w = measure_walls(WALL_VOTE_SCANS)
         f, b = w["front"], w["back"]
 
-        k_far = None
-        if (cell is not None and not on_slope and b is not None and b >= BACK_THRESH
-                and (f is None or f >= WALL_THRESH)):
-            k_far = _far_back_wall(cell, int(round(angle_err(target_yaw, YAW_ORIGIN)
-                                                    / 90.0)) % 4, driven)
         if f is not None and f < WALL_THRESH:
             need = f - FRONT_CENTER_MM          # >0: не доехали до центра
             src = f"F={f:.0f}"
         elif b is not None and b < BACK_THRESH and not on_slope:
             need = BACK_CENTER_MM - b           # >0: откатились назад
             src = f"B={b:.0f}"
-        elif k_far is not None and b is not None:
-            need = BACK_CENTER_MM + k_far * CELL_MM - b
-            src = f"B={b:.0f} (стена через {k_far} кл.)"
-            if abs(need) > ALIGN_MAX_MM:
-                # лидар видит не ту стену (проём, препятствие) - не верим
-                print(f"    [выр] {src}мм: {need:+.0f}мм - не сходится с картой, пропускаю")
-                return
         else:
             # На наклоне задняя ось - это пол, а не стена (SLOPE_BACK_GUARD_DEG),
             # и вставать по ней значит вставать по полу.
@@ -4180,12 +3627,6 @@ def align_at_wall(target_yaw, cell=None, driven=0):
         if abs(need) < ALIGN_TOL_MM:
             if it:
                 print(f"    [выр] ок, {src}мм")
-            return
-        if k_far is None and ((src.startswith("F") and need < -OBST_SHORT_MM) or
-                              (src.startswith("B") and need > OBST_SHORT_MM)):
-            # "стена" ближе центра клетки на 2.5+ см - это скорее грань
-            # препятствия у стены (3.4.4b): по ней в центр не встать
-            print(f"    [выр] {src}мм: {need:+.0f}мм - похоже на препятствие, не выравниваюсь")
             return
         if abs(need) > ALIGN_MAX_MM:
             print(f"    [выр] {src}мм: {need:+.0f}мм - это не доводка, пропускаю")
@@ -4220,17 +3661,17 @@ def _watch_decide(b, cell, hdg, odo_t, busy):
     key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, b.side),
                                          pos, LEVEL_STRIDE)
     stop, why = watch_logic.decide_stop(b.conf, side_px, key, along, _marks, busy,
-                                        CONF_FAST, MIN_BOX_PX, b.cls)
+                                        CONF_FAST, MIN_BOX_PX)
     print(f"\n    [W] {b.side} {b.cls} {b.conf:.2f} {side_px:.0f}px  путь {t_cm * 10:.0f}мм  "
           f"метка {pos:+.0f}мм (стена {key} {along:.0f}мм) → {why}  {b.image or ''}")
-    return {"side": b.side, "pos_mm": pos, "cls": b.cls} if stop else None
+    return {"side": b.side, "pos_mm": pos} if stop else None
 
 
-def _reject_mark(cell, hdg, side, pos_mm, cls=None):
+def _reject_mark(cell, hdg, side, pos_mm):
     """Наблюдатель сработал, а стоя не подтвердилось - больше здесь не стоим."""
     key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, side),
                                          pos_mm, LEVEL_STRIDE)
-    _marks.add(key, along, "rejected", cls)
+    _marks.add(key, along, "rejected")
 
 
 @_timed("камеры")
@@ -4254,17 +3695,6 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     r = _interrupt_reason()
     if r or det is None:
         return r
-    # Поздно затормозили и центр уже за границей клетки, а под датчиком
-    # синяя: робот больше чем наполовину на ней - стоянка до подъезда
-    # назад к метке, иначе уход с синей без неё - LoP (5.5.1c).
-    k_c = watch_logic.cell_index(trav_mm())
-    if k_c >= 1 and USE_COLOR_SENSOR and tile_color() == TILE_BLUE:
-        bc = _cell_at(cell, hdg, k_c)
-        print(f"    торможение к метке завело на синюю {bc} - стоянка")
-        blue_stop(bc)
-        r = _interrupt_reason()
-        if r:
-            return r
 
     def look():
         try:
@@ -4281,7 +3711,7 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
                                            ALIGN_TOL_MM)
     if creep is None:
         print(f"    метка: нужен подъезд {est:+.0f}мм ({src}) - не верю, отбраковываю")
-        _reject_mark(cell, hdg, side, m["pos_mm"], m.get("cls"))
+        _reject_mark(cell, hdg, side, m["pos_mm"])
         return None
     # 2. Подъезд
     if creep:
@@ -4303,40 +3733,19 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     trav = trav_mm()
     tcell = _cell_at(cell, hdg, watch_logic.cell_index(trav))
     wall_dir = watch_logic.wall_of(hdg, side)
-    # Стена с этой стороны должна быть: по карте, а в новой клетке - по
-    # лидару стоя. Заезд 17:12: Ψ на дальней стене (43px) через проём южной
-    # стороны (-2,-1) прочитали и записали на стену, которой нет, с комплектом.
-    known = _maze.get(tcell)
-    if known is not None and known[wall_dir] is False:
-        no_wall = "по карте"
-    elif not wall_present(measure_walls(WALL_VOTE_SCANS)[side], SIDE_THRESH):
-        no_wall = "по лидару"
-    else:
-        no_wall = None
-    if no_wall:
-        print(f"    метка: стены {_DIR_NAME[wall_dir]} у {tcell} {no_wall} нет - "
-              f"это дальняя стена, не читаю")
-        _reject_mark(cell, hdg, side, m["pos_mm"], m.get("cls"))
-        return _interrupt_reason()
-    result = _read_seen_mark(det, tcell[0], tcell[1], wall_dir, f"чтение метки ({side})")
-    if result is not None and result.get("blink"):
-        result = _confirm(det, tcell[0], tcell[1], wall_dir, result)
+    try:
+        result = det.read_wall(tcell[0], tcell[1], wall_dir)
+    except Exception as e:
+        print(f"    [WARN] чтение метки ({side}): {e}")
+        result = None
     if result is None:
         print(f"    метка не подтвердилась - место отбраковано ({side}, {trav:.0f}мм)")
-        _reject_mark(cell, hdg, side, m["pos_mm"], m.get("cls"))
+        _reject_mark(cell, hdg, side, m["pos_mm"])
         return _interrupt_reason()
     key, along = _mark_world(result, cell, hdg, wall_dir, trav)
+    _marks.add(key, along, "read")
     _scanned_walls.add((tcell[0], tcell[1], wall_dir))
     det.scanned.add((tcell[0], tcell[1], wall_dir))
-    # Наблюдатель тормозит по рамке на ходу, а та же метка могла быть уже
-    # прочитана с поворота - там её место на стене известно хуже (см.
-    # watch_logic.DEDUP_SAME_MM). Второй раз не мигаем и комплекты не даём.
-    dup = _marks.near(key, along, result.get("class"))
-    if dup is not None and dup[2] == "read":
-        print(f"    метка на ходу: {result['label']} в {along:.0f}мм - уже прочитана "
-              f"({dup[1]:.0f}мм), не репортю")
-        return _interrupt_reason()
-    _marks.add(key, along, "read", result.get("class"))
     _victim_log.append({**result, "side": side, "wall_dir": wall_dir, "on_move": True,
                         "ts": time.strftime("%H:%M:%S")})
     print(f"    метка на ходу: {result['label']} → клетка {tcell}, стена "
@@ -4354,80 +3763,6 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
 KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
 
 
-# Мигание - только по уверенной метке: при conf ниже этого - ещё одно чтение
-# стоя (~0.15 с). Не подтвердилась - не мигаем: мигание мимо метки - минус 5
-# очков (5.6.14). 0 - без второго чтения.
-CONFIRM_CONF = 0.7
-
-
-# Метку уже видели (наблюдатель на ходу, кадр на повороте), а кадр стоя пуст -
-# столько кадров всего, прежде чем отбраковать место. Отбракованное место
-# наблюдатель больше не смотрит, и одна осечка камеры теряла метку насовсем.
-MARK_READ_TRIES = 3
-
-
-def _read_seen_mark(det, cx, cy, wall_dir, what):
-    """read_wall() для метки, которую уже видели: пустой кадр - ещё кадр, до
-    MARK_READ_TRIES. Метка или None."""
-    for k in range(MARK_READ_TRIES):
-        try:
-            result = det.read_wall(cx, cy, wall_dir)
-        except Exception as e:
-            print(f"    [WARN] {what}: {e}")
-            result = None
-        if result is not None:
-            return result
-        if k + 1 < MARK_READ_TRIES:
-            print(f"    {what}: на кадре стоя метки нет - ещё кадр")
-    return None
-
-
-def _confirm(det, cx, cy, wall_dir, result):
-    """Настоящая метка (blink) с низкой уверенностью - второй кадр стоя.
-    Возвращает метку, по которой мигать (из двух кадров - уверенней), или
-    None - второй кадр её не увидел. Второй кадр совсем пуст (осечка камеры,
-    а не другое прочтение) - решает третий."""
-    if CONFIRM_CONF <= 0 or result.get("conf", 1.0) >= CONFIRM_CONF:
-        return result
-    try:
-        again = det.read_wall(cx, cy, wall_dir)
-        if again is None:
-            print(f"    {result['label']} (conf {result['conf']:.2f}): второй кадр пуст - третий")
-            again = det.read_wall(cx, cy, wall_dir)
-    except Exception as e:
-        print(f"    [WARN] второй кадр: {e}")
-        return result
-    if again is None or not again.get("blink"):
-        print(f"    {result['label']} (conf {result['conf']:.2f}) вторым кадром не подтвердилась - не мигаю")
-        return None
-    if again.get("type") != result.get("type"):
-        return _vote_type(det, cx, cy, wall_dir, [result, again])
-    return again if again.get("conf", 0.0) > result.get("conf", 0.0) else result
-
-
-def _vote_type(det, cx, cy, wall_dir, reads):
-    """Два кадра назвали разный тип жертвы - третий кадр, решает большинство.
-    Большинства нет - тип, которому положено больше комплектов: лишний
-    комплект не штрафуется (5.6.14 - «не относится к неверному числу
-    комплектов», очки - по минимуму из выданных и нужных), а недоданный -
-    это -10/-20 очков."""
-    try:
-        third = det.read_wall(cx, cy, wall_dir)
-    except Exception as e:
-        print(f"    [WARN] третий кадр: {e}")
-        third = None
-    if third is not None and third.get("blink"):
-        reads = reads + [third]
-    votes = {}
-    for r in reads:
-        votes.setdefault(r.get("type"), []).append(r)
-    best_t, best = max(votes.items(), key=lambda kv: (len(kv[1]), KITS_BY_TYPE.get(kv[0], 0)))
-    why = "большинство" if len(best) >= 2 else "больше комплектов"
-    print(f"    кадры спорят о типе ({', '.join(r['label'] for r in reads)}) - "
-          f"{best[0]['label']} ({why})")
-    return max(best, key=lambda r: r.get("conf", 0.0))
-
-
 def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
     """(ключ стены, мм вдоль неё) прочитанной метки - по её рамке на кадре;
     traveled_mm - сколько робот проехал от центра cell курсом hdg (стоя в
@@ -4435,88 +3770,6 @@ def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
     y1, y2 = result["box_y"]
     pos = watch_logic.mark_pos_mm(traveled_mm, watch_logic.px_to_mm((y1 + y2) / 2.0))
     return watch_logic.world_along(cell, hdg, wall_dir, pos, LEVEL_STRIDE)
-
-
-# Стены клеток, где метку с поворота уже пробовали читать: второй раз не
-# пробуем - иначе неудачное чтение повторялось на каждом повороте в клетке.
-_turn_mark_tried = set()
-
-
-def _turn_marks(cx, cy, seen):
-    """Метки, замеченные наблюдателем на повороте в клетке (cx, cy) (см.
-    turn_to(seen=...)): для каждой стены - рамка, снятая ближе всего к
-    перпендикуляру (watch_logic.TURN_MARK_PHI_MIN..MAX). Если там ещё ничего
-    не читали и не пробовали: довернуться на курс того кадра (под ним метку
-    видно точно), прочитать стоя (read_wall) и отрепортить. Возвращает курс
-    сетки после выдачи комплектов или None (курс не менялся; робот может
-    стоять не по сетке - вызывающий доворачивает сам)."""
-    best = {}
-    for side, yf, xyxy, conf, cls in seen:
-        rel = angle_err(yf, YAW_ORIGIN)
-        h = int(round(rel / 90.0)) % 4
-        phi = angle_err(rel, 90.0 * h)
-        if not watch_logic.TURN_MARK_PHI_MIN <= abs(phi) <= watch_logic.TURN_MARK_PHI_MAX:
-            continue                      # диагональ (какая стена - неясно) или сетка
-        wall_dir = watch_logic.wall_of(h, side)
-        if (cx, cy, wall_dir) in _turn_mark_tried:
-            continue
-        px = max(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])
-        k = (side, wall_dir)
-        if k not in best or abs(phi) < abs(best[k][4]):
-            best[k] = (px, yf, xyxy, h, phi, cls)
-    out_hdg = None
-    for (side, wall_dir), (px, yf, xyxy, h, phi, cls) in best.items():
-        det = _victim_r if side == "right" else _victim_l
-        if det is None or get_esp_paused():
-            continue
-        pos = watch_logic.turned_mark_pos(phi, side, watch_logic.px_to_mm(
-            watch_logic.mark_center_y(xyxy)))
-        if pos is None:
-            continue
-        key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos, LEVEL_STRIDE)
-        known = _maze.get((cx, cy))
-        if known is None or known[wall_dir] is not True:
-            # Стены с этой стороны клетки нет: камера смотрит в проём на
-            # стену соседней клетки или дальше. Метку там не читаем (за
-            # идентификацию дальше 15 см - штраф), как и scan_sides().
-            print(f"    [W] на повороте: {side} {px:.0f}px, стены {_DIR_NAME[wall_dir]} "
-                  f"по карте нет - дальняя стена, пропускаю")
-            continue
-        if _marks.near(key, along, cls) is not None:
-            continue                      # уже читали (или отбраковали) рядом
-        _turn_mark_tried.add((cx, cy, wall_dir))
-        print(f"    [W] на повороте: {side} {px:.0f}px под {phi:+.0f}°, стена "
-              f"{_DIR_NAME[wall_dir]} {along:.0f}мм - доворачиваю на {yf:.0f}°")
-        turn_to(yf, label="к метке")
-        result = _read_seen_mark(det, cx, cy, wall_dir, f"чтение метки ({side})")
-        if result is not None and result.get("blink"):
-            result = _confirm(det, cx, cy, wall_dir, result)
-        if result is None:
-            # кадр на повороте - слабое свидетельство: место не отбраковываем,
-            # наблюдатель на ходу и скан стоя ещё могут её прочитать
-            print("    метка с поворота не подтвердилась")
-            continue
-        phi_now = angle_err(angle_err(get_yaw(), YAW_ORIGIN), 90.0 * h)
-        pos2 = watch_logic.turned_mark_pos(
-            phi_now, side, watch_logic.px_to_mm(sum(result["box_y"]) / 2.0))
-        if pos2 is not None:
-            key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos2, LEVEL_STRIDE)
-        dup = _marks.near(key, along, result.get("class"))
-        if dup is not None and dup[2] == "read":
-            print(f"    [W] {result['label']} в {along:.0f}мм - уже прочитана, не репортю")
-            continue
-        _marks.add(key, along, "read", result.get("class"))
-        _victim_log.append({**result, "side": side, "wall_dir": wall_dir,
-                            "ts": time.strftime("%H:%M:%S")})
-        if result.get("blink"):
-            out_hdg = report_victim(result, side, wall_dir, h)
-    if out_hdg is not None:
-        if abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
-            turn_to(snap_target(), label="по сетке")     # без комплектов стоим, как читали
-        # курс - по гироскопу: после первой метки робот мог довернуть ко
-        # второй, и курс выдачи комплектов первой уже не тот
-        out_hdg = gyro_heading()
-    return out_hdg
 
 
 @_timed("камеры")
@@ -4587,19 +3840,17 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
 
     for side, det, wall_dir in jobs:
         result = results.get(side)
-        if result is not None and result.get("blink"):
-            result = _confirm(det, cx, cy, wall_dir, result)
         if result is None:
             continue
         # Та же метка могла быть прочитана на ходу из соседней клетки (или
         # с другой стороны стыка) - второй раз не репортим.
         key, along = _mark_world(result, (cx, cy), hdg, wall_dir, 0.0)
-        dup = _marks.near(key, along, result.get("class"))
+        dup = _marks.near(key, along)
         if dup is not None and dup[2] == "read":
             print(f"    [W] {side}: {result['label']} в {along:.0f}мм - уже прочитана "
                   f"рядом ({dup[1]:.0f}мм), не репортю")
             continue
-        _marks.add(key, along, "read", result.get("class"))
+        _marks.add(key, along, "read")
         if get_esp_paused():
             # Усыпили посреди скана: находку в лог, но ни мигать, ни
             # разворачиваться - робот должен замереть сразу.
@@ -4738,43 +3989,8 @@ def _measure_cell(hdg):
     YOLO-скана жертвы лидар мог отдать пустой перед просто из-за нагрузки
     на CPU, а верить "открыто" здесь - ехать в стену. Прижатый концевик
     авторитетнее лидара: стена вплотную ближе собственного габарита робота
-    и из замера отфильтрована. Заодно - поправка курса по стенам."""
-    w = _walls_rel_map(measure_front_confirmed())
-    wall_heading_fix()
-    return w
-
-
-# Курс по стенам (manhattan.py): стоя в клетке, угол робота к сетке стен по
-# точкам лидара против того же угла по гироскопу; разница - уход гироскопа,
-# YAW_ORIGIN сдвигается на её долю. Главная причина потерь положения в
-# симуляторе при сильном шуме - уход курса, а повороты его только копят.
-WALL_HDG_SCANS = 3          # оборотов лидара стоя - точки вместе
-WALL_HDG_GAIN = 0.5         # доля разницы за одну остановку
-WALL_HDG_MAX_DEG = 8.0      # больше - не уход, а ошибка замера: не трогаем
-_wall_hdg_total = 0.0       # сколько всего поправили за заезд (для лога)
-
-
-def wall_heading_fix():
-    """Поправить YAW_ORIGIN по стенам (стоя). Возвращает поправку, °, или None."""
-    global YAW_ORIGIN, _wall_hdg_total
-    if abs(get_yaw_rate()) > 5.0:
-        return None                 # ещё крутится - точки смазаны
-    pts = [p for sc in list(_scan_pts)[-WALL_HDG_SCANS:] for p in sc[3]]
-    b = manhattan.wall_angle(pts)
-    if b is None:
-        return None
-    off = angle_err(get_yaw(), snap_target())     # поворот от оси сетки по гироскопу
-    e = off - b
-    if abs(e) > WALL_HDG_MAX_DEG:
-        print(f"    [курс] стены {b:+.1f}° против гироскопа {off:+.1f}° - не верю")
-        return None
-    fix = WALL_HDG_GAIN * e
-    YAW_ORIGIN = (YAW_ORIGIN + fix) % 360.0
-    _wall_hdg_total += fix
-    if abs(fix) >= 0.3:
-        print(f"    [курс] по стенам {b:+.1f}°, гироскоп {off:+.1f}° - "
-              f"сетка {fix:+.1f}° (всего {_wall_hdg_total:+.1f}°)")
-    return fix
+    и из замера отфильтрована."""
+    return _walls_rel_map(measure_front_confirmed())
 
 
 def _walls_rel_map(w):
@@ -4850,8 +4066,7 @@ class _DrivePlan:
                         if abs_w[d] is False and _next_cell(cx, cy, d) not in _blocked]
 
             goal = self.goal_test if self.home else (lambda c: c != N and self.goal_test(c))
-            go = runplan.go_straight(N, hdg, od, _next_cell, goal, SIDE_ORDER[_side_pref],
-                                     route_cost)
+            go = runplan.go_straight(N, hdg, od, _next_cell, goal, SIDE_ORDER[_side_pref])
             why = "известна" if N in _visited else "новая"
         r, l = sides_res["right"], sides_res["left"]
         print(f"\n    → кл.{N}: R={_WALL_TXT[walls['right']]}({r[1]}т,{r[2]:.0f}мм) "
@@ -4875,21 +4090,6 @@ class _DrivePlan:
     def checkpoint(self, k):
         if self.on_checkpoint is not None:
             self.on_checkpoint(self.cell(k))
-
-
-def _side_step(shift_mm):
-    """Шаг вбок на shift_mm (вправо > 0) на месте: поворот на 90° в ту
-    сторону, проезд, поворот обратно - для повтора ребра после однобокого
-    удара, когда до препятствия нет хода, чтобы сдвинуться рулём."""
-    if abs(shift_mm) < 1.0 or get_esp_paused():
-        return
-    base = snap_target()
-    step = 90 if shift_mm > 0 else -90
-    print(f"    шаг вбок {shift_mm:+.0f}мм")
-    if turn(step) and not get_esp_paused():
-        creep_mm(abs(shift_mm), snap_target())
-    if not get_esp_paused():
-        turn_to(base, label="обратно")
 
 
 def wait_for_robot(cx, cy, hdg, checkpoint, phase):
@@ -4943,16 +4143,13 @@ def flood_fill_run(max_cells):
     ищет кратчайший путь по известным открытым рёбрам до ближайшей ещё не
     посещённой клетки и едет туда. Останавливается сама, когда такой клетки
     не остаётся - возвращает (cx, cy, hdg, checkpoint, status), status:
-    'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells), 'time' (до
-    конца заезда только доехать домой, см. must_go_home). Аварийного
-    выхода нет: связь/моторы - ждём (wait_for_robot), затор - перемеряем и
-    пробуем дальше; заезд кончается только на старте."""
+    'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells),
+    'fatal' (связь/одометрия/полный затор - дальше ехать нельзя)."""
     cx, cy, hdg = 0, 0, 0
     checkpoint = (cx, cy, hdg)
     stalls = 0
     obstacle_fails = 0
     bumper_side_fails = 0
-    side_bias = None         # (cx, cy, hdg, мм) - повтор ребра со сдвигом вбок
     total = 0
 
     def arrive(new_cell):
@@ -4960,8 +4157,7 @@ def flood_fill_run(max_cells):
         сканируем обе боковые камеры; в любом случае проверяем плитку.
         Курс может измениться: после выдачи аптечек робот остаётся спиной
         к метке (см. report_victim)."""
-        nonlocal checkpoint, hdg, cx, cy
-        t_still = time.monotonic()      # встали - отсюда и стоянка на синей
+        nonlocal checkpoint, hdg
         # Позицию - на веб сразу по приезде, не дожидаясь замера стен, синей
         # стоянки и камер: иначе робот на карте отставал на всё это время.
         _write_state(cx, cy, hdg, checkpoint, "exploring")
@@ -4969,32 +4165,18 @@ def flood_fill_run(max_cells):
         # (см. vote_wall), и ошибка первого приезда исправляется сама.
         walls_rel = _measure_cell(hdg)
         set_cell_walls(cx, cy, hdg, walls_rel)
-        if get_esp_paused():
-            return      # спим - ни синей стоянки, ни сканов; разберётся цикл
-        # Цвет - после замера стен: к этому времени датчик уже не слеп после
-        # бугорка (COLOR_RECOVER_S), а стоя он над этой же клеткой (бампер
-        # на 9 см впереди центра, до границы 15).
-        tile = tile_color()
-        if tile == TILE_BLACK and (cx, cy) != (0, 0):
-            # Въехали на чёрную, пока датчик был слеп (бугорок у её края).
-            # Приехали сюда прямо по hdg - назад ровно на клетку туда же, а
-            # эту клетку - непроезжей, как если бы чёрную увидели на ходу.
-            back = _next_cell(cx, cy, (hdg + 2) % 4)
-            print(f"  ■ ЧЁРНАЯ под роботом ({cx},{cy}) - назад в {back}")
-            creep_mm(-float(CELL_MM), snap_target(), timeout_s=4.0)
-            block_direction(back[0], back[1], hdg, black=True)
-            cx, cy = back
-            _write_state(cx, cy, hdg, checkpoint, "exploring")
-            return
         if new_cell:
             _visited.add((cx, cy))
         _write_state(cx, cy, hdg, checkpoint, "exploring")   # стены
 
+        if get_esp_paused():
+            return      # спим - ни синей стоянки, ни сканов; разберётся цикл
+        tile = tile_color()
         # Живое распознавание ИЛИ клетка уже когда-то была признана синей -
         # см. blue_stop()/_blue_cells: однажды подтверждённому факту доверяем
         # больше, чем одному текущему замеру датчика цвета.
         if tile == TILE_BLUE or (cx, cy) in _blue_cells:
-            blue_stop((cx, cy), since=t_still)
+            blue_stop((cx, cy))
         # Чекпоинт запоминается стоя в центре клетки: на ходу цвет не
         # читается при задранном носе (PITCH_COLOR_GUARD_DEG).
         if tile == CHECKPOINT_TILE and checkpoint[:2] != (cx, cy):
@@ -5036,11 +4218,6 @@ def flood_fill_run(max_cells):
                   "больше нет - разведка завершена")
             _write_state(cx, cy, hdg, checkpoint, "explored")
             return cx, cy, hdg, checkpoint, "explored"
-        late, why = must_go_home(cx, cy, hdg, path)
-        if late:
-            print(f"  ⏳ Время: {why} - домой, разведку бросаю")
-            _write_state(cx, cy, hdg, checkpoint, "time")
-            return cx, cy, hdg, checkpoint, "time"
 
         d = path[0]
         now = time.monotonic()
@@ -5059,9 +4236,7 @@ def flood_fill_run(max_cells):
             steps = (90, 90) if abs(delta) == 180 else (delta,)
             replan = False
             for i, step in enumerate(steps):
-                tgt = snap_target(step)
-                seen = []
-                ok = turn_to(tgt, label=f"{step:+.0f}°", seen=seen)
+                ok = turn(step)
                 if get_esp_paused():
                     replan = True
                     break
@@ -5071,16 +4246,6 @@ def flood_fill_run(max_cells):
                     _write_state(cx, cy, hdg, checkpoint, "exploring")
                     replan = True
                     break
-                if seen:
-                    h = _turn_marks(cx, cy, seen)
-                    if h is not None:
-                        # выдали комплекты - стоим спиной к метке, шаг заново
-                        hdg = h
-                        _write_state(cx, cy, hdg, checkpoint, "exploring")
-                        replan = True
-                        break
-                    if abs(angle_err(get_yaw(), tgt)) > TURN_TOL_DEG:
-                        turn_to(tgt, label="обратно")
                 # После поворота стены поменялись местами - встаём в центр
                 # клетки по тому, что видно. Мерить после поворота точнее, чем
                 # предсказывать до него. Посередине разворота на 180° - не
@@ -5118,9 +4283,8 @@ def flood_fill_run(max_cells):
 
         plan = _DrivePlan((cx, cy), hdg, lambda c: c not in _visited,
                           on_checkpoint=on_checkpoint)
-        bias = side_bias[3] if side_bias is not None and side_bias[:3] == (cx, cy, hdg) else 0.0
         n, reason = drive_cells(max(1, max_cells - total), expect_ramp=(cx, cy, hdg) in _ramps,
-                                cell=(cx, cy), hdg=hdg, plan=plan, bias_mm=bias)
+                                cell=(cx, cy), hdg=hdg, plan=plan)
         if n > 0:
             # Клетки до последней уже в карте (_DrivePlan.passed); последний
             # шаг - как раньше: проход по факту или горка, и замер стоя.
@@ -5138,7 +4302,7 @@ def flood_fill_run(max_cells):
         if reason == "odo_fault":
             # Одометрия не растёт. Энкодеры молчат - моторы выключены: ждём.
             # Отвечают - колёса крутить не может, то есть застряли: отъехать
-            # и считать ребро (мягко) закрытым, как непреодолённое препятствие.
+            # и считать ребро закрытым, как непреодолённое препятствие.
             if wait_for_robot(cx, cy, hdg, checkpoint, "exploring"):
                 continue
             print("    одометрия не растёт при живых энкодерах - застряли, ребро закрыто")
@@ -5190,7 +4354,7 @@ def flood_fill_run(max_cells):
             # Ребро в чёрную клетку непроезжее - BFS обойдёт его сам, без
             # жёстко зашитого разворота на 180.
             print("    чёрная клетка - ребро непроезжее")
-            block_black(cx, cy, hdg)
+            block_direction(cx, cy, hdg)
             stalls = 0
             continue
 
@@ -5205,40 +4369,39 @@ def flood_fill_run(max_cells):
             continue
 
         elif reason in ("bumper_left", "bumper_right"):
-            # Сработал только ОДИН концевик - задели что-то одним боком
-            # (препятствие у стены). drive_cells уже вернул робота в центр
-            # клетки; следующая попытка того же ребра - со сдвигом от
-            # задетого бока (bias_mm), центровка его держит.
-            bumper_side_fails += 1
+            # Сработал только ОДИН концевик - задели что-то одним боком, не
+            # стеной по центру. Объезд: поворот на 45° В СТОРОНУ ОТ задетого
+            # бока, откат, возврат на исходный курс - и следующая итерация
+            # сама попробует то же ребро заново. Знак подобран эмпирически
+            # (как TURN_SIGN) - по факту "слева" оказалось направо.
+            base_yaw = snap_target()
+            away_deg = -45 if reason == "bumper_left" else 45
             side_ru = "слева" if reason == "bumper_left" else "справа"
+            print(f"    асимметричный бампер ({side_ru}) - "
+                  f"поворот {away_deg:+.0f}°, откат {BUMPER_SIDE_BACKOFF_MM:.0f}мм, возврат курса")
+            turn(away_deg)
+            if not get_esp_paused():
+                creep_mm(-BUMPER_SIDE_BACKOFF_MM, get_yaw())
+            if not get_esp_paused():
+                turn_to(base_yaw)
+            bumper_side_fails += 1
             if bumper_side_fails >= BUMPER_SIDE_RETRIES:
                 print("    асимметричный бампер повторился - считаю ребро непроезжим")
                 block_direction(cx, cy, hdg)
                 bumper_side_fails = 0
-                side_bias = None
-            else:
-                shift = BUMPER_SIDE_SHIFT_MM * (1 if reason == "bumper_left" else -1)
-                side_bias = (cx, cy, hdg, shift * bumper_side_fails)
-                print(f"    асимметричный бампер ({side_ru}) - повтор со сдвигом "
-                      f"{side_bias[3]:+.0f}мм вбок")
-                if _last_bump_mm < BUMPER_SIDE_ROOM_MM:
-                    _side_step(shift)
             stalls = 0
             continue
 
         bumper_side_fails = 0
-        side_bias = None
         # Защита от залипания: если робот несколько раз подряд не смог
         # продвинуться ни на клетку по ЛЮБОЙ причине, дальше крутиться
         # бессмысленно - что-то системно не так.
-        stalls = stalls + 1 if n == 0 else 0
+        # Ждали выключенные моторы - это не попытка проехать.
+        stalls = stalls + 1 if n == 0 and reason != "resumed" else 0
         if stalls >= MAX_STALLS:
-            # Раньше здесь заезд прекращался. Теперь - заново перемерить
-            # клетку (карта могла соврать) и пробовать дальше.
-            print("  [WARN] несколько попыток без продвижения - перемеряю клетку")
-            if not get_esp_paused():
-                set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
-            stalls = 0
+            print("  [WARN] застряли - прекращаю разведку")
+            _write_state(cx, cy, hdg, checkpoint, "fatal")
+            return cx, cy, hdg, checkpoint, "fatal"
 
     print(f"  [WARN] потолок клеток ({max_cells}) исчерпан - прекращаю разведку")
     _write_state(cx, cy, hdg, checkpoint, "cap")
@@ -5257,8 +4420,6 @@ def return_to_start(cx, cy, hdg, checkpoint):
     if (cx, cy) == (0, 0):
         return cx, cy, hdg
     print("\n  ↩ Возврат на старт (BFS по известной карте)")
-    home_bias, side_fails = None, 0       # повтор ребра со сдвигом (см. flood_fill_run)
-    exploring, lost = False, 0            # старт недостижим: разведка / перемеры подряд
 
     while (cx, cy) != (0, 0):
         if _lifted.is_set():
@@ -5275,105 +4436,45 @@ def return_to_start(cx, cy, hdg, checkpoint):
 
         if wait_for_robot(cx, cy, hdg, checkpoint, "returning"):
             continue
-            continue
 
-        path = find_home_path(cx, cy, hdg)
-        explore = False
+        path = find_path_bfs((cx, cy), lambda c: c == (0, 0), hdg)
         if path is None:
-            # Мягкие рёбра исчерпаны - карта где-то врёт (стена, которой при
-            # разведке не было, или сама поза). Повторять тот же ход нечего:
-            # разведываем, чего ещё не видели, - обход найдётся там.
-            path = find_frontier_path(cx, cy, hdg)
-            explore = path is not None
-            if explore and not exploring:
-                print("  [WARN] старт недостижим и через мягкие рёбра - "
-                      "разведываю неразведанное, ищу обход")
-        exploring = explore
-        if path is None:
-            # Разведывать нечего - перемерить клетку (голоса лидара могут
-            # открыть ребро) и искать снова; долго ничего - новый круг
-            # попыток через мягкие рёбра: заезд кончается только на старте.
-            lost += 1
-            print("  [WARN] путь на старт не найден - перемеряю клетку и ищу снова")
-            _write_state(cx, cy, hdg, checkpoint, "returning")
-            if not get_esp_paused():
-                set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
-            if lost >= HOME_LOST_REMEASURES:
-                print("  [WARN] перемеры ничего не дали - новый круг попыток через мягкие рёбра")
-                _home_fails.clear()
-                lost = 0
-            time.sleep(0.5)
-            continue
-        lost = 0
+            print("  [FATAL] Старт недостижим по известной карте — возврат прерван")
+            _write_state(cx, cy, hdg, checkpoint, "fatal")
+            return cx, cy, hdg
 
         d = path[0]
         delta = DIR_DELTA[(d - hdg) % 4]
         if delta != 0:
-            # как при разведке: наблюдатель меток на поворотах, а разворот у
-            # невиданной стены (тупик, где разведка кончилась) - двумя по 90°
-            # со сканом посередине: на середине эта стена сбоку
-            unseen = any(_maze.get((cx, cy), [None] * 4)[w] is True
-                         and (cx, cy, w) not in _scanned_walls for w in range(4))
-            steps = (90, 90) if abs(delta) == 180 and unseen else (delta,)
-            ok, replan = True, False
-            for i, step in enumerate(steps):
-                tgt = snap_target(step)
-                seen = []
-                ok = turn_to(tgt, label=f"{step:+.0f}°", seen=seen)
-                if get_esp_paused() or not ok:
-                    break
-                if seen:
-                    h2 = _turn_marks(cx, cy, seen)
-                    if h2 is not None:
-                        hdg, replan = h2, True
-                        break
-                    if abs(angle_err(get_yaw(), tgt)) > TURN_TOL_DEG:
-                        turn_to(tgt, label="обратно")
-                hdg = (hdg + step // 90) % 4
-                if i < len(steps) - 1:
-                    h2 = scan_cell(cx, cy, hdg)
-                    if h2 != hdg:
-                        hdg, replan = h2, True
-                        break
+            ok = turn(delta)
             if get_esp_paused():
                 continue
             if not ok:
                 hdg = gyro_heading()
                 _write_state(cx, cy, hdg, checkpoint, "returning")
                 continue
-            if replan:
-                _write_state(cx, cy, hdg, checkpoint, "returning")
-                continue
             align_at_wall(snap_target())
             hdg = d
             _write_state(cx, cy, hdg, checkpoint, "returning")
 
-        # Разведка по пути домой - до первой неразведанной клетки: встать в
-        # ней, как на старте (home=True), и снова искать путь домой.
-        goal = (lambda c: c not in _visited) if explore else (lambda c: c == (0, 0))
-        plan = _DrivePlan((cx, cy), hdg, goal, home=True)
-        bias = home_bias[3] if home_bias is not None and home_bias[:3] == (cx, cy, hdg) else 0.0
+        plan = _DrivePlan((cx, cy), hdg, lambda c: c == (0, 0), home=True)
         n, reason = drive_cells(300, expect_ramp=(cx, cy, hdg) in _ramps,
-                                cell=(cx, cy), hdg=hdg, plan=plan, bias_mm=bias)
+                                cell=(cx, cy), hdg=hdg, plan=plan)
         if n > 0:
             cx, cy = plan.cell(n - 1)
             if reason != "ramp":
                 open_edge(cx, cy, hdg)
             cx, cy = _arrived_cell(cx, cy, hdg, reason)
-            t_still = time.monotonic()
-            # Позицию - до синей стоянки, а не после.
+            # Позицию - до синей стоянки (она 6с), а не после.
             _write_state(cx, cy, hdg, checkpoint, "returning")
             # Голос и на обратном пути: если карта ошиблась, BFS сразу
             # перестроит маршрут до старта.
             if not get_esp_paused():
                 set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
-                if explore and (cx, cy) not in _visited:
-                    _visited.add((cx, cy))
-                    print(f"    разведана ({cx},{cy}) - ищу путь на старт заново")
             # Синяя клетка требует стоянки на КАЖДОМ визите, включая обратный
             # путь - см. blue_stop()/_blue_cells.
             if tile_color() == TILE_BLUE or (cx, cy) in _blue_cells:
-                blue_stop((cx, cy), since=t_still)
+                blue_stop((cx, cy))
 
         if reason in ("paused", "lifted", "link_lost"):
             continue
@@ -5387,20 +4488,13 @@ def return_to_start(cx, cy, hdg, checkpoint):
         # Карта уже известна, но реальность может разойтись с ней (стену
         # чуть подвинули, лидар ошибся при разведке) - те же реакции, что и
         # при разведке: считаем ребро непроезжим и просим BFS искать заново.
-        if reason in ("obstacle_stall", "ramp_stall", "front_obstacle", "bumper_both",
-                      "bumper_left", "bumper_right") or (reason == "wall_close" and n == 0):
-            key = _edge_key(cx, cy, hdg)
-            _home_fails[key] = _home_fails.get(key, 0) + 1
-            if _home_fails[key] == HOME_EDGE_MAX_TRIES and key in _soft_edges:
-                print(f"  [WARN] ({cx},{cy}) {_DIR_NAME[hdg]} не пустило "
-                      f"{HOME_EDGE_MAX_TRIES} раз - туда больше не еду")
         if reason in ("obstacle_stall", "ramp_stall"):
             if reason == "obstacle_stall":
                 creep_mm(-OBSTACLE_BACKOFF_MM, snap_target())
             block_direction(cx, cy, hdg)
             continue
         if reason == "black":
-            block_black(cx, cy, hdg)
+            block_direction(cx, cy, hdg)
             continue
         if reason == "front_obstacle":
             close_edge(cx, cy, hdg)          # см. то же место в flood_fill_run
@@ -5413,77 +4507,19 @@ def return_to_start(cx, cy, hdg, checkpoint):
             block_direction(cx, cy, hdg)
             continue
         if reason in ("bumper_left", "bumper_right"):
-            # как при разведке: повтор со сдвигом от задетого бока, потом - закрыть
-            side_fails = side_fails + 1 if home_bias is not None and home_bias[:3] == (cx, cy, hdg) else 1
-            if side_fails >= BUMPER_SIDE_RETRIES:
-                block_direction(cx, cy, hdg)
-                home_bias = None
-            else:
-                shift = BUMPER_SIDE_SHIFT_MM * (1 if reason == "bumper_left" else -1)
-                home_bias = (cx, cy, hdg, shift * side_fails)
-                if _last_bump_mm < BUMPER_SIDE_ROOM_MM:
-                    _side_step(shift)
+            base_yaw = snap_target()
+            away_deg = -45 if reason == "bumper_left" else 45
+            turn(away_deg)
+            if not get_esp_paused():
+                creep_mm(-BUMPER_SIDE_BACKOFF_MM, get_yaw())
+            if not get_esp_paused():
+                turn_to(base_yaw)
+            block_direction(cx, cy, hdg)
             continue
 
     print(f"  ✓ На старте ({cx},{cy}) курс={_DIR_NAME[hdg]}")
-    hdg = _scan_unseen_walls(cx, cy, hdg)
     _write_state(cx, cy, hdg, checkpoint, "at_start")
     return cx, cy, hdg
-
-
-def _scan_unseen_walls(cx, cy, hdg):
-    """Стены клетки, которых камеры ещё не видели (стартовая: задняя стена,
-    если робот уехал прямо и вернулся с той же стороны), - осмотреть с обоих
-    курсов, при которых стена сбоку: стоя камера видит ~125 мм из 280 мм
-    стены, два положения вместе - всю. На поворотах - наблюдатель. Перед
-    миганием на старте: время уже не жалко, бонус за выход - по миганию.
-    Возвращает итоговый курс."""
-    cell = _maze.get((cx, cy))
-    if cell is None or (_victim_r is None and _victim_l is None):
-        return hdg
-    for d in range(4):
-        if cell[d] is not True or (cx, cy, d) in _scanned_walls or get_esp_paused():
-            continue
-        print(f"    досмотр стены {_DIR_NAME[d]} на старте")
-        _scanned_walls.add((cx, cy, d))
-        for h in ((d + 1) % 4, (d + 3) % 4):
-            delta = DIR_DELTA[(h - hdg) % 4]
-            for step in ((90, 90) if abs(delta) == 180 else (delta,) if delta else ()):
-                seen = []
-                if not turn_to(snap_target(step), label=f"{step:+.0f}°", seen=seen):
-                    return gyro_heading()
-                hdg = (hdg + step // 90) % 4
-                if seen:
-                    h2 = _turn_marks(cx, cy, seen)
-                    if h2 is not None:
-                        hdg = h2
-                    if abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
-                        turn_to(snap_target(), label="по сетке")
-            if hdg != h:
-                continue                     # после выдачи комплектов курс другой
-            side = "right" if (hdg + 1) % 4 == d else "left"
-            det = _victim_r if side == "right" else _victim_l
-            if det is None:
-                continue
-            try:
-                result = det.read_wall(cx, cy, d)
-            except Exception as e:
-                print(f"    [WARN] скан {side}: {e}")
-                result = None
-            if result is not None and result.get("blink"):
-                result = _confirm(det, cx, cy, d, result)
-            if result is None:
-                continue
-            key, along = _mark_world(result, (cx, cy), hdg, d, 0.0)
-            dup = _marks.near(key, along, result.get("class"))
-            if dup is not None and dup[2] == "read":
-                continue
-            _marks.add(key, along, "read", result.get("class"))
-            _victim_log.append({**result, "side": side, "wall_dir": d,
-                                "ts": time.strftime("%H:%M:%S")})
-            if result.get("blink"):
-                hdg = report_victim(result, side, d, hdg)
-    return hdg
 
 
 def blink_start_return():
@@ -5539,7 +4575,8 @@ def start_map_web():
 
 
 # ══════════════════════════════════════════════════════════════
-#  Пульт: живой снимок для dash_web.py (см. live.py)
+# ══════════════════════════════════════════════════════════════
+#  Пульт: живой снимок для dash_web.py и дисплея (см. live.py)
 # ══════════════════════════════════════════════════════════════
 DASH_WEB_PORT = 8888     # см. dash_web.py
 _live_sent = {"map_ver": -1, "victims": -1}
@@ -5603,11 +4640,11 @@ def _live_snapshot(n):
         # настоящие жертвы (мигали), без фейковых мишеней - для дисплея
         "victims_real": sum(1 for v in list(_victim_log) if v.get("blink")),
         "visited_n": len(_visited),
-        "t_left": _r(time_left()),
+        "t_left": None,          # в этой версии нет бюджета времени
         "side": _side_pref,
         "map_ver": lv["map_ver"],
         "color_on": USE_COLOR_SENSOR,
-        "sim": lv.get("sim"),
+        "sim": None,
         "thr": [WALL_THRESH, SIDE_THRESH, BACK_THRESH],
     }
     if (n % 10 == 0 or lv["map_ver"] != _live_sent["map_ver"]
@@ -5718,13 +4755,11 @@ def main():
 
     print("Ожидание телеметрии ESP...")
     t0 = time.time()
-    warned = False
     while not _state["telem_ok"]:
-        # Не выход: ESP могли ещё не включить - ждём, пульт показывает фазу.
-        if not warned and time.time() - t0 > 5:
-            warned = True
-            print("  [WAIT] нет телеметрии с ESP - жду (" + link_report() + ")")
-            _write_state(0, 0, 0, (0, 0, 0), "wait_link")
+        if time.time() - t0 > 5:
+            print("[FATAL] Нет телеметрии с ESP")
+            print("        " + link_report())
+            sys.exit(1)
         time.sleep(0.05)
 
     # Реально достигнутая частота, а не заявленная. Измерять до того, как
@@ -5813,12 +4848,8 @@ def main():
     print("Ожидание лидара...")
     wait_scan(3, timeout=5.0)
     if _scan_cnt == 0:
-        # Процесс лидара сам перезапускается (_lidar_thread) - ждём оборотов.
-        print("  [WAIT] лидар молчит - жду (кабель, питание мотора лидара?)")
-        _write_state(0, 0, 0, (0, 0, 0), "wait_lidar")
-        while _scan_cnt == 0:
-            wait_scan(1, timeout=1.0)
-        _note_phase("calib")
+        print("[FATAL] Лидар молчит")
+        sys.exit(1)
     w0 = get_walls()
 
     def _f(v): return f"{v:.0f}" if v is not None else "—"
@@ -5846,12 +4877,12 @@ def main():
         cx, cy, hdg, checkpoint, status = flood_fill_run(cells)
         print(time_report({}, time.monotonic() - t_run, prefix="⏱ разведка"))
         print(f"  статус разведки: {status}  позиция ({cx},{cy}) курс={_DIR_NAME[hdg]}")
-        # Заезд кончается только на старте: return_to_start не возвращается,
-        # пока не доедет (ждёт моторы, ищет путь с ослабленными запретами).
-        cx, cy, hdg = return_to_start(cx, cy, hdg, checkpoint)
-        _write_state(cx, cy, hdg, checkpoint, "blinking")
-        blink_start_return()
-        _write_state(cx, cy, hdg, checkpoint, "done")
+        if status != "fatal":
+            cx, cy, hdg = return_to_start(cx, cy, hdg, checkpoint)
+            if (cx, cy) == (0, 0):
+                _write_state(cx, cy, hdg, checkpoint, "blinking")
+                blink_start_return()
+                _write_state(cx, cy, hdg, checkpoint, "done")
     except KeyboardInterrupt:
         print("\nОстановлено.")
     finally:
@@ -5875,9 +4906,6 @@ def main():
         # Карта не критична для самого заезда, поэтому без долгого ожидания:
         # если процесс не отвечает на SIGTERM за секунду, просто оставляем
         # его - следующий запуск лишь получит [WARN] про занятый порт.
-        # Пульт НЕ гасим: после заезда на нём смотрят итог и
-        # запись, а следующий nav.py он подхватит сам. Второй экземпляр,
-        # который поднимет следующий запуск, упрётся в занятый порт и выйдет.
         if map_web_proc is not None:
             map_web_proc.terminate()
             try:

@@ -39,40 +39,6 @@ class TestBfsPath(unittest.TestCase):
         self.assertIsNone(rp.bfs_path((0, 0), N, maze(), nxt, lambda c: c == (5, 5), RIGHT_HAND))
 
 
-class TestStepCost(unittest.TestCase):
-    # квадрат 2x2: из (0,0) в (1,1) через (0,1) или через (1,0)
-    od = staticmethod(maze(((0, 0), N), ((0, 1), E), ((0, 0), E), ((1, 0), N)))
-
-    def goal(self, c):
-        return c == (1, 1)
-
-    def test_tie_keeps_side_priority(self):
-        # правая рука: из (0,0) курсом N сначала направо (E)
-        self.assertEqual(rp.bfs_path((0, 0), N, self.od, nxt, self.goal, RIGHT_HAND), [E, N])
-        unit = lambda c, h, d, n: 1.0        # noqa: E731
-        self.assertEqual(rp.bfs_path((0, 0), N, self.od, nxt, self.goal, RIGHT_HAND, unit), [E, N])
-
-    def test_expensive_cell_avoided(self):
-        blue = {(1, 0)}
-        cost = lambda c, h, d, n: 1.0 + (20.0 if n in blue else 0.0)   # noqa: E731
-        self.assertEqual(rp.bfs_path((0, 0), N, self.od, nxt, self.goal, RIGHT_HAND, cost), [N, E])
-
-    def test_expensive_cell_taken_if_only_way(self):
-        od = maze(((0, 0), E), ((1, 0), E))
-        cost = lambda c, h, d, n: 1.0 + (20.0 if n == (1, 0) else 0.0)   # noqa: E731
-        self.assertEqual(rp.bfs_path((0, 0), N, od, nxt, lambda c: c == (2, 0), RIGHT_HAND, cost),
-                         [E, E])
-
-    def test_turn_cost_prefers_straight(self):
-        # в (2,1) два пути одной длины: N,N,E,E (один поворот) или E,N,E,N (три)
-        od = maze(((0, 0), N), ((0, 1), E), ((1, 1), E), ((0, 0), E), ((1, 0), N),
-                  ((0, 1), N), ((0, 2), E), ((1, 2), E), ((2, 2), S), ((1, 0), E), ((2, 0), N))
-        cost = lambda c, h, d, n: 1.0 + (0.0 if d == h else 2.0)   # noqa: E731
-        path = rp.bfs_path((0, 0), N, od, nxt, lambda c: c == (2, 1), RIGHT_HAND, cost)
-        turns = sum(1 for a, b in zip([N] + path, path) if a != b)
-        self.assertEqual(turns, 1)
-
-
 class TestGoStraight(unittest.TestCase):
     visited = {(0, 0), (0, 1)}
 
@@ -111,30 +77,6 @@ class TestBlackRetreat(unittest.TestCase):
 
     def test_black_in_next_cell_before_decision(self):
         self.assertEqual(rp.black_retreat(48.0, 60.0, 1, 30.0), (1, 18.0))
-
-    def test_sensor_ahead_sees_next_cell_first(self):
-        # Датчик на бампере, 9см впереди центра (ночной прогон, поле 22):
-        # прямо через клетку 1, центр робота на 38.8см - ещё над клеткой 1,
-        # а датчик (47.8см) уже за её границей (45см), над клеткой 2. Чёрная -
-        # клетка 2: пройдена одна клетка, откат 8.8см в центр клетки 1, а не
-        # на всю поездку назад с пометкой клетки 1 чёрной.
-        self.assertEqual(rp.black_retreat(38.8, 60.0, 1, 30.0, sensor_fwd_cm=9.0),
-                         (1, 38.8 - 30.0))
-
-
-class TestSensorCell(unittest.TestCase):
-    def test_center_based_by_default(self):
-        # без смещения - как было: клетка дальше, только когда центр робота
-        # на 1.5см за границей
-        self.assertEqual(rp.sensor_cell(38.8, 60.0, 1, 30.0), 1)
-        self.assertEqual(rp.sensor_cell(46.6, 60.0, 1, 30.0), 2)
-
-    def test_sensor_ahead_is_over_next_cell(self):
-        # поле 6 ночного прогона: синяя (2,0), за ней серебро (3,0). Центр на
-        # 38.8см (клетка 1), датчик на бампере +9см = 47.8см - уже над
-        # клеткой 2: серебро - её, а не клетки 1
-        self.assertEqual(rp.sensor_cell(38.8, 60.0, 1, 30.0, sensor_fwd_cm=9.0), 2)
-        self.assertEqual(rp.sensor_cell(36.0, 60.0, 1, 30.0, sensor_fwd_cm=9.0), 1)
 
 
 if __name__ == "__main__":
