@@ -320,9 +320,9 @@ class TestVideo(unittest.TestCase):
 
 class TestCatAndButton(unittest.TestCase):
     def test_button_debounce_one_press_per_hold(self):
-        levels = iter([1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0])   # 1 - отпущена
+        levels = iter([0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0])   # 1 - отпущена; низко с самого начала - не нажатие
         b = oled.Button(read=lambda: bool(next(levels)), start=False)
-        for _ in range(11):
+        for _ in range(13):
             b.poll()
         # одиночный LOW - дребезг; удержание - одно нажатие; потом ещё одно
         self.assertEqual(b.presses, 2)

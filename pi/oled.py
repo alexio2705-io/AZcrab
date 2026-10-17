@@ -1151,11 +1151,29 @@ class Button:
         self.presses = 0
         self._read = read or self._pinctrl
         self._low = 0
-        self._armed = True
+        # Нажатие - только после того, как кнопку видели отпущенной: сразу
+        # после загрузки пин читается низким, пока его не настроят, и кот
+        # переключался на экран с IP сам.
+        self._armed = False
         if read is None:
-            subprocess.run(["pinctrl", "set", str(pin), "ip", "pu"], capture_output=True)
+            self._prime()
         if start:
             threading.Thread(target=self._run, daemon=True, name="oled-button").start()
+
+    def _prime(self):
+        """Настроить пин по-настоящему: занять с подтяжкой и сразу отпустить
+        (одного pinctrl set после загрузки мало - пин всё равно читается
+        низким). Пока его держит nav.py - не трогать."""
+        if not gpio_users_running():
+            try:
+                import RPi.GPIO as GPIO
+                GPIO.setwarnings(False)
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                GPIO.cleanup(self.pin)
+            except Exception:           # noqa: BLE001 - не на Pi или пин занят
+                pass
+        subprocess.run(["pinctrl", "set", str(self.pin), "ip", "pu"], capture_output=True)
 
     def _pinctrl(self):
         out = subprocess.run(["pinctrl", "get", str(self.pin)], capture_output=True, text=True).stdout
