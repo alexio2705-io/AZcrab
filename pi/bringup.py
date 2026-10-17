@@ -202,23 +202,42 @@ def check_lidar(busy):
         report("OK", "лидар", f"{n} пакетов/с")
 
 
+CAM_NAMES = {0: "правая", 1: "левая"}     # как в dataset_web.CAM_NAMES
+
+
+def frame_ok(output):
+    """Вывод rpicam-hello -> пришли ли кадры. Код выхода не помогает: при
+    «Camera frontend has timed out» rpicam-hello выходит с 0."""
+    low = output.lower()
+    return "timed out" not in low and "timeout" not in low
+
+
 def check_cameras(busy):
     if busy:
         report("SKIP", "камеры", "заняты: " + busy[0][:60])
         return
     rc, out = run(["rpicam-hello", "--list-cameras"], timeout=10.0)
     if rc is None:
-        rc, out = run(["libcamera-hello", "--list-cameras"], timeout=10.0)
-    if rc is None:
         report("WARN", "камеры", "rpicam-hello не найден - не проверить")
         return
-    n = sum(1 for ln in out.splitlines() if re.match(r"^\s*\d+\s*:", ln))   # «0 : imx708 [...]»
-    if n >= 2:
-        report("OK", "камеры", f"{n} шт.")
-    elif n == 1:
-        report("WARN", "камеры", "видна одна из двух - шлейф второй")
-    else:
-        report("FAIL", "камеры", "ни одной (или заняты nav.py)")
+    idx = [int(m.group(1)) for m in (re.match(r"^\s*(\d+)\s*:", ln) for ln in out.splitlines()) if m]
+    if not idx:
+        report("FAIL", "камеры", "ни одной в списке - шлейфы")
+        return
+    # Видна в списке - ещё не значит, что работает: камера с отошедшим
+    # шлейфом отвечает по I2C, но кадров не шлёт. Снимаем по секунде с каждой.
+    for i in sorted(set(idx) | {0, 1}):
+        name = f"камера {i} ({CAM_NAMES.get(i, '?')})"
+        if i not in idx:
+            report("FAIL", name, "нет в списке - шлейф или разъём")
+            continue
+        rc, out = run(["rpicam-hello", "--camera", str(i), "-t", "1000", "--nopreview"], timeout=15.0)
+        if rc is None:
+            report("FAIL", name, "rpicam-hello завис")
+        elif frame_ok(out):
+            report("OK", name, "кадры идут")
+        else:
+            report("FAIL", name, "видна, но кадров нет (Camera frontend timed out) - шлейф/разъём")
 
 
 def check_buttons():

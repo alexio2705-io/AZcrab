@@ -24,6 +24,10 @@ import cv2
 from flask import Flask, Response, jsonify, request
 
 FRAME_SIZE = (320, 320)
+# Сколько ждать кадр от камеры. Без предела picamera2 ждёт вечно: камера с
+# отошедшим шлейфом видна по I2C, но кадров не шлёт, и nav.py зависал на
+# старте («Camera frontend has timed out»). Не дождались - камера мёртвая.
+CAPTURE_WAIT_S = 3.0
 # Снимок для чтения метки: тот же квадрат обзора, но втрое детальнее. Режим
 # сенсора 1296x972 — полный угол с биннингом 2x2 (меньше шума, чем 2592x1944).
 STILL_SIZE = (960, 960)
@@ -101,13 +105,29 @@ class Camera:
         self.cap_lock = Lock()    # на время capture_long поток _run не снимает
         self.preview_cfg = None
         self.scaler_crop = None   # область сенсора, которую видит обычный кадр
+        self.dead = False         # не отдала кадр за CAPTURE_WAIT_S - больше не ждём
         if stream:
             threading.Thread(target=self._run, daemon=True).start()
         elif not self._open():
             raise RuntimeError(f'камера {idx} недоступна')
 
+    def _wait(self, fn, *args, **kw):
+        """Вызов picamera2 с пределом ожидания кадра. Камера уже мёртвая или
+        не дождались - RuntimeError (nav.py и наблюдатель её ловят)."""
+        if self.dead:
+            raise RuntimeError(f'камера {self.idx} не отдаёт кадры')
+        try:
+            return fn(*args, wait=CAPTURE_WAIT_S, **kw)
+        except TimeoutError:
+            self.dead = True
+            self.ok = False
+            log(f'Камера {self.idx} ({CAM_NAMES[self.idx]}): нет кадра за {CAPTURE_WAIT_S:.0f}с - '
+                f'считаю мёртвой (шлейф?)')
+            raise RuntimeError(f'камера {self.idx} не отдаёт кадры') from None
+
     def _open(self):
         from picamera2 import Picamera2
+        cam = None
         try:
             cam = Picamera2(self.idx)
             cfg = cam.create_preview_configuration(
@@ -118,9 +138,16 @@ class Camera:
             cam.start()
             self.cam = cam
             self.apply(cam_settings)
-            self.scaler_crop = cam.capture_metadata().get('ScalerCrop')
+            self.scaler_crop = self._wait(cam.capture_metadata).get('ScalerCrop')
         except Exception as e:
             log(f'Камера {self.idx} ({CAM_NAMES[self.idx]}) недоступна: {e}')
+            if cam is not None:           # не держать её занятой
+                try:
+                    cam.stop()
+                    cam.close()
+                except Exception:
+                    pass
+            self.cam = None
             return False
         self.ok = True
         log(f'Камера {self.idx} ({CAM_NAMES[self.idx]}) запущена')
@@ -132,7 +159,7 @@ class Camera:
         cam = self.cam
         while True:
             with self.cap_lock:
-                frame = cam.capture_array()
+                frame = self._wait(cam.capture_array)
             ok, jpg = cv2.imencode('.jpg', frame,
                                    [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
             with self.cond:
@@ -170,7 +197,7 @@ class Camera:
         что выбрала AE для обычного кадра, но за счёт выдержки при усилении 1
         (меньше шума). Выдержка не длиннее max_exposure_us — остаток добирается
         усилением. С подсветкой получится короткая выдержка, в темноте — длинная."""
-        md = self.cam.capture_metadata()
+        md = self._wait(self.cam.capture_metadata)
         total = (md.get('ExposureTime', 10000) * md.get('AnalogueGain', 1.0)
                  * md.get('DigitalGain', 1.0))
         exp = int(min(max_exposure_us, max(1000, total)))
@@ -185,7 +212,7 @@ class Camera:
         if self.cam is None or not self.cap_lock.acquire(timeout=1.0):
             return None
         try:
-            md = self.cam.capture_metadata()
+            md = self._wait(self.cam.capture_metadata)
             total = (md.get('ExposureTime', 10000) * md.get('AnalogueGain', 1.0)
                      * md.get('DigitalGain', 1.0))
             exp = int(max(100, min(max_us, total)))
@@ -244,7 +271,7 @@ class Camera:
                 self.cam.set_controls(ctrl)
             t0 = time.time()
             while time.time() - t0 < timeout:
-                req = self.cam.capture_request()
+                req = self._wait(self.cam.capture_request)
                 try:
                     md = req.get_metadata()
                     if abs(md.get('ExposureTime', 0) - exposure_us) <= 0.1 * exposure_us:
@@ -274,7 +301,7 @@ class Camera:
             # После перенастройки AE/AWB сходятся заново — первые кадры
             # тёмные/цветные. Выбрасываем их, пока держим камеру.
             for _ in range(8):
-                self.cam.capture_array()
+                self._wait(self.cam.capture_array)
         except Exception as e:
             log(f'Камера {self.idx}: не вернулась в обычный режим: {e}')
         finally:
@@ -289,7 +316,7 @@ class Camera:
     def latest(self):
         if not self.stream:
             with self.cap_lock:
-                return self.cam.capture_array()
+                return self._wait(self.cam.capture_array)
         with self.cond:
             return None if self.frame is None else self.frame.copy()
 
@@ -300,7 +327,7 @@ class Camera:
         if self.cam is None or not self.cap_lock.acquire(blocking=False):
             return None, {}
         try:
-            req = self.cam.capture_request()
+            req = self._wait(self.cam.capture_request)
             try:
                 return req.make_array('main'), req.get_metadata()
             finally:

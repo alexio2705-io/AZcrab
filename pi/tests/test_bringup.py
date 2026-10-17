@@ -28,5 +28,14 @@ class CountPacketsTest(unittest.TestCase):
         self.assertEqual(bringup.count_packets(b"\x00" * 100, MAGIC, 3, 10), (0, 0))
 
 
+class FrameCheckTest(unittest.TestCase):
+    def test_frontend_timeout_is_a_failure(self):
+        bad = ("ERROR RPI pipeline_base.cpp:1346 Camera frontend has timed out!\n"
+               "ERROR: Device timeout detected, attempting a restart!!!")
+        self.assertFalse(bringup.frame_ok(bad))
+        good = "INFO RPI pisp.cpp:1483 Sensor: ... Selected sensor format: 1296x972-SGBRG10_1X10/RAW"
+        self.assertTrue(bringup.frame_ok(good))
+
+
 if __name__ == "__main__":
     unittest.main()
