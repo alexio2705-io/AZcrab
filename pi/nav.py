@@ -204,6 +204,13 @@ OBSTACLE_TORQUE_MAX_S = 0.65
 #   3) пока нос задран или опущен - ход ограничен (заезд и спуск без разгона).
 OBSTACLE_CAP_CMS = 35.0        # потолок скорости колеса в режиме момента
 OBSTACLE_SLOW_FRAC = 0.6       # импульс, только если едем медленнее этой доли
+# ...и так не меньше OBSTACLE_SLOW_S подряд при заданном ходе от
+# OBSTACLE_MIN_FWD_CMS. Домашний заезд 17.10 (пол с уклоном 5-8°): импульс
+# давался с места (v=0 при fwd~0 - "v=0/0см/с"), а на ходу шёл цикл "импульс
+# -> разгон выше потолка -> ассист снят -> петля скорости тормозит ниже 60% ->
+# импульс" каждые ~0.4 с - рывки на прямых.
+OBSTACLE_SLOW_S = 0.15
+OBSTACLE_MIN_FWD_CMS = 12.0
 TILT_CAP_CMS = 35.0            # ход, пока нос задран на препятствии/горке
 DESCENT_CAP_CMS = 28.0         # ход, пока нос опущен (съезд с препятствия)
 SPEED_WIN_S = 0.06             # окно оценки скорости по одометрии
@@ -2736,7 +2743,7 @@ def turn_to(target, label=None, seen=None):
             # обрезанную краем до полоски, стоя не прочитать
             if (b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
                     and y2 - y1 >= watch_logic.FRAME_PX * 0.125):
-                seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf))
+                seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf, b.cls))
     tag = label if label is not None else f"{target:.1f}°"
 
     print(f"    поворот {tag}  цель={target:.1f}°  yaw={get_yaw():.1f}°")
@@ -3042,6 +3049,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     assist_t0 = assist_total_t0 = 0.0
     assist_kicks = 0
     assist_gap_until = 0.0
+    slow_since = None          # с какого такта едем медленнее OBSTACLE_SLOW_FRAC
     push_tries = 0             # PUSH_THROUGH_SMALL: сколько раз уже дотолкивали
     assist_progress_cm = 0.0
     assist_progress_t = 0.0
@@ -3105,7 +3113,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     # watcher = None - в этой поездке наблюдателя нет (или он умер).
     watcher = (_watcher if cell is not None and hdg is not None and not expect_ramp
                else None)
-    side_hold = watch_logic.SideHold()
+    side_hold = watch_logic.SideHold(t0=time.monotonic())
     odo_t = watch_logic.OdoHistory()
     vmark = None
 
@@ -3451,6 +3459,11 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                                                  pitch_delta, OBSTACLE_REARM_DEG, wall_forced)
                 watch_armed = watcher.arm(sides if flat and vmark is None else set())
                 for b in watcher.poll():
+                    # Кадр с поворота перед поездкой (наблюдатель там смотрит
+                    # в обе стороны) или со стороны без стены - метка в
+                    # проёме, на дальней стене (домашний заезд 17.10).
+                    if not side_hold.frame_ok(b.side, b.t_frame):
+                        continue
                     m = _watch_decide(b, cell, hdg, odo_t, vmark is not None)
                     if m is not None:
                         # Тормозим К МЕТКЕ: встать с ней в центре кадра, тем
@@ -3634,7 +3647,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 # Обороты за время стоянки сняты с подъезда и поворотов к
                 # аптечкам - для стен впереди они не годятся.
                 scan_mark = _scan_cnt
-                side_hold.reset()
+                side_hold.reset(time.monotonic())
                 left_cm = boundary_cm - traveled_cm
                 print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
                 if stopping and left_cm * 10.0 < ALIGN_TOL_MM:
@@ -3788,6 +3801,11 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
         # ниже заданного, см. OBSTACLE_SLOW_FRAC), и снимается сразу, как
         # робот разогнался выше потолка: значит, препятствие уже позади.
         pitch_up = pitch_delta
+        if v_meas < fwd * OBSTACLE_SLOW_FRAC and fwd >= OBSTACLE_MIN_FWD_CMS:
+            if slow_since is None:
+                slow_since = now_m
+        else:
+            slow_since = None
 
         if pitch_up < OBSTACLE_REARM_DEG:
             assist_mode = None
@@ -3802,13 +3820,15 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 if v_meas > cap * 1.15:
                     print(f"\n    ассист снят: {v_meas:.0f}см/с > потолка {cap:.0f} - "
                           f"препятствие позади")
+                    # Попытки не обнуляем: разогнались - значит, импульс
+                    # сработал, и на длинном уклоне без препятствия новый
+                    # импульс - только рывок. Перевзвод - по горизонту.
                     assist_mode = None
-                    assist_kicks = 0
                     assist_gap_until = now_m + OBSTACLE_KICK_GAP_S
                     ramp_announced = False
 
             if (assist_mode is None and pitch_up >= OBSTACLE_PITCH_DEG
-                    and v_meas < fwd * OBSTACLE_SLOW_FRAC
+                    and slow_since is not None and now_m - slow_since >= OBSTACLE_SLOW_S
                     and now_m >= assist_gap_until
                     and assist_kicks < OBSTACLE_KICKS_MAX):
                 assist_mode = 'kick'
@@ -4085,17 +4105,17 @@ def _watch_decide(b, cell, hdg, odo_t, busy):
     key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, b.side),
                                          pos, LEVEL_STRIDE)
     stop, why = watch_logic.decide_stop(b.conf, side_px, key, along, _marks, busy,
-                                        CONF_FAST, MIN_BOX_PX)
+                                        CONF_FAST, MIN_BOX_PX, b.cls)
     print(f"\n    [W] {b.side} {b.cls} {b.conf:.2f} {side_px:.0f}px  путь {t_cm * 10:.0f}мм  "
           f"метка {pos:+.0f}мм (стена {key} {along:.0f}мм) → {why}  {b.image or ''}")
-    return {"side": b.side, "pos_mm": pos} if stop else None
+    return {"side": b.side, "pos_mm": pos, "cls": b.cls} if stop else None
 
 
-def _reject_mark(cell, hdg, side, pos_mm):
+def _reject_mark(cell, hdg, side, pos_mm, cls=None):
     """Наблюдатель сработал, а стоя не подтвердилось - больше здесь не стоим."""
     key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, side),
                                          pos_mm, LEVEL_STRIDE)
-    _marks.add(key, along, "rejected")
+    _marks.add(key, along, "rejected", cls)
 
 
 @_timed("камеры")
@@ -4146,7 +4166,7 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
                                            ALIGN_TOL_MM)
     if creep is None:
         print(f"    метка: нужен подъезд {est:+.0f}мм ({src}) - не верю, отбраковываю")
-        _reject_mark(cell, hdg, side, m["pos_mm"])
+        _reject_mark(cell, hdg, side, m["pos_mm"], m.get("cls"))
         return None
     # 2. Подъезд
     if creep:
@@ -4173,12 +4193,20 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
         result = _confirm(det, tcell[0], tcell[1], wall_dir, result)
     if result is None:
         print(f"    метка не подтвердилась - место отбраковано ({side}, {trav:.0f}мм)")
-        _reject_mark(cell, hdg, side, m["pos_mm"])
+        _reject_mark(cell, hdg, side, m["pos_mm"], m.get("cls"))
         return _interrupt_reason()
     key, along = _mark_world(result, cell, hdg, wall_dir, trav)
-    _marks.add(key, along, "read")
     _scanned_walls.add((tcell[0], tcell[1], wall_dir))
     det.scanned.add((tcell[0], tcell[1], wall_dir))
+    # Наблюдатель тормозит по рамке на ходу, а та же метка могла быть уже
+    # прочитана с поворота - там её место на стене известно хуже (см.
+    # watch_logic.DEDUP_SAME_MM). Второй раз не мигаем и комплекты не даём.
+    dup = _marks.near(key, along, result.get("class"))
+    if dup is not None and dup[2] == "read":
+        print(f"    метка на ходу: {result['label']} в {along:.0f}мм - уже прочитана "
+              f"({dup[1]:.0f}мм), не репортю")
+        return _interrupt_reason()
+    _marks.add(key, along, "read", result.get("class"))
     _victim_log.append({**result, "side": side, "wall_dir": wall_dir, "on_move": True,
                         "ts": time.strftime("%H:%M:%S")})
     print(f"    метка на ходу: {result['label']} → клетка {tcell}, стена "
@@ -4287,7 +4315,7 @@ def _turn_marks(cx, cy, seen):
     (курс не менялся; робот может стоять не по сетке - вызывающий
     доворачивает сам)."""
     best = {}
-    for side, yf, xyxy, conf in seen:
+    for side, yf, xyxy, conf, cls in seen:
         rel = angle_err(yf, YAW_ORIGIN)
         h = int(round(rel / 90.0)) % 4
         phi = angle_err(rel, 90.0 * h)
@@ -4295,9 +4323,9 @@ def _turn_marks(cx, cy, seen):
         px = max(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])
         k = (side, wall_dir)
         if k not in best or px > best[k][0]:
-            best[k] = (px, yf, xyxy, h, phi)
+            best[k] = (px, yf, xyxy, h, phi, cls)
     out_hdg = None
-    for (side, wall_dir), (px, yf, xyxy, h, phi) in best.items():
+    for (side, wall_dir), (px, yf, xyxy, h, phi, cls) in best.items():
         det = _victim_r if side == "right" else _victim_l
         if det is None or get_esp_paused():
             continue
@@ -4306,7 +4334,15 @@ def _turn_marks(cx, cy, seen):
         if pos is None:
             continue
         key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos, LEVEL_STRIDE)
-        if _marks.near(key, along) is not None:
+        known = _maze.get((cx, cy))
+        if known is None or known[wall_dir] is not True:
+            # Стены с этой стороны клетки нет: камера смотрит в проём на
+            # стену соседней клетки или дальше. Метку там не читаем (за
+            # идентификацию дальше 15 см - штраф), как и scan_sides().
+            print(f"    [W] на повороте: {side} {px:.0f}px, стены {_DIR_NAME[wall_dir]} "
+                  f"по карте нет - дальняя стена, пропускаю")
+            continue
+        if _marks.near(key, along, cls) is not None:
             continue                      # уже читали (или отбраковали) рядом
         print(f"    [W] на повороте: {side} {px:.0f}px, стена {_DIR_NAME[wall_dir]} "
               f"{along:.0f}мм - доворачиваю на {yf:.0f}°")
@@ -4324,11 +4360,11 @@ def _turn_marks(cx, cy, seen):
             phi_now, side, watch_logic.px_to_mm(sum(result["box_y"]) / 2.0))
         if pos2 is not None:
             key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos2, LEVEL_STRIDE)
-        dup = _marks.near(key, along)
+        dup = _marks.near(key, along, result.get("class"))
         if dup is not None and dup[2] == "read":
             print(f"    [W] {result['label']} в {along:.0f}мм - уже прочитана, не репортю")
             continue
-        _marks.add(key, along, "read")
+        _marks.add(key, along, "read", result.get("class"))
         _victim_log.append({**result, "side": side, "wall_dir": wall_dir,
                             "ts": time.strftime("%H:%M:%S")})
         if result.get("blink"):
@@ -4417,12 +4453,12 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
         # Та же метка могла быть прочитана на ходу из соседней клетки (или
         # с другой стороны стыка) - второй раз не репортим.
         key, along = _mark_world(result, (cx, cy), hdg, wall_dir, 0.0)
-        dup = _marks.near(key, along)
+        dup = _marks.near(key, along, result.get("class"))
         if dup is not None and dup[2] == "read":
             print(f"    [W] {side}: {result['label']} в {along:.0f}мм - уже прочитана "
                   f"рядом ({dup[1]:.0f}мм), не репортю")
             continue
-        _marks.add(key, along, "read")
+        _marks.add(key, along, "read", result.get("class"))
         if get_esp_paused():
             # Усыпили посреди скана: находку в лог, но ни мигать, ни
             # разворачиваться - робот должен замереть сразу.
@@ -5271,10 +5307,10 @@ def _scan_unseen_walls(cx, cy, hdg):
             if result is None:
                 continue
             key, along = _mark_world(result, (cx, cy), hdg, d, 0.0)
-            dup = _marks.near(key, along)
+            dup = _marks.near(key, along, result.get("class"))
             if dup is not None and dup[2] == "read":
                 continue
-            _marks.add(key, along, "read")
+            _marks.add(key, along, "read", result.get("class"))
             _victim_log.append({**result, "side": side, "wall_dir": d,
                                 "ts": time.strftime("%H:%M:%S")})
             if result.get("blink"):

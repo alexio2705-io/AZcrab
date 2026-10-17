@@ -154,6 +154,10 @@ def cell_index(traveled_mm):
 
 
 DEDUP_MM = 150.0       # повтор ближе этого на той же стене - та же метка
+# Тот же класс YOLO - та же метка и подальше: положение по кадру с поворота
+# (turned_mark_pos при 30-40°) ошибается на 15-20 см, и одну Ψ в домашнем
+# заезде 17.10 прочитали дважды на 150-190 мм друг от друга (лишний комплект).
+DEDUP_SAME_MM = 250.0
 # Подъезд к метке дальше этого - оценке не верим. Обычный случай - назад:
 # кадр->решение ~175 мс при двух камерах (замер на Pi) это ~10 см на 55 см/с,
 # плюс тормозной путь с упреждением ~8 см.
@@ -167,33 +171,37 @@ class MarkRegistry:
     то, ни другое больше не останавливает робота (каждая лишняя остановка -
     ~2с), а прочитанная ещё и не репортится второй раз."""
 
-    def __init__(self, dedup_mm=DEDUP_MM):
+    def __init__(self, dedup_mm=DEDUP_MM, same_mm=DEDUP_SAME_MM):
         self.dedup_mm = dedup_mm
-        self.marks = []          # (ключ стены, мм вдоль неё, вид)
+        self.same_mm = same_mm
+        self.marks = []          # (ключ стены, мм вдоль неё, вид, класс YOLO или None)
 
-    def add(self, key, along, kind):
-        self.marks.append((key, along, kind))
+    def add(self, key, along, kind, cls=None):
+        self.marks.append((key, along, kind, cls))
 
-    def near(self, key, along):
-        """Ближайшая запись на той же стене ближе dedup_mm или None."""
+    def near(self, key, along, cls=None):
+        """Ближайшая запись на той же стене ближе dedup_mm (того же класса
+        cls - ближе same_mm) или None."""
         best = None
-        for k, a, kind in self.marks:
+        for k, a, kind, c in self.marks:
             d = abs(a - along)
-            if k == key and d < self.dedup_mm and (best is None or d < abs(best[1] - along)):
+            lim = self.same_mm if cls is not None and c == cls else self.dedup_mm
+            if k == key and d < lim and (best is None or d < abs(best[1] - along)):
                 best = (k, a, kind)
         return best
 
 
-def decide_stop(conf, side_px, key, along, registry, busy, conf_min, min_box_px):
+def decide_stop(conf, side_px, key, along, registry, busy, conf_min, min_box_px, cls=None):
     """Тормозить ли ради рамки наблюдателя: (да/нет, причина для лога).
-    min_box_px - тот же фильтр дальних стен, что в VictimDetector.scan()."""
+    min_box_px - тот же фильтр дальних стен, что в VictimDetector.scan();
+    cls - класс YOLO рамки (см. MarkRegistry.near)."""
     if conf < conf_min:
         return False, "conf"
     if side_px < min_box_px:
         return False, "мелкая"
     if busy:
         return False, "уже стоим"
-    dup = registry.near(key, along)
+    dup = registry.near(key, along, cls)
     if dup is not None:
         return False, "дубль" if dup[2] == "read" else "отбракована раньше"
     return True, "стоп"
@@ -327,9 +335,10 @@ class Stats:
 class SideHold:
     """Стороны, где есть стена, с удержанием hold_s (см. WATCH_SIDE_HOLD_S)."""
 
-    def __init__(self, hold_s=WATCH_SIDE_HOLD_S):
+    def __init__(self, hold_s=WATCH_SIDE_HOLD_S, t0=0.0):
         self.hold_s = hold_s
         self.last = {}
+        self.t0 = t0             # кадры раньше этого - не этой поездки
 
     def update(self, t, present):
         for side, p in present.items():
@@ -337,5 +346,15 @@ class SideHold:
                 self.last[side] = t
         return {s for s, tl in self.last.items() if t - tl <= self.hold_s}
 
-    def reset(self):
+    def reset(self, t0=None):
         self.last.clear()
+        if t0 is not None:
+            self.t0 = t0
+
+    def frame_ok(self, side, t_frame):
+        """Рамку с кадра t_frame брать: кадр снят в этой поездке (не на
+        повороте перед ней - там наблюдатель смотрит в обе стороны), и стену
+        с его стороны лидар видел не раньше hold_s до кадра. Ответ воркера
+        приходит через 0.1-0.3 с, когда стена уже могла кончиться, - поэтому
+        по времени кадра, а не по текущему такту."""
+        return t_frame >= self.t0 and self.last.get(side, -1e9) >= t_frame - self.hold_s

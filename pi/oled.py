@@ -70,7 +70,13 @@ LOG_PATH = os.path.expanduser("~/maze/oled.log")
 SYSINFO_S = 10.0             # как часто обновлять IP/температуру/питание
 ALERT_SHOW_S = 15.0          # сколько держать последнее [WARN] внизу экрана
 STALE_S = 2.0                # снимков нет дольше - nav.py «молчит»
-VICTIM_SHOW_S = 8.0          # прочитанная метка на весь экран: мигание 5 с + выдача
+# Прочитанная метка на весь экран - пока nav.py ею занят (снимок act ==
+# "жертва": мигание 5 с и выдача комплектов), но не меньше VICTIM_MIN_S и не
+# больше VICTIM_SHOW_S. Раньше - ровно 8 с: ложная метка (робот у неё не
+# стоит) и Ω без комплектов висели на экране, пока робот уже ехал дальше
+# (домашний заезд 17.10).
+VICTIM_MIN_S = 2.0
+VICTIM_SHOW_S = 15.0
 KITS_PER_COLUMN = 4          # как в nav.py, если снимок старый и kits_max не прислал
 LEVEL_STRIDE = 1000          # как в nav.py: cy = y + этаж * LEVEL_STRIDE
 RUN_LIMIT_S = 480.0
@@ -1117,8 +1123,11 @@ def build_state(now, feed, sysinfo, msg=None, tile=None):
           "snap": snap, "connected": feed.connected, "stale": now - t_snap,
           "rates": feed.rates, "alert": feed.alert, "lastline": feed.lastline,
           "tile_guess": None, "victim": None, **sysinfo.info}
-    if feed.victim is not None and now - feed.victim[1] < VICTIM_SHOW_S:
-        st["victim"] = feed.victim[0]
+    if feed.victim is not None:
+        v, age = feed.victim[0], now - feed.victim[1]
+        busy = (snap or {}).get("act") == "жертва"
+        if age < VICTIM_MIN_S or (busy and age < VICTIM_SHOW_S):
+            st["victim"] = v
     if tile is not None and snap is not None and snap.get("phase") == "wait_button":
         st["tile_guess"] = tile(snap.get("rgbc"), now)
     return st

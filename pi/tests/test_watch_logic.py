@@ -120,6 +120,56 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(self.reg.near(self.key, 290.0)[2], "rejected")
 
 
+class TestRegistryClass(unittest.TestCase):
+    """Домашний заезд 17.10: одну Ψ прочитали с поворота и на ходу в 150-190 мм."""
+
+    def setUp(self):
+        self.reg = wl.MarkRegistry()
+        self.key = (1, -4, 1)
+        self.reg.add(self.key, 670.0, "read", "psi")
+
+    def test_same_class_farther(self):
+        self.assertEqual(self.reg.near(self.key, 500.0, "psi")[2], "read")
+
+    def test_other_class_only_close(self):
+        self.assertIsNone(self.reg.near(self.key, 500.0, "omega"))
+        self.assertIsNone(self.reg.near(self.key, 500.0))
+
+    def test_same_class_not_too_far(self):
+        self.assertIsNone(self.reg.near(self.key, 670.0 - wl.DEDUP_SAME_MM, "psi"))
+
+    def test_decide_stop_uses_class(self):
+        self.assertEqual(wl.decide_stop(0.7, 198, self.key, 504.0, self.reg, False,
+                                        0.25, 40, "psi"), (False, "дубль"))
+
+
+class TestSideHoldFrames(unittest.TestCase):
+    def test_frame_before_drive_dropped(self):
+        h = wl.SideHold(t0=10.0)
+        h.update(10.1, {"right": True, "left": False})
+        self.assertFalse(h.frame_ok("right", 9.9))
+        self.assertTrue(h.frame_ok("right", 10.05))
+
+    def test_side_without_wall_dropped(self):
+        h = wl.SideHold(t0=10.0)
+        h.update(10.1, {"right": True, "left": False})
+        self.assertFalse(h.frame_ok("left", 10.05))
+
+    def test_late_answer_after_wall_ended(self):
+        h = wl.SideHold(t0=0.0)
+        h.update(5.0, {"right": True})
+        h.update(5.4, {"right": False})          # ответ пришёл, стена уже кончилась
+        self.assertTrue(h.frame_ok("right", 5.1))
+        self.assertFalse(h.frame_ok("right", 5.3))
+
+    def test_reset_moves_start(self):
+        h = wl.SideHold(t0=0.0)
+        h.update(5.0, {"right": True})
+        h.reset(6.0)
+        h.update(6.1, {"right": True})
+        self.assertFalse(h.frame_ok("right", 5.9))
+
+
 class TestDecideStop(unittest.TestCase):
     def setUp(self):
         self.reg = wl.MarkRegistry()

@@ -389,6 +389,20 @@ class TestMessages(unittest.TestCase):
 
 
 class TestFeedVictims(unittest.TestCase):
+    def test_victim_shown_while_reporting_only(self):
+        f = oled.Feed(start=False)
+        si = oled.SysInfo(start=False)
+        f.take({"phase": "exploring", "map": {"victims": []}}, 10.0)
+        v = {"type": "stable", "label": "Ψ", "blink": True}
+        f.take({"phase": "exploring", "act": "жертва", "map": {"victims": [v]}}, 11.0)
+        self.assertEqual(oled.build_state(17.0, f, si)["victim"], v)    # мигает и выдаёт
+        f.take({"phase": "exploring", "act": "ход"}, 17.5)
+        self.assertIsNone(oled.build_state(17.6, f, si)["victim"])      # поехал дальше
+        fake = {"type": "fake", "label": "-4", "blink": False}
+        f.take({"phase": "exploring", "act": "ход", "map": {"victims": [v, fake]}}, 20.0)
+        self.assertEqual(oled.build_state(21.0, f, si)["victim"], fake)
+        self.assertIsNone(oled.build_state(20.0 + oled.VICTIM_MIN_S + 0.1, f, si)["victim"])
+
     def test_only_new_victims_are_shown(self):
         f = oled.Feed(start=False)
         si = oled.SysInfo(start=False)
