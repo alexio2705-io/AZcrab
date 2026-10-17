@@ -3055,6 +3055,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     assist_t0 = assist_total_t0 = 0.0
     assist_kicks = 0
     assist_gap_until = 0.0
+    short_at_wall = False      # встали у стены раньше, чем ждали (см. _phantom_cells)
     slow_since = None          # с какого такта едем медленнее OBSTACLE_SLOW_FRAC
     push_tries = 0             # PUSH_THROUGH_SMALL: сколько раз уже дотолкивали
     assist_progress_cm = 0.0
@@ -3681,6 +3682,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                 print(f"\n    у стены: f={f_est:.0f}мм")
                 short_mm = (boundary_cm - traveled_cm) * 10.0
                 if short_mm > OBST_SHORT_MM and ramp_state is None:
+                    short_at_wall = True
                     h_now = gyro_heading()
                     _pos_off[0] = -short_mm * _DX[h_now]
                     _pos_off[1] = -short_mm * _DY[h_now]
@@ -3987,12 +3989,24 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
         # носом в него (в центр этой клетки не встать).
         creep_mm(-BUMPER_ENTERED_BACKOFF_MM, target_yaw)
     else:
+        if short_at_wall:
+            # Стена ближе, чем по одометрии: препятствие в новой клетке или
+            # стена старой, до которой одометрия "переехала" на клетку?
+            # Решает задняя стена.
+            n_real = _phantom_cells(cell, hdg, cells)
+            if n_real is not None and n_real < cells:
+                print(f"    по задней стене это клетка {n_real} поездки, а не {cells}: "
+                      f"впереди стена, лишнюю клетку не засчитываю")
+                cells = n_real
+                _pos_off[0] = _pos_off[1] = 0.0
         # Проверяем СВЕЖИМ замером всегда. Раньше остановка "по стене" считалась
         # заведомо точной и доводка пропускалась - но дистанция там берётся из
         # f_est, продлённой одометрией между сканами лидара. Если та оценка
         # врала, ошибка ничем не ловилась, и следующий проезд начинался ближе к
         # стене, чем робот думал - ровно так он и попал бампером в стену.
-        align_at_wall(target_yaw)
+        align_at_wall(target_yaw,
+                      None if cell is None or hdg is None else _cell_at(cell, hdg, cells),
+                      cells)
     print()
     return cells, reason
 
@@ -4033,10 +4047,79 @@ def creep_mm(dist_mm, target_yaw, timeout_s=2.0):
     time.sleep(0.08)
 
 
+# Доводка по дальней задней стене: на сколько клеток назад искать по карте
+# известную стену. Дальше - лидар видит её хуже, а разница шага клеток
+# (домашнее поле 17.10: ~315 мм вместо 300) копится по 15 мм на клетку.
+FAR_BACK_CELLS = 3
+
+
+def _far_back_wall(cell, hdg, driven):
+    """Через сколько клеток позади cell (курс hdg) известная по карте стена:
+    k >= 1 или None. Первые driven клеток назад - путь только что
+    проеханной поездки (их стены в карте может ещё не быть, но рёбра по ходу
+    открыты); дальше - только посещённые клетки с известными рёбрами. Через
+    горку не считаем: там другой шаг и другой этаж."""
+    back = (hdg + 2) % 4
+    cx, cy = cell
+    for k in range(1, FAR_BACK_CELLS + 1):
+        if (cx, cy, back) in _ramps:
+            return None
+        cx, cy = cx + _DX[back], cy + _DY[back]
+        if k < driven:
+            continue
+        w = _maze.get((cx, cy))
+        if w is None or w[back] is None:
+            return None
+        if w[back] is True:
+            return k
+    return None
+
+
+def _cells_from_back_wall(cell, hdg):
+    """Через сколько клеток позади cell (курс hdg) известная по карте стена:
+    0 - у самой cell, None - не знаем (дальше FAR_BACK_CELLS, неизвестное
+    ребро, горка)."""
+    back = (hdg + 2) % 4
+    cx, cy = cell
+    for j in range(FAR_BACK_CELLS + 1):
+        w = _maze.get((cx, cy))
+        if w is None or w[back] is None or (cx, cy, back) in _ramps:
+            return None
+        if w[back] is True:
+            return j
+        cx, cy = cx + _DX[back], cy + _DY[back]
+    return None
+
+
+def _phantom_cells(cell, hdg, cells):
+    """Встали у стены раньше, чем ждали по одометрии: сколько клеток поездки
+    на самом деле позади - по задней стене, известной по карте (B стоя против
+    BACK_CENTER_MM + клетки * CELL_MM). None - сверить не с чем. Домашний
+    заезд 17.10: клетки ~315 мм, к концу коридора из четырёх одометрия
+    отставала на 11-13 см, и стену в его конце робот принимал за
+    "препятствие у стены в пятой клетке"."""
+    if cell is None or hdg is None:
+        return None
+    j = _cells_from_back_wall(cell, hdg)
+    if j is None or j + cells > FAR_BACK_CELLS + 1:
+        return None
+    b = measure_walls(WALL_VOTE_SCANS)["back"]
+    if b is None:
+        return None
+    n = int(round((b - BACK_CENTER_MM) / CELL_MM)) - j
+    return n if 0 <= n <= cells else None
+
+
 @_timed("доводка")
-def align_at_wall(target_yaw):
+def align_at_wall(target_yaw, cell=None, driven=0):
     """Доводка вдоль движения: встать в центр клетки по передней стене, а
-    если её нет (например, после разворота) - по задней."""
+    если её нет (например, после разворота) - по задней. cell - клетка, где
+    робот встал после поездки на driven клеток: тогда, если вплотную стен нет,
+    - по известной стене в нескольких клетках позади (_far_back_wall).
+    Домашний заезд 17.10: клетки ~315 мм, одометрия считала по 300, и к
+    третьей клетке прямой робот недоезжал 13 см - стену в конце коридора
+    принимал за "ещё одну клетку" и записывал в карту пятую клетку из четырёх.
+    """
     off = _off_along(int(round(angle_err(target_yaw, YAW_ORIGIN) / 90.0)) % 4)
     if abs(off) > 10.0:
         # стоим не в центре из-за препятствия (OBST_SHORT_MM): по его грани
@@ -4055,12 +4138,24 @@ def align_at_wall(target_yaw):
         w = measure_walls(WALL_VOTE_SCANS)
         f, b = w["front"], w["back"]
 
+        k_far = None
+        if (cell is not None and not on_slope and b is not None and b >= BACK_THRESH
+                and (f is None or f >= WALL_THRESH)):
+            k_far = _far_back_wall(cell, int(round(angle_err(target_yaw, YAW_ORIGIN)
+                                                    / 90.0)) % 4, driven)
         if f is not None and f < WALL_THRESH:
             need = f - FRONT_CENTER_MM          # >0: не доехали до центра
             src = f"F={f:.0f}"
         elif b is not None and b < BACK_THRESH and not on_slope:
             need = BACK_CENTER_MM - b           # >0: откатились назад
             src = f"B={b:.0f}"
+        elif k_far is not None and b is not None:
+            need = BACK_CENTER_MM + k_far * CELL_MM - b
+            src = f"B={b:.0f} (стена через {k_far} кл.)"
+            if abs(need) > ALIGN_MAX_MM:
+                # лидар видит не ту стену (проём, препятствие) - не верим
+                print(f"    [выр] {src}мм: {need:+.0f}мм - не сходится с картой, пропускаю")
+                return
         else:
             # На наклоне задняя ось - это пол, а не стена (SLOPE_BACK_GUARD_DEG),
             # и вставать по ней значит вставать по полу.
@@ -4072,8 +4167,8 @@ def align_at_wall(target_yaw):
             if it:
                 print(f"    [выр] ок, {src}мм")
             return
-        if (src.startswith("F") and need < -OBST_SHORT_MM) or \
-                (src.startswith("B") and need > OBST_SHORT_MM):
+        if k_far is None and ((src.startswith("F") and need < -OBST_SHORT_MM) or
+                              (src.startswith("B") and need > OBST_SHORT_MM)):
             # "стена" ближе центра клетки на 2.5+ см - это скорее грань
             # препятствия у стены (3.4.4b): по ней в центр не встать
             print(f"    [выр] {src}мм: {need:+.0f}мм - похоже на препятствие, не выравниваюсь")
