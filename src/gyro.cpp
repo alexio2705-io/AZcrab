@@ -45,6 +45,22 @@
 // vector the control loop actually rides on.
 #define GYRO_ACCEL_PERIOD_US 10000 // 100 Hz
 
+// Pitch and roll come from the gravity report, not from the gyro-integrated
+// rotation vector. On 2026-10-17 the robot standing on a flat floor and turned
+// by hand to four headings read pitch/roll -6.8/+1.0, -3.2/-5.2, -0.4/-5.7 and
+// -1.0/-5.0 deg off the rotation vector: a 5-7 deg tilt that changed with
+// every move and stayed wrong while the robot stood still. nav.py measures
+// obstacles and ramps as pitch against the value at the start, so this read
+// as "nose up 4-7 deg" on flat ground: assist kicks on straights and a ramp
+// (and a whole second floor) that did not exist. Heading stays on the 1 kHz
+// rotation vector - it was fine.
+#define GYRO_GRAVITY_PERIOD_US 10000 // 100 Hz, plenty for a tilt
+
+// 1 = print the tilt from all three sources twice a second on the USB console
+// (rotation vector, gravity, raw accelerometer) - for checking the robot on a
+// flat floor. Off for runs: the console is not read on the field.
+#define GYRO_TILT_DEBUG 0
+
 static BNO08x *s_imu;
 
 // Given once per orientation sample. Binary, not counting, on purpose: a
@@ -58,10 +74,24 @@ static float s_yaw_rate;   // deg/s, clockwise-positive, same sense as the yaw
 // Linear acceleration, m/s^2, sensor frame. Stays 0,0,0 if the report could
 // not be enabled - see gyro.h on why that degrades rather than breaks.
 static float s_ax, s_ay, s_az;
+static bool s_grav_ok;     // gravity report enabled - pitch/roll come from it
+static float s_rv_pitch, s_rv_roll;      // rotation vector, for GYRO_TILT_DEBUG
+static float s_gx, s_gy, s_gz;           // gravity, m/s^2, sensor frame
+static float s_acx, s_acy, s_acz;        // accelerometer incl. gravity (debug)
 static uint32_t s_samples;
 static bool s_ready;
 
 #define RAD_TO_DEG 57.2957795f
+
+// Tilt from a vector pointing UP in the sensor frame (what the gravity and
+// accelerometer reports give at rest: +z when flat). Same angles and signs
+// as get_euler() of a rotation vector (ZYX): pitch nose up positive, roll
+// right side down positive.
+static void tilt_of(float x, float y, float z, float *pitch, float *roll)
+{
+    *pitch = atan2f(-x, sqrtf(y * y + z * z)) * RAD_TO_DEG;
+    *roll = atan2f(y, z) * RAD_TO_DEG;
+}
 
 static float wrap360(float deg)
 {
@@ -90,8 +120,12 @@ static void gyro_task(void *arg)
             // e.z is counter-clockwise positive (right-handed about +Z); the
             // robot's convention is clockwise, hence the sign flip.
             s_yaw_raw  = wrap360(-e.z);
-            s_pitch    = e.y;
-            s_roll     = e.x;
+            s_rv_pitch = e.y;
+            s_rv_roll  = e.x;
+            if (!s_grav_ok) {
+                s_pitch = e.y;
+                s_roll  = e.x;
+            }
             s_yaw_rate = -v.z * RAD_TO_DEG;
             s_ready    = true;
             s_samples++;
@@ -99,6 +133,30 @@ static void gyro_task(void *arg)
 
             xSemaphoreGive(s_sample_sem);
         }
+
+        if (s_imu->rpt.gravity.has_new_data()) {
+            bno08x_accel_t g = s_imu->rpt.gravity.get();
+            float p, r;
+            tilt_of(g.x, g.y, g.z, &p, &r);
+            portENTER_CRITICAL(&s_lock);
+            s_gx = g.x;
+            s_gy = g.y;
+            s_gz = g.z;
+            s_pitch = p;
+            s_roll = r;
+            portEXIT_CRITICAL(&s_lock);
+        }
+
+#if GYRO_TILT_DEBUG
+        if (s_imu->rpt.accelerometer.has_new_data()) {
+            bno08x_accel_t a = s_imu->rpt.accelerometer.get();
+            portENTER_CRITICAL(&s_lock);
+            s_acx = a.x;
+            s_acy = a.y;
+            s_acz = a.z;
+            portEXIT_CRITICAL(&s_lock);
+        }
+#endif
 
         if (s_imu->rpt.linear_accelerometer.has_new_data()) {
             bno08x_accel_t a = s_imu->rpt.linear_accelerometer.get();
@@ -110,6 +168,28 @@ static void gyro_task(void *arg)
         }
     }
 }
+
+#if GYRO_TILT_DEBUG
+// Lowest priority and its own task: a console nobody reads must never stall
+// the 1 kHz loop above.
+static void tilt_debug_task(void *arg)
+{
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        portENTER_CRITICAL(&s_lock);
+        float yaw = wrap360(s_yaw_raw - s_yaw_zero);
+        float rp = s_rv_pitch, rr = s_rv_roll;
+        float gx = s_gx, gy = s_gy, gz = s_gz;
+        float ax = s_acx, ay = s_acy, az = s_acz;
+        portEXIT_CRITICAL(&s_lock);
+        float gp, gr, ap, ar;
+        tilt_of(gx, gy, gz, &gp, &gr);
+        tilt_of(ax, ay, az, &ap, &ar);
+        printf("TILT yaw=%6.1f rv=%+5.1f/%+5.1f grav=%+5.1f/%+5.1f acc=%+5.1f/%+5.1f g=(%+.2f,%+.2f,%+.2f)\n",
+               yaw, rp, rr, gp, gr, ap, ar, gx, gy, gz);
+    }
+}
+#endif
 
 void gyro_init(void)
 {
@@ -141,6 +221,16 @@ void gyro_init(void)
     // detection is no reason to refuse to drive.
     if (!s_imu->rpt.linear_accelerometer.enable(GYRO_ACCEL_PERIOD_US))
         printf("gyro: no linear accelerometer - lift detection runs on 2 signals\n");
+
+    if (s_imu->rpt.gravity.enable(GYRO_GRAVITY_PERIOD_US))
+        s_grav_ok = true;
+    else
+        printf("gyro: no gravity report - pitch/roll from the rotation vector\n");
+#if GYRO_TILT_DEBUG
+    if (!s_imu->rpt.accelerometer.enable(GYRO_GRAVITY_PERIOD_US))
+        printf("gyro: no accelerometer report (tilt debug)\n");
+    xTaskCreate(tilt_debug_task, "tilt_dbg", 4096, NULL, 1, NULL);
+#endif
 
     // Above the SH-2 data-processing task (6) so a 1 kHz report stream gets
     // drained the moment it is decoded, not a scheduling slot later.
