@@ -327,6 +327,11 @@ class TestCatAndButton(unittest.TestCase):
         # одиночный LOW - дребезг; удержание - одно нажатие; потом ещё одно
         self.assertEqual(b.presses, 2)
 
+    def test_pinctrl_parse(self):
+        self.assertEqual(oled.parse_pinctrl("27: ip    pu | hi // GPIO27 = input"), (True, True))
+        self.assertEqual(oled.parse_pinctrl("27: ip    pu | lo // GPIO27 = input"), (False, True))
+        self.assertEqual(oled.parse_pinctrl("27: ip    pd | lo // GPIO27 = input"), (False, False))
+
     def test_gpio_users_found_by_cmdline(self):
         with tempfile.TemporaryDirectory() as d:
             def proc(pid, cmd):

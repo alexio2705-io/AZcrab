@@ -142,11 +142,7 @@ class Camera:
         except Exception as e:
             log(f'Камера {self.idx} ({CAM_NAMES[self.idx]}) недоступна: {e}')
             if cam is not None:           # не держать её занятой
-                try:
-                    cam.stop()
-                    cam.close()
-                except Exception:
-                    pass
+                _release_async(cam)
             self.cam = None
             return False
         self.ok = True
@@ -308,10 +304,14 @@ class Camera:
             self.cap_lock.release()
 
     def close(self):
-        if self.cam is not None:
-            with self.cap_lock:
-                self.cam.stop()
-                self.cam.close()
+        if self.cam is None:
+            return
+        if self.dead:                     # stop() ждал бы тот же кадр, что не пришёл
+            _release_async(self.cam)
+            return
+        with self.cap_lock:
+            self.cam.stop()
+            self.cam.close()
 
     def latest(self):
         if not self.stream:
@@ -334,6 +334,18 @@ class Camera:
                 req.release()
         finally:
             self.cap_lock.release()
+
+
+def _release_async(cam):
+    """stop()+close() в фоне: у камеры, что не отдаёт кадры, picamera2 и
+    stop() ждёт тот кадр - вызывающий (старт nav.py, его уборка) не должен."""
+    def run():
+        try:
+            cam.stop()
+            cam.close()
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True, name="cam-release").start()
 
 
 def cam_settings_controls():

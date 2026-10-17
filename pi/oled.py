@@ -1130,6 +1130,13 @@ BUTTON_POLL_S = 0.05
 GPIO_USERS = ("nav.py", "tile_calib.py", "bringup.py")   # им кнопка нужна самим
 
 
+def parse_pinctrl(out):
+    """Строка pinctrl get («27: ip    pu | hi // GPIO27 = input») ->
+    (отпущена, подтяжка вверх стоит)."""
+    head = out.split("//")[0]
+    return "| lo" not in head, " pu " in head + " "
+
+
 class Button:
     """Кнопка, которую демон читает, НЕ занимая пин.
 
@@ -1151,8 +1158,14 @@ class Button:
             threading.Thread(target=self._run, daemon=True, name="oled-button").start()
 
     def _pinctrl(self):
-        out = subprocess.run(["pinctrl", "lev", str(self.pin)], capture_output=True, text=True).stdout
-        return out.strip() != "0"            # True - отпущена (подтяжка вверх)
+        out = subprocess.run(["pinctrl", "get", str(self.pin)], capture_output=True, text=True).stdout
+        released, pull_ok = parse_pinctrl(out)
+        if not pull_ok:
+            # GPIO.cleanup() в nav.py/bringup.py сбрасывает подтяжку - вернуть;
+            # этот отсчёт не считаем (без подтяжки «низко» - не нажатие)
+            subprocess.run(["pinctrl", "set", str(self.pin), "ip", "pu"], capture_output=True)
+            return True
+        return released
 
     def poll(self):
         if self._read():
