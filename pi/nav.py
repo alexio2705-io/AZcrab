@@ -48,7 +48,7 @@ flood_fill_run() ищет по уже известным открытым рёб
 
 На каждой клетке, где по бокам есть стена, эта стена сканируется на метку
 жертвы - ОБЕ стороны сразу, каждая своей камерой через YOLO
-(victim_detect.py: cam_idx=0 правая, cam_idx=1 левая). При жертве - буквенной
+(какая камера на какой стороне - watch_logic.CAM_IDX). При жертве - буквенной
 метке (Φ/Ψ/Ω) или когнитивной цели с суммой колец 0/1/2 - включается
 индикация лентой (leds.py) на 5+ секунд, как требуют правила, а при 1-2
 аптечках они ещё и высыпаются. Когнитивная цель с другой суммой - фейк:
@@ -1122,8 +1122,8 @@ _write_lock = threading.Lock()
 # опциональные: создаются в main(), остаются None, если камера/модель/лента
 # недоступны, и тогда flood_fill_run просто пропускает сканирование/мигание
 # с этой стороны.
-_victim_r = None   # правая камера (cam_idx=0)
-_victim_l = None   # левая камера  (cam_idx=1)
+_victim_r = None   # правая камера (watch_logic.CAM_IDX)
+_victim_l = None   # левая камера
 _leds = None
 
 
@@ -5587,14 +5587,14 @@ def main():
     if use_vision:
         print("Инициализация детекторов жертв (YOLO, правая камера)...")
         try:
-            _victim_r = VictimDetector(cam_idx=0)
+            _victim_r = VictimDetector(cam_idx=watch_logic.CAM_IDX["right"])
         except Exception as e:
             print(f"  [WARN] правая камера недоступна: {e}")
             _victim_r = None
 
         print("Инициализация детекторов жертв (YOLO, левая камера)...")
         try:
-            _victim_l = VictimDetector(cam_idx=1)
+            _victim_l = VictimDetector(cam_idx=watch_logic.CAM_IDX["left"])
         except Exception as e:
             print(f"  [WARN] левая камера недоступна: {e}")
             _victim_l = None

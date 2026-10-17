@@ -17,7 +17,7 @@ cpu_count-1 = 3), а NCNN - до загрузки: менять opt.num_threads 
 Запуск (это делает victim_watch.py):
     watch_proc.py МОДЕЛЬ ПАПКА CONF idx:shm [idx:shm]
 stdin:  "idx номер_кадра номер_включения" - кадр 320x320 BGR уже лежит в
-        общей памяти камеры idx (0 - правая, 1 - левая, как cam_idx);
+        общей памяти камеры idx (какая сторона - watch_logic.CAM_IDX);
 stdout: {"ready": true} после прогрева, дальше по строке JSON на запрос:
         {"cam", "id", "arm", "boxes": [{"cls", "conf", "xyxy"}], "ms", "img"}.
 Каждый кадр с рамкой сохраняется в ПАПКУ с нарисованными рамками - по ним

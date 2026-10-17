@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Детектор жертв для RoboCup Rescue Maze.
-cam_idx=0 — правая камера, cam_idx=1 — левая.
+Какой cam_idx на какой стороне - watch_logic.CAM_IDX.
 
 Модель: YOLO26n maze_v26n_B.pt (обучена 26.09.2026 на кадрах этих же камер
 + буквы из датасета robocup-ffq6y/maze, CC BY 4.0; 320x320). Классы:
@@ -79,7 +79,7 @@ class VictimDetector:
         from ultralytics import YOLO
 
         os.makedirs(SAVE_DIR, exist_ok=True)
-        side = 'правая' if cam_idx == 0 else 'левая'
+        side = wl.CAM_NAMES.get(cam_idx, '?')
         self.cam_idx = cam_idx
 
         print('[VD] Загрузка YOLO...')

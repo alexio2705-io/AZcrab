@@ -34,7 +34,7 @@ STILL_SIZE = (960, 960)
 STILL_SENSOR = (1296, 972)
 HTTP_PORT = 8000
 DATASETS_ROOT = os.path.expanduser('~/maze/datasets')
-CAM_NAMES = {0: 'правая', 1: 'левая'}
+from watch_logic import CAM_NAMES  # noqa: E402  номер камеры -> сторона
 STREAM_JPEG_QUALITY = 70
 SAVE_JPEG_QUALITY = 95
 SETTINGS_PATH = os.path.expanduser('~/maze/camera_settings.json')
@@ -628,12 +628,12 @@ PAGE = """<!doctype html>
   </div>
   <div class="grid2">
     <div class="panel">
-      <div class="sec"><span>Камера 0 · правая</span></div>
+      <div class="sec"><span>Камера 0 · левая</span></div>
       <div class="vidbox sq1" id="box0"><img class="vid" id="img0" src="/stream/0.mjpg" alt=""></div>
       <div class="pad"><button class="btn p block" onclick="save(0)">Сохранить <kbd>1</kbd></button></div>
     </div>
     <div class="panel">
-      <div class="sec"><span>Камера 1 · левая</span></div>
+      <div class="sec"><span>Камера 1 · правая</span></div>
       <div class="vidbox sq1" id="box1"><img class="vid" id="img1" src="/stream/1.mjpg" alt=""></div>
       <div class="pad"><button class="btn p block" onclick="save(1)">Сохранить <kbd>2</kbd></button></div>
     </div>

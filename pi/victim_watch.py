@@ -27,7 +27,7 @@ from multiprocessing import shared_memory
 
 import numpy as np
 
-from watch_logic import Stats
+from watch_logic import CAM_IDX, Stats
 
 # Потолок частоты кадров на камеру. Фактически упирается в инференс
 # (~85 мс на кадр на Pi 5): чем раньше замечена метка, тем ровнее робот
@@ -38,7 +38,7 @@ RESPONSE_TIMEOUT_S = 2.0       # воркер молчит дольше - счи
 IDLE_WAIT_S = 0.2
 TS_SKEW_MAX_S = 0.5            # SensorTimestamp дальше от monotonic - чужие часы
 FRAME_SHAPE = (320, 320, 3)
-SIDE_IDX = {"right": 0, "left": 1}   # как cam_idx в victim_detect.py
+SIDE_IDX = CAM_IDX                   # сторона -> номер камеры, см. watch_logic
 
 
 def attach_shm(name):

@@ -474,9 +474,9 @@ PAGE = """<!doctype html>
 <body>
 <div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ детекция меток</span></h1><nav class="nav"><a href="/" aria-current="page">детекция</a><a href="/tune">кольца</a><a href="/colors">цвета</a></nav><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
   <div class="grid2">
-    <div class="panel sq"><div class="sec"><span>Камера 0 · правая</span><span class="n" id="fps0"></span></div>
+    <div class="panel sq"><div class="sec"><span>Камера 0 · левая</span><span class="n" id="fps0"></span></div>
       <img class="vid" src="/stream/0.mjpg" alt=""><div class="card" id="card0"><div class="note">ожидание данных</div></div></div>
-    <div class="panel sq"><div class="sec"><span>Камера 1 · левая</span><span class="n" id="fps1"></span></div>
+    <div class="panel sq"><div class="sec"><span>Камера 1 · правая</span><span class="n" id="fps1"></span></div>
       <img class="vid" src="/stream/1.mjpg" alt=""><div class="card" id="card1"><div class="note">ожидание данных</div></div></div>
   </div>
 </div>
@@ -661,7 +661,7 @@ TUNE_PAGE = """<!doctype html>
 <body>
 <div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ кольца</span></h1><nav class="nav"><a href="/">детекция</a><a href="/tune" aria-current="page">кольца</a><a href="/colors">цвета</a></nav><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
   <div class="panel" style="margin-bottom:16px"><div class="tools">
-    <label>Камера <select id="cam"><option value="0">0 · правая</option><option value="1">1 · левая</option></select></label>
+    <label>Камера <select id="cam"><option value="0">0 · левая</option><option value="1">1 · правая</option></select></label>
     <button class="btn" id="freeze">Заморозить кадр</button>
     <button class="btn p" id="save">Сохранить пороги</button>
     <button class="btn" id="reset">Сбросить к умолчаниям</button>

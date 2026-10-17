@@ -296,7 +296,7 @@ PAGE = """<!doctype html>
 <body>
 <div class="wrap"><div class="bar"><h1>MAZE2027 <span>/ цвета колец</span></h1><nav class="nav"><a href="/">детекция</a><a href="/tune">кольца</a><a href="/colors" aria-current="page">цвета</a></nav><div class="st"><i class="led off" id="conn-led"></i><span id="conn">подключение</span></div></div>
   <div class="panel" style="margin-bottom:16px"><div class="tools">
-    <label>Камера <select id="cam"><option value="0">0 · правая</option><option value="1">1 · левая</option></select></label>
+    <label>Камера <select id="cam"><option value="0">0 · левая</option><option value="1">1 · правая</option></select></label>
     <button class="btn p" id="snap">Сфоткать</button>
     <button class="btn" id="undo">Отменить клик <kbd>Z</kbd></button>
     <span id="shot"></span>

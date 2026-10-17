@@ -202,7 +202,7 @@ def check_lidar(busy):
         report("OK", "лидар", f"{n} пакетов/с")
 
 
-CAM_NAMES = {0: "правая", 1: "левая"}     # как в dataset_web.CAM_NAMES
+from watch_logic import CAM_NAMES      # noqa: E402  номер камеры -> сторона
 
 
 def frame_ok(output):
