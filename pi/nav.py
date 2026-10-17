@@ -1030,9 +1030,16 @@ _last_black_ambig = False
 # Сколько раз мягкий запрет не пустил на пути домой (ребро -> попыток). Ребро,
 # что не пустило HOME_EDGE_TRIES раз, обходной путь домой больше не берёт,
 # пока есть другие: иначе робот бился в одно место до конца заезда, на
-# каждом откате заезжая на соседнюю плитку (с синей - LoP и повтор).
+# каждом откате заезжая на соседнюю плитку (с синей - LoP и повтор). После
+# HOME_EDGE_MAX_TRIES не берёт совсем: дальше - разведка того, что ещё не
+# видели (return_to_start). Раньше последний уровень обнулял счёт, и одно и
+# то же ребро чередовалось уровнями до конца заезда (17.10, "СТЕНА
+# ВПЛОТНУЮ d=0" десятки раз). Новый круг попыток - только когда и
+# разведывать нечего, после HOME_LOST_REMEASURES перемеров клетки.
 _home_fails = {}
 HOME_EDGE_TRIES = 2
+HOME_EDGE_MAX_TRIES = 4
+HOME_LOST_REMEASURES = 6
 # Горки: (cx, cy, d) -> (bx, by, плиток, +1 вверх/-1 вниз). Ребро из клетки
 # у подножия (или гребня) по направлению d ведёт не в соседа, а сразу в
 # клетку на другом конце горки, на другом этаже (см. LEVEL_STRIDE). Сами
@@ -2268,23 +2275,22 @@ def find_home_path(cx, cy, hdg):
     """Путь на старт: обычный BFS, а если по карте его нет - с ослабленными
     запретами. Настоящий лабиринт связный, и раскладку чёрных судьи проверяют
     на проходимость - значит, "старт недостижим" - это ошибка в карте (мягкий
-    запрет, недомер), а не повод прекращать заезд. None - не нашлось и так."""
+    запрет, недомер), а не повод прекращать заезд. None - не нашлось и так:
+    мягкие рёбра исчерпаны (HOME_EDGE_MAX_TRIES), пора разведывать."""
     goal = lambda c: c == (0, 0)     # noqa: E731
     path = find_path_bfs((cx, cy), goal, hdg)
     if path is not None:
         return path
     # Сначала - без мягких рёбер, что уже не пустили (_home_fails); не
-    # нашлось - со всеми: попытки по кругу, а не в одно и то же ребро.
+    # нашлось - и через них, но не больше HOME_EDGE_MAX_TRIES раз на ребро.
     for level, tries, why in ((1, HOME_EDGE_TRIES, "через мягко закрытые рёбра"),
                               (2, HOME_EDGE_TRIES, "и через неизвестные рёбра"),
-                              (2, None, "через все мягкие рёбра заново"),
-                              (3, None, "через чёрную под сомнением")):
+                              (2, HOME_EDGE_MAX_TRIES, "через мягкие рёбра ещё раз"),
+                              (3, HOME_EDGE_MAX_TRIES, "через чёрную под сомнением")):
         path = runplan.bfs_path((cx, cy), hdg, _open_dirs_relaxed(level, tries), _next_cell, goal,
                                 SIDE_ORDER[_side_pref], route_cost)
         if path is not None:
             print(f"  [WARN] по карте старт недостижим - пробую путь {why}")
-            if tries is None:
-                _home_fails.clear()
             return path
     return None
 
@@ -5117,6 +5123,7 @@ def return_to_start(cx, cy, hdg, checkpoint):
         return cx, cy, hdg
     print("\n  ↩ Возврат на старт (BFS по известной карте)")
     home_bias, side_fails = None, 0       # повтор ребра со сдвигом (см. flood_fill_run)
+    exploring, lost = False, 0            # старт недостижим: разведка / перемеры подряд
 
     while (cx, cy) != (0, 0):
         if _lifted.is_set():
@@ -5136,16 +5143,33 @@ def return_to_start(cx, cy, hdg, checkpoint):
             continue
 
         path = find_home_path(cx, cy, hdg)
+        explore = False
         if path is None:
-            # Не нашлось даже с ослабленными запретами - карта вокруг врёт.
-            # Перемерить клетку и пробовать снова: заезд кончается только
-            # на старте.
+            # Мягкие рёбра исчерпаны - карта где-то врёт (стена, которой при
+            # разведке не было, или сама поза). Повторять тот же ход нечего:
+            # разведываем, чего ещё не видели, - обход найдётся там.
+            path = find_frontier_path(cx, cy, hdg)
+            explore = path is not None
+            if explore and not exploring:
+                print("  [WARN] старт недостижим и через мягкие рёбра - "
+                      "разведываю неразведанное, ищу обход")
+        exploring = explore
+        if path is None:
+            # Разведывать нечего - перемерить клетку (голоса лидара могут
+            # открыть ребро) и искать снова; долго ничего - новый круг
+            # попыток через мягкие рёбра: заезд кончается только на старте.
+            lost += 1
             print("  [WARN] путь на старт не найден - перемеряю клетку и ищу снова")
             _write_state(cx, cy, hdg, checkpoint, "returning")
             if not get_esp_paused():
                 set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
+            if lost >= HOME_LOST_REMEASURES:
+                print("  [WARN] перемеры ничего не дали - новый круг попыток через мягкие рёбра")
+                _home_fails.clear()
+                lost = 0
             time.sleep(0.5)
             continue
+        lost = 0
 
         d = path[0]
         delta = DIR_DELTA[(d - hdg) % 4]
@@ -5189,7 +5213,10 @@ def return_to_start(cx, cy, hdg, checkpoint):
             hdg = d
             _write_state(cx, cy, hdg, checkpoint, "returning")
 
-        plan = _DrivePlan((cx, cy), hdg, lambda c: c == (0, 0), home=True)
+        # Разведка по пути домой - до первой неразведанной клетки: встать в
+        # ней, как на старте (home=True), и снова искать путь домой.
+        goal = (lambda c: c not in _visited) if explore else (lambda c: c == (0, 0))
+        plan = _DrivePlan((cx, cy), hdg, goal, home=True)
         bias = home_bias[3] if home_bias is not None and home_bias[:3] == (cx, cy, hdg) else 0.0
         n, reason = drive_cells(300, expect_ramp=(cx, cy, hdg) in _ramps,
                                 cell=(cx, cy), hdg=hdg, plan=plan, bias_mm=bias)
@@ -5205,6 +5232,9 @@ def return_to_start(cx, cy, hdg, checkpoint):
             # перестроит маршрут до старта.
             if not get_esp_paused():
                 set_cell_walls(cx, cy, hdg, _measure_cell(hdg))
+                if explore and (cx, cy) not in _visited:
+                    _visited.add((cx, cy))
+                    print(f"    разведана ({cx},{cy}) - ищу путь на старт заново")
             # Синяя клетка требует стоянки на КАЖДОМ визите, включая обратный
             # путь - см. blue_stop()/_blue_cells.
             if tile_color() == TILE_BLUE or (cx, cy) in _blue_cells:
@@ -5226,6 +5256,9 @@ def return_to_start(cx, cy, hdg, checkpoint):
                       "bumper_left", "bumper_right") or (reason == "wall_close" and n == 0):
             key = _edge_key(cx, cy, hdg)
             _home_fails[key] = _home_fails.get(key, 0) + 1
+            if _home_fails[key] == HOME_EDGE_MAX_TRIES and key in _soft_edges:
+                print(f"  [WARN] ({cx},{cy}) {_DIR_NAME[hdg]} не пустило "
+                      f"{HOME_EDGE_MAX_TRIES} раз - туда больше не еду")
         if reason in ("obstacle_stall", "ramp_stall"):
             if reason == "obstacle_stall":
                 creep_mm(-OBSTACLE_BACKOFF_MM, snap_target())
