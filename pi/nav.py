@@ -4408,22 +4408,32 @@ def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
     return watch_logic.world_along(cell, hdg, wall_dir, pos, LEVEL_STRIDE)
 
 
+# Стены клеток, где метку с поворота уже пробовали читать: второй раз не
+# пробуем - иначе неудачное чтение повторялось на каждом повороте в клетке.
+_turn_mark_tried = set()
+
+
 def _turn_marks(cx, cy, seen):
     """Метки, замеченные наблюдателем на повороте в клетке (cx, cy) (см.
-    turn_to(seen=...)): для каждой стены - лучшая рамка; если там ещё ничего
-    не читали, довернуться на курс того кадра, прочитать стоя (read_wall) и
-    отрепортить. Возвращает курс сетки после выдачи комплектов или None
-    (курс не менялся; робот может стоять не по сетке - вызывающий
-    доворачивает сам)."""
+    turn_to(seen=...)): для каждой стены - рамка, снятая ближе всего к
+    перпендикуляру (watch_logic.TURN_MARK_PHI_MIN..MAX). Если там ещё ничего
+    не читали и не пробовали: довернуться на курс того кадра (под ним метку
+    видно точно), прочитать стоя (read_wall) и отрепортить. Возвращает курс
+    сетки после выдачи комплектов или None (курс не менялся; робот может
+    стоять не по сетке - вызывающий доворачивает сам)."""
     best = {}
     for side, yf, xyxy, conf, cls in seen:
         rel = angle_err(yf, YAW_ORIGIN)
         h = int(round(rel / 90.0)) % 4
         phi = angle_err(rel, 90.0 * h)
+        if not watch_logic.TURN_MARK_PHI_MIN <= abs(phi) <= watch_logic.TURN_MARK_PHI_MAX:
+            continue                      # диагональ (какая стена - неясно) или сетка
         wall_dir = watch_logic.wall_of(h, side)
+        if (cx, cy, wall_dir) in _turn_mark_tried:
+            continue
         px = max(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])
         k = (side, wall_dir)
-        if k not in best or px > best[k][0]:
+        if k not in best or abs(phi) < abs(best[k][4]):
             best[k] = (px, yf, xyxy, h, phi, cls)
     out_hdg = None
     for (side, wall_dir), (px, yf, xyxy, h, phi, cls) in best.items():
@@ -4445,8 +4455,9 @@ def _turn_marks(cx, cy, seen):
             continue
         if _marks.near(key, along, cls) is not None:
             continue                      # уже читали (или отбраковали) рядом
-        print(f"    [W] на повороте: {side} {px:.0f}px, стена {_DIR_NAME[wall_dir]} "
-              f"{along:.0f}мм - доворачиваю на {yf:.0f}°")
+        _turn_mark_tried.add((cx, cy, wall_dir))
+        print(f"    [W] на повороте: {side} {px:.0f}px под {phi:+.0f}°, стена "
+              f"{_DIR_NAME[wall_dir]} {along:.0f}мм - доворачиваю на {yf:.0f}°")
         turn_to(yf, label="к метке")
         result = _read_seen_mark(det, cx, cy, wall_dir, f"чтение метки ({side})")
         if result is not None and result.get("blink"):
