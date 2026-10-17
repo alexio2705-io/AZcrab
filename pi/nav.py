@@ -578,6 +578,9 @@ _last_bump_mm = 0.0         # где сработал бампер в после
 # делается (она выровняла бы по грани препятствия). Иначе одометрия всех
 # следующих поездок съезжала на 4-6 см, и чёрная приписывалась не той клетке.
 OBST_SHORT_MM = 25.0
+# "Горка" оказалась препятствием, а робот, пока ехал по ней без остановок,
+# проскочил центр клетки больше, чем на это: после остановки - назад к центру.
+NOT_RAMP_BACK_MM = 60.0
 _pos_off = [0.0, 0.0]
 
 
@@ -3056,6 +3059,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
     assist_kicks = 0
     assist_gap_until = 0.0
     short_at_wall = False      # встали у стены раньше, чем ждали (см. _phantom_cells)
+    overshoot_back = False     # "не горка" увезла за цель - после остановки назад
     slow_since = None          # с какого такта едем медленнее OBSTACLE_SLOW_FRAC
     push_tries = 0             # PUSH_THROUGH_SMALL: сколько раз уже дотолкивали
     assist_progress_cm = 0.0
@@ -3356,6 +3360,12 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
                               f"высота {info['rise_cm']*10:+.0f}мм - "
                               f"лестница/препятствие")
                         boundary_cm, stopping, pending, reason = ramp_saved
+                        if traveled_cm - boundary_cm > NOT_RAMP_BACK_MM / 10.0:
+                            # "Горка" ехала без остановок и увезла за цель
+                            # (заезд 17:12: на 33 см - целую клетку, которую
+                            # карта не засчитала). Встанем - сдадим назад.
+                            overshoot_back = True
+                            stopping, pending = True, False
                         ramp_state = None
                         ramp_flat_cm = None
                         ramp_log = []
@@ -3989,6 +3999,10 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan, bias_mm=0.0):
         # носом в него (в центр этой клетки не встать).
         creep_mm(-BUMPER_ENTERED_BACKOFF_MM, target_yaw)
     else:
+        over_mm = (traveled_cm - boundary_cm) * 10.0
+        if overshoot_back and over_mm > NOT_RAMP_BACK_MM:
+            print(f"    проскочили центр клетки на {over_mm:.0f}мм (ехали как по горке) - назад")
+            creep_mm(-over_mm, target_yaw, timeout_s=2.0 + 1.5 * over_mm / 10.0 / ALIGN_SPEED_CMS)
         if short_at_wall:
             # Стена ближе, чем по одометрии: препятствие в новой клетке или
             # стена старой, до которой одометрия "переехала" на клетку?
@@ -4289,6 +4303,21 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     trav = trav_mm()
     tcell = _cell_at(cell, hdg, watch_logic.cell_index(trav))
     wall_dir = watch_logic.wall_of(hdg, side)
+    # Стена с этой стороны должна быть: по карте, а в новой клетке - по
+    # лидару стоя. Заезд 17:12: Ψ на дальней стене (43px) через проём южной
+    # стороны (-2,-1) прочитали и записали на стену, которой нет, с комплектом.
+    known = _maze.get(tcell)
+    if known is not None and known[wall_dir] is False:
+        no_wall = "по карте"
+    elif not wall_present(measure_walls(WALL_VOTE_SCANS)[side], SIDE_THRESH):
+        no_wall = "по лидару"
+    else:
+        no_wall = None
+    if no_wall:
+        print(f"    метка: стены {_DIR_NAME[wall_dir]} у {tcell} {no_wall} нет - "
+              f"это дальняя стена, не читаю")
+        _reject_mark(cell, hdg, side, m["pos_mm"], m.get("cls"))
+        return _interrupt_reason()
     result = _read_seen_mark(det, tcell[0], tcell[1], wall_dir, f"чтение метки ({side})")
     if result is not None and result.get("blink"):
         result = _confirm(det, tcell[0], tcell[1], wall_dir, result)
