@@ -302,19 +302,31 @@ _tx = None
 
 
 def say(title, lines=(), big=None, alert=False, small=False, ttl=MSG_TTL_S, port=MSG_PORT,
-        video=None):
+        video=None, right=None, items=None, sel=0, bar=None, progress=None):
     """Показать экран на дисплее, пока его шлют (и ещё ttl секунд).
 
     title - шапка, lines - строки под ней (6x10: 5 строк по 21 символу,
     small=True - 5x8: 6 строк по 25), длинные прокручиваются сами. big -
     крупная строка (до 10 символов) вместо первых двух строк. alert -
     шапка мигает. video - путь к файлу oled_video.py на Pi: вместо текста
-    этот ролик по кругу. Никогда не бросает и не ждёт."""
+    этот ролик по кругу. right - короткое справа в шапке. items + sel -
+    список с выбранным пунктом вместо строк. progress (0..1) - полоска
+    замера под первой строкой. bar - кнопки внизу экрана {пин: подпись}
+    (см. button_bar), тогда под текст остаётся 4 строки. Никогда не бросает
+    и не ждёт."""
     global _tx
     msg = {"title": str(title), "lines": [str(s) for s in lines][:6], "big": big,
            "alert": bool(alert), "small": bool(small), "ttl": float(ttl)}
     if video:
         msg["video"] = os.path.abspath(os.path.expanduser(video))
+    if right:
+        msg["right"] = str(right)
+    if items:
+        msg["items"], msg["sel"] = [str(s) for s in items], int(sel)
+    if bar:
+        msg["bar"] = {str(k): str(v) for k, v in bar.items()}
+    if progress is not None:
+        msg["progress"] = float(progress)
     try:
         if _tx is None:
             _tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -491,6 +503,50 @@ def big(cv, y, s):
     cv.text((W - 12 * len(s)) // 2, y, s, scale=2)
 
 
+# ── кнопки у малины ───────────────────────────────────────────────
+# Материнка: SW2 -> GPIO22, SW3 -> GPIO24, SW4 -> GPIO27, SW1 -> GPIO25; у
+# каждой подтяжка 10к к 3.3 В и RC 750 Ом + 0.1 мкФ. Если стоять за роботом,
+# слева направо: 22, 24, (промежуток), 27, 25 - старт левой рукой (27) левее
+# правой (25). Номера пинов человеку ничего не скажут, поэтому внизу экрана
+# рисуются сами кнопки, как стоят, и на каждой - что она сейчас делает.
+BTN_PREV, BTN_NEXT, BTN_MODE, BTN_OK = 22, 24, 27, 25
+BAR_SLOTS = ((BTN_PREV, 0), (BTN_NEXT, 29), (BTN_MODE, 72), (BTN_OK, 101))
+BAR_W, BAR_Y = 27, 54
+BAR_CHARS = BAR_W // 5          # подпись на кнопке, 5x8
+
+
+def button_bar(cv, labels):
+    """Полоска кнопок по низу экрана (y 54..63). labels: {пин: подпись};
+    у кнопки есть подпись - она залита, нет - пустая рамка (не делает ничего)."""
+    labels = {int(k): v for k, v in (labels or {}).items()}
+    cv.fill(0, BAR_Y - 1, W, H - BAR_Y + 1, False)
+    for pin, x in BAR_SLOTS:
+        s = labels.get(pin)
+        if s:
+            s = str(s)[:BAR_CHARS]
+            cv.fill(x, BAR_Y, BAR_W, H - BAR_Y)
+            cv.text(x + (BAR_W - 5 * len(s)) // 2 + 1, BAR_Y + 1, s, font="5x8", on=False)
+        else:
+            cv.rect(x, BAR_Y, BAR_W, H - BAR_Y)
+
+
+def item_list(cv, items, sel, rows):
+    """Список под шапкой, выбранный пункт - инверсией; длинный список едет
+    так, чтобы выбранный был виден."""
+    top = min(max(0, sel - rows + 1), max(0, len(items) - rows))
+    if sel < top:
+        top = sel
+    for i in range(rows):
+        k = top + i
+        if k < len(items):
+            line(cv, i, items[k], inv=k == sel)
+
+
+def progress_box(cv, y, frac):
+    cv.rect(4, y, W - 8, 10)
+    cv.fill(6, y + 2, int((W - 12) * max(0.0, min(1.0, frac))), 6)
+
+
 def cams_str(cams):
     """Камеры как «Л● П+»: ● смотрит, + готова, … грузится, × нет.
     Не «○»: в этом шрифте это буква «о», и «П○» читается как «По»."""
@@ -551,21 +607,36 @@ def _alert(st):
 
 
 def scr_msg(cv, st):
+    """Экран из say(): шапка и строки; ещё бывают список с выбором (items,
+    sel), полоска замера (progress) и кнопки внизу (bar) - так рисуют меню,
+    калибровку плиток и тест ленты."""
     m, t = st["msg"], st["now"]
-    header(cv, m.get("title", ""), t=t, blink=m.get("alert"))
+    header(cv, m.get("title", ""), str(m.get("right") or ""), t=t, blink=m.get("alert"))
+    bar = m.get("bar")
+    nrows = 4 if bar else 5
     small = bool(m.get("small")) and not m.get("big")
     n = COLS_SMALL if small else COLS
     rows = [r for s in (m.get("lines") or []) for r in wrap(s, n)]
-    if m.get("big"):
+    if m.get("items"):
+        item_list(cv, [str(s) for s in m["items"]], int(m.get("sel") or 0), nrows)
+    elif m.get("progress") is not None:
+        if rows:
+            line(cv, 0, rows[0])
+        progress_box(cv, 30, float(m["progress"]))
+        if len(rows) > 1:
+            small_line(cv, 4, rows[1])
+    elif m.get("big"):
         big(cv, 13, str(m["big"]))
-        for i, s in enumerate(paged(rows, 3, t)):
+        for i, s in enumerate(paged(rows, nrows - 2, t)):
             line(cv, i + 2, s)
     elif small:
-        for i, s in enumerate(paged(rows, 6, t)):
+        for i, s in enumerate(paged(rows, 5 if bar else 6, t)):
             small_line(cv, i, s)
     else:
-        for i, s in enumerate(paged(rows, 5, t)):
+        for i, s in enumerate(paged(rows, nrows, t)):
             line(cv, i, s)
+    if bar:
+        button_bar(cv, bar)
 
 
 def _uptime(sec):
@@ -604,6 +675,9 @@ def scr_idle(cv, st):
         line(cv, 3, pw, inv=True)
     else:
         line2(cv, 3, pw, f"вкл {_uptime(st.get('uptime'))}")
+    if (st.get("ui") or {}).get("buttons"):
+        button_bar(cv, {BTN_MODE: "МЕНЮ"})
+        return
     # Нижняя строка отделена чертой: это уже не о малине, а что дальше.
     cv.fill(0, 52, W, 1)
     cv.text(1, 54, clip("ждёт запуска nav.py"))
@@ -650,7 +724,11 @@ def scr_preflight(cv, st):
     else:
         tl = f"плитка: {TILE.get(tile, tile)}"
     line(cv, 3, tl)
-    line(cv, 4, f"IP {st.get('ip') or '—'}")
+    # Внизу - кнопки старта, как стоят на плате: какой рукой ехать. Заезд
+    # запущен из меню - ещё и выход назад в меню, пока не поехали.
+    ui = st.get("ui") or {}
+    button_bar(cv, {BTN_PREV: "ОТМЕН" if ui.get("child") == "nav" else None,
+                    BTN_MODE: "ЛЕВ", BTN_OK: "ПРАВ"})
 
 
 def scr_boot(cv, st):
@@ -859,11 +937,40 @@ def scr_cog(cv, v):
     cv.text(x, 52, clip(res, (W - x) // 6))
 
 
+_cat_cache = {}
+
+
+def cat_frames(path=None):
+    """Кадры кота (cat.oledv) для экрана метки; нет файла - None. Читается
+    один раз, файл пересобрали - перечитывается."""
+    path = path or CAT_PATH
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return None
+    if key not in _cat_cache:
+        _cat_cache.clear()
+        try:
+            import oled_video
+            _cat_cache[key] = oled_video.load(path)[1] or None
+        except (OSError, ValueError):
+            _cat_cache[key] = None
+    return _cat_cache[key]
+
+
 def scr_victim(cv, st):
+    """Метка-мишень - мишень с кольцами. Буква - кот слева со своим
+    настроением (oled_moods.py), буква справа во всю высоту; кота нет (нет
+    cat.oledv) - одна буква во весь экран."""
     v = st["victim"]
     if v.get("class") == "cognetive" or v.get("rings"):
         return scr_cog(cv, v)
-    draw_glyph(cv, GLYPH.get(v.get("type")) or str(v.get("label") or "?"))
+    ch = GLYPH.get(v.get("type")) or str(v.get("label") or "?")
+    import oled_moods
+    if oled_moods.draw(cv, ch, st.get("cat") or cat_frames(), st.get("victim_age") or 0.0):
+        draw_glyph(cv, ch, cx=oled_moods.LETTER_CX, w=oled_moods.LETTER_W)
+    else:
+        draw_glyph(cv, ch)
 
 
 def scr_finish(cv, st):
@@ -876,12 +983,57 @@ def scr_finish(cv, st):
     line(cv, 4, f"IP {st.get('ip') or '—'}")
 
 
+def scr_menu(cv, st):
+    """Меню на экране: что запустить с самого робота, без ноута."""
+    ui = st["ui"]
+    sel = ui.get("sel", 0)
+    names = [p[0] for p in ui.get("programs") or PROGRAMS]
+    scr_msg(cv, dict(st, msg={
+        "title": "ВЫБОР ПРОГРАММЫ", "right": f"{sel + 1}/{len(names)}",
+        "items": [("→" if i == sel else " ") + n for i, n in enumerate(names)], "sel": sel,
+        "bar": {BTN_PREV: "↑", BTN_NEXT: "↓", BTN_MODE: "КОТ", BTN_OK: "ПУСК"}}))
+
+
+def scr_run_opts(cv, st):
+    """Настройки проезда перед запуском: ПОЕХАЛИ, датчики ВКЛ/ВЫКЛ, назад."""
+    ui = st["ui"]
+    items = ui.get("run_items") or []
+    osel = ui.get("osel", 0)
+    what, text = items[osel] if items else ("go", "")
+    if what == "go":
+        ok = "ПУСК"
+    elif what == "back":
+        ok = "НАЗАД"
+    else:
+        ok = "ВКЛ" if text.endswith("ВЫКЛ") else "ВЫКЛ"
+    scr_msg(cv, dict(st, msg={
+        "title": "ПРОЕЗД", "items": [t for _, t in items], "sel": osel,
+        "bar": {BTN_PREV: "↑", BTN_NEXT: "↓", BTN_MODE: "НАЗАД", BTN_OK: ok}}))
+
+
+def scr_launch(cv, st):
+    """Программу из меню запустили, а своего экрана она ещё не прислала."""
+    ui = st["ui"]
+    header(cv, "ЗАПУСК", "", st["now"], blink=True)
+    block(cv, 0, 2, ui.get("label") or ui.get("child") or "", st["now"])
+    line(cv, 3, "подожди…")
+
+
 def compose(cv, st):
     """Выбрать экран по состоянию и нарисовать."""
     cv.clear()
     if st.get("msg"):
         return scr_msg(cv, st)
     snap = st.get("snap")
+    # Меню и запуск из него - только у демона (st["ui"]); пульт их не видит.
+    ui = st.get("ui") or {}
+    live = snap is not None and st.get("connected") and st.get("stale", 0) <= STALE_S
+    if ui.get("child") and not live:
+        return scr_launch(cv, st)
+    if ui.get("mode") == "menu" and not ui.get("busy") and not live:
+        return scr_menu(cv, st)
+    if ui.get("mode") == "run" and not ui.get("busy") and not live:
+        return scr_run_opts(cv, st)
     if snap is None:
         return scr_idle(cv, st)
     if not st["connected"] or st.get("stale", 0) > STALE_S:
@@ -1074,7 +1226,7 @@ class Inbox:
     def _run(self):
         while True:
             try:
-                data = self.sock.recv(4096)
+                data = self.sock.recv(8192)
                 m = json.loads(data.decode())
             except (OSError, ValueError):
                 continue
@@ -1127,16 +1279,49 @@ def build_state(now, feed, sysinfo, msg=None, tile=None):
         v, age = feed.victim[0], now - feed.victim[1]
         busy = (snap or {}).get("act") == "жертва"
         if age < VICTIM_MIN_S or (busy and age < VICTIM_SHOW_S):
-            st["victim"] = v
+            st["victim"], st["victim_age"] = v, age
     if tile is not None and snap is not None and snap.get("phase") == "wait_button":
         st["tile_guess"] = tile(snap.get("rgbc"), now)
     return st
 
 
 CAT_PATH = os.path.expanduser("~/maze/cat.oledv")   # oled_cat.py; нет файла - кота нет
-BUTTON_GPIO = 27             # та же кнопка, что старт nav.py (левая рука) и замер tile_calib.py
+BUTTON_GPIO = BTN_MODE       # та же кнопка, что старт nav.py (левая рука) и замер tile_calib.py
+PANEL_PINS = (BTN_PREV, BTN_NEXT, BTN_MODE, BTN_OK)
 BUTTON_POLL_S = 0.05
-GPIO_USERS = ("nav.py", "tile_calib.py", "bringup.py")   # им кнопка нужна самим
+GPIO_USERS = ("nav.py", "tile_calib.py", "bringup.py", "neopixel_test.py")   # им кнопки нужны самим
+MAZE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Что запускает меню на экране. Проезд - как с ноута, только без ноута.
+PROGRAMS = (
+    ("Проезд лабиринта", "nav", ("nav.py",)),
+    ("Калибровка плиток", "calib", ("tile_calib.py",)),
+    ("Тест неопикселей", "leds", ("neopixel_test.py",)),
+)
+STOP_WAIT_S = 3.0            # ОТМЕН: столько ждём после Ctrl+C, потом SIGTERM
+# Настройки проезда - экран между меню и запуском: (что, флаг nav.py, когда
+# ВЫКЛ). Выбор запоминается до следующего раза.
+RUN_OPTIONS = (("датчик цвета", "--no-color"), ("камеры", "--no-vision"))
+RUN_OPTS_PATH = os.path.expanduser("~/maze/menu_run.json")
+
+
+def load_run_opts(path=RUN_OPTS_PATH):
+    """{флаг: включено ли} - всё включено, если файла нет или он кривой."""
+    opts = {flag: True for _, flag in RUN_OPTIONS}
+    try:
+        with open(path) as f:
+            saved = json.load(f)
+        opts.update({k: bool(v) for k, v in saved.items() if k in opts})
+    except (OSError, ValueError, AttributeError):
+        pass
+    return opts
+
+
+def save_run_opts(opts, path=RUN_OPTS_PATH):
+    try:
+        with open(path, "w") as f:
+            json.dump(opts, f)
+    except OSError as e:
+        _log(f"[WARN] меню: настройки проезда не сохранились: {e}")
 
 
 def parse_pinctrl(out):
@@ -1146,14 +1331,25 @@ def parse_pinctrl(out):
     return "| lo" not in head, " pu " in head + " "
 
 
+def parse_pinctrl_many(out):
+    """Вывод pinctrl get для нескольких пинов -> {пин: (отпущена, подтяжка)}."""
+    res = {}
+    for ln in out.splitlines():
+        num = ln.split(":", 1)[0].strip()
+        if num.isdigit() and "|" in ln:
+            res[int(num)] = parse_pinctrl(ln)
+    return res
+
+
 class Button:
     """Кнопка, которую демон читает, НЕ занимая пин.
 
-    GPIO27 - кнопка старта nav.py и замера tile_calib.py. Если демон займёт
-    пин (RPi.GPIO / lgpio), их GPIO.setup упадёт с «GPIO busy» - проверено на
-    Pi. Поэтому уровень читается утилитой pinctrl (регистры, без захвата
-    линии, ~1 мс), а подтяжка вверх ставится ей же - та же, что ставят они.
-    Нажатие - LOW два опроса подряд после HIGH."""
+    Кнопки нужны и nav.py (старт), и tile_calib.py/neopixel_test.py (их
+    собственное управление). Если демон займёт пин (RPi.GPIO / lgpio), их
+    GPIO.setup упадёт с «GPIO busy» - проверено на Pi. Поэтому уровень
+    читается утилитой pinctrl (регистры, без захвата линии, ~1 мс), а
+    подтяжка вверх ставится ей же - та же, что ставят они. Нажатие - LOW два
+    опроса подряд после HIGH."""
 
     def __init__(self, pin=BUTTON_GPIO, read=None, start=True):
         self.pin = pin
@@ -1165,37 +1361,17 @@ class Button:
         # переключался на экран с IP сам.
         self._armed = False
         if read is None:
-            self._prime()
+            prime_pins([pin])
         if start:
             threading.Thread(target=self._run, daemon=True, name="oled-button").start()
 
-    def _prime(self):
-        """Настроить пин по-настоящему: занять с подтяжкой и сразу отпустить
-        (одного pinctrl set после загрузки мало - пин всё равно читается
-        низким). Пока его держит nav.py - не трогать."""
-        if not gpio_users_running():
-            try:
-                import RPi.GPIO as GPIO
-                GPIO.setwarnings(False)
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-                GPIO.cleanup(self.pin)
-            except Exception:           # noqa: BLE001 - не на Pi или пин занят
-                pass
-        subprocess.run(["pinctrl", "set", str(self.pin), "ip", "pu"], capture_output=True)
-
     def _pinctrl(self):
-        out = subprocess.run(["pinctrl", "get", str(self.pin)], capture_output=True, text=True).stdout
-        released, pull_ok = parse_pinctrl(out)
-        if not pull_ok:
-            # GPIO.cleanup() в nav.py/bringup.py сбрасывает подтяжку - вернуть;
-            # этот отсчёт не считаем (без подтяжки «низко» - не нажатие)
-            subprocess.run(["pinctrl", "set", str(self.pin), "ip", "pu"], capture_output=True)
-            return True
-        return released
+        return read_pins([self.pin]).get(self.pin, True)
 
-    def poll(self):
-        if self._read():
+    def poll(self, released=None):
+        if released is None:
+            released = self._read()
+        if released:
             self._low = 0
             self._armed = True
             return
@@ -1213,8 +1389,75 @@ class Button:
             time.sleep(BUTTON_POLL_S)
 
 
+def prime_pins(pins):
+    """Настроить пины по-настоящему: занять с подтяжкой и сразу отпустить
+    (одного pinctrl set после загрузки мало - пин всё равно читается
+    низким). Пока их держит nav.py - не трогать."""
+    if not gpio_users_running():
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            for p in pins:
+                GPIO.setup(p, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.cleanup(list(pins))
+        except Exception:           # noqa: BLE001 - не на Pi или пин занят
+            pass
+    for p in pins:
+        subprocess.run(["pinctrl", "set", str(p), "ip", "pu"], capture_output=True)
+
+
+def read_pins(pins, run=subprocess.run):
+    """{пин: отпущена} одним вызовом pinctrl на все пины. Подтяжку сбросили
+    (GPIO.cleanup() в nav.py/bringup.py) - вернуть; этот отсчёт - «отпущена»
+    (без подтяжки «низко» - не нажатие)."""
+    out = run(["pinctrl", "get", ",".join(str(p) for p in pins)],
+              capture_output=True, text=True).stdout
+    got = parse_pinctrl_many(out)
+    res = {}
+    for p in pins:
+        if p not in got:              # старый pinctrl без списков - по одному
+            got[p] = parse_pinctrl(run(["pinctrl", "get", str(p)],
+                                       capture_output=True, text=True).stdout)
+        released, pull_ok = got[p]
+        if not pull_ok:
+            run(["pinctrl", "set", str(p), "ip", "pu"], capture_output=True)
+            released = True
+        res[p] = released
+    return res
+
+
+class ButtonPanel:
+    """Четыре кнопки у малины: один опрос pinctrl на все раз в BUTTON_POLL_S."""
+
+    def __init__(self, pins=PANEL_PINS, read=None, start=True):
+        self.pins = tuple(pins)
+        self._read = read or (lambda: read_pins(self.pins))
+        self.buttons = {p: Button(p, read=lambda: True, start=False) for p in self.pins}
+        if read is None:
+            prime_pins(self.pins)
+        if start:
+            threading.Thread(target=self._run, daemon=True, name="oled-buttons").start()
+
+    def poll(self):
+        lv = self._read()
+        for p, b in self.buttons.items():
+            b.poll(lv.get(p, True))
+
+    def presses(self):
+        return {p: b.presses for p, b in self.buttons.items()}
+
+    def _run(self):
+        while True:
+            try:
+                self.poll()
+            except (OSError, subprocess.SubprocessError):
+                time.sleep(1.0)
+            time.sleep(BUTTON_POLL_S)
+
+
 def gpio_users_running(proc="/proc"):
-    """Запущен ли кто-то, кому кнопка GPIO27 нужна самому (по cmdline)."""
+    """Запущен ли кто-то, кому кнопки нужны самому (по cmdline)."""
     me = os.getpid()
     try:
         pids = [p for p in os.listdir(proc) if p.isdigit() and int(p) != me]
@@ -1239,27 +1482,156 @@ def restart_clock(t_start, showing, now):
     return now if t_start is None else t_start
 
 
-class CatMode:
-    """Кот на экране простоя: после включения - кот, кнопка - экран с IP и
-    обратно. Пока работает nav.py/tile_calib.py, кнопка - их (не
-    переключает), а кота не видно. nav.py закончил - его итог, не кот."""
+class Ui:
+    """Экран, когда его никто не занял: кот -> IP -> меню -> кот, по кругу
+    кнопкой 27. В меню 22/24 листают, 25 - запуск. Проезд - через экран
+    настроек («run»): курсор сразу на ПОЕХАЛИ (быстрый старт - 25 дважды),
+    ниже - датчик цвета и камеры ВКЛ/ВЫКЛ (25 переключает), «назад»; 27 там
+    - тоже назад в меню. Пока работает nav.py,
+    tile_calib.py и т.п., кнопки - их (не переключают), а кота не видно;
+    исключение - 22 на экране «жми старт» у заезда, запущенного из меню:
+    это ОТМЕН. nav.py закончил - его итог (экран «IP»), не кот; калибровка
+    или тест ленты закончились - снова меню."""
 
-    def __init__(self):
-        self.on = True
-        self._seen = 0
+    MODES = ("cat", "ip", "menu")
+
+    def __init__(self, n_items=len(PROGRAMS), opts_path=RUN_OPTS_PATH):
+        self.mode = "cat"
+        self.sel = 0
+        self.n = n_items
+        self.osel = 0                # пункт на экране настроек проезда
+        self._opts_path = opts_path
+        self.opts = load_run_opts(opts_path)
+        self._seen = None
         self._was_connected = False
 
-    def step(self, presses, busy, connected):
-        if presses != self._seen:
-            if not busy and (presses - self._seen) % 2:
-                self.on = not self.on
-            self._seen = presses
-        if self._was_connected and not connected:
-            self.on = False                  # заезд кончился - сначала его итог
-        self._was_connected = connected
+    def run_items(self):
+        """Пункты экрана настроек: ("go"|"back"|флаг, подпись)."""
+        return ([("go", "ПОЕХАЛИ!")]
+                + [(flag, f"{name:<16}{'ВКЛ' if self.opts[flag] else 'ВЫКЛ':>4}")
+                   for name, flag in RUN_OPTIONS]
+                + [("back", "← назад в меню")])
 
-    def show(self, busy, msg, snap, connected):
-        return self.on and not busy and msg is None and (snap is None or not connected)
+    def launch_prog(self):
+        """Что запустить: программа из меню, у проезда - с флагами настроек."""
+        label, kind, argv = PROGRAMS[self.sel]
+        if kind != "nav":
+            return PROGRAMS[self.sel]
+        offs = [(name, flag) for name, flag in RUN_OPTIONS if not self.opts[flag]]
+        if offs:
+            label = "Проезд без: " + ", ".join(name for name, _ in offs)
+        return label, kind, (*argv, *(flag for _, flag in offs))
+
+    def step(self, presses, busy, connected, can_cancel=False):
+        """presses - {пин: сколько всего нажатий}. -> "launch", "cancel" или None."""
+        seen = self._seen if self._seen is not None else presses
+        new = {p: presses[p] - seen.get(p, 0) for p in presses}
+        self._seen = dict(presses)
+        if self._was_connected and not connected:
+            self.mode = "ip"                 # заезд кончился - сначала его итог
+        self._was_connected = connected
+        if busy:
+            return "cancel" if can_cancel and new.get(BTN_PREV, 0) > 0 else None
+        k = new.get(BTN_MODE, 0)
+        if k and self.mode == "run":
+            self.mode = "menu"               # с настроек проезда 27 - назад
+            return None
+        if k:
+            self.mode = self.MODES[(self.MODES.index(self.mode) + k) % len(self.MODES)]
+            return None
+        step = new.get(BTN_NEXT, 0) - new.get(BTN_PREV, 0)
+        ok = new.get(BTN_OK, 0) > 0
+        if self.mode == "run":
+            items = self.run_items()
+            self.osel = (self.osel + step) % len(items)
+            if not ok:
+                return None
+            what = items[self.osel][0]
+            if what == "go":
+                return "launch"
+            if what == "back":
+                self.mode = "menu"
+            else:
+                self.opts[what] = not self.opts[what]
+                save_run_opts(self.opts, self._opts_path)
+            return None
+        if self.mode != "menu":
+            return None
+        self.sel = (self.sel + step) % self.n
+        if not ok:
+            return None
+        if PROGRAMS[self.sel][1] == "nav":
+            self.mode, self.osel = "run", 0
+            return None
+        return "launch"
+
+    def child_done(self, kind):
+        self.mode = "ip" if kind == "nav" else "menu"
+
+    def show_cat(self, busy, msg, snap, connected):
+        return self.mode == "cat" and not busy and msg is None and (snap is None or not connected)
+
+
+class Launcher:
+    """Программа, запущенная из меню: свой сеанс (как ensure_daemon), вывод -
+    в лог в ~/maze (заезд - run_ЧЧММ.log, как с ноута)."""
+
+    def __init__(self, base=MAZE_DIR, python=sys.executable, popen=subprocess.Popen):
+        self.base, self.python, self._popen = base, python, popen
+        self.proc = None
+        self.kind = None
+        self.label = None
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, prog):
+        label, kind, argv = prog
+        if self.running():
+            return False
+        name = time.strftime("run_%H%M.log") if kind == "nav" else f"menu_{kind}.log"
+        log_path = os.path.join(self.base, name)
+        cmd = [self.python, "-u", os.path.join(self.base, argv[0]), *argv[1:]]
+        try:
+            with open(log_path, "a") as log_f:
+                self.proc = self._popen(cmd, cwd=self.base, stdin=subprocess.DEVNULL, stdout=log_f,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as e:
+            _log(f"[WARN] меню: не запустился {argv[0]}: {e}")
+            return False
+        self.kind, self.label = kind, label
+        _log(f"меню: запущен {' '.join(argv)} -> {log_path}")
+        return True
+
+    def poll(self):
+        """Программа закончилась - её вид ("nav", "calib", ...), иначе None."""
+        if self.proc is None or self.proc.poll() is None:
+            return None
+        kind = self.kind
+        _log(f"меню: {kind} закончился, код {self.proc.returncode}")
+        self.proc, self.kind, self.label = None, None, None
+        return kind
+
+    def stop(self):
+        """Как Ctrl+C в терминале (nav.py по нему гасит моторы и ленту), не
+        вышло - SIGTERM, потом SIGKILL. Не ждёт: всё в отдельном потоке."""
+        proc = self.proc
+        if proc is None or proc.poll() is not None:
+            return
+
+        def _kill():
+            import signal
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(proc.pid, sig)
+                except OSError:
+                    return
+                try:
+                    proc.wait(STOP_WAIT_S)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
+        threading.Thread(target=_kill, daemon=True, name="oled-stop").start()
 
 
 class Daemon:
@@ -1271,10 +1643,12 @@ class Daemon:
         self.sys = SysInfo()
         self._idle_since = None
         self._videos = {}            # путь -> (к/с, кадры)
-        self.button = Button() if _has_pinctrl() else None
-        self.cat = CatMode()
+        self.buttons = ButtonPanel() if _has_pinctrl() else None
+        self.ui = Ui()
+        self.launcher = Launcher()
         self._cat_t0 = None          # когда кот появился на экране: с этого кадра - с начала
         self._busy, self._busy_t = False, -1e9
+        self._presses_n = 0
 
     def state(self, now):
         return build_state(now, self.feed, self.sys, self.inbox.current(now), self.tile)
@@ -1296,6 +1670,32 @@ class Daemon:
             self._videos[key] = v
         return v if v[1] else None
 
+    def buttons_step(self, st, t0):
+        """Кнопки -> режим экрана, запуск и остановка программ из меню."""
+        if t0 - self._busy_t > 0.5:
+            self._busy, self._busy_t = gpio_users_running(), t0
+        done = self.launcher.poll()
+        if done:
+            self.ui.child_done(done)
+        busy = self._busy or self.launcher.running()
+        presses = self.buttons.presses() if self.buttons else {}
+        snap = st["snap"] or {}
+        can_cancel = (self.launcher.kind == "nav" and st["connected"]
+                      and snap.get("phase") == "wait_button")
+        act = self.ui.step(presses, busy, st["connected"], can_cancel)
+        if act == "launch":
+            if self.launcher.start(self.ui.launch_prog()):
+                busy, self._busy_t = True, -1e9
+        elif act == "cancel":
+            self.launcher.stop()
+        n = sum(presses.values())
+        if n != self._presses_n:             # нажали - экран снова яркий
+            self._presses_n, self._idle_since = n, None
+        st["ui"] = {"mode": self.ui.mode, "sel": self.ui.sel, "buttons": self.buttons is not None,
+                    "osel": self.ui.osel, "run_items": self.ui.run_items(),
+                    "busy": busy, "child": self.launcher.kind, "label": self.launcher.label}
+        return busy
+
     def run(self):
         _log(f"дисплей: {I2C_DEV}, поворот {'180°' if self.oled.rot180 else '0°'}")
         cv = Canvas()
@@ -1304,14 +1704,12 @@ class Daemon:
             period = 1.0 / FPS
             try:
                 st = self.state(t0)
-                if t0 - self._busy_t > 0.5:
-                    self._busy, self._busy_t = gpio_users_running(), t0
-                self.cat.step(self.button.presses if self.button else 0, self._busy, st["connected"])
+                busy = self.buttons_step(st, t0)
                 m = st["msg"]
                 v = self.video(m["video"]) if m and m.get("video") else None
                 t_from = self.inbox.since
                 cat = None
-                if v is None and self.cat.show(self._busy, m, st["snap"], st["connected"]):
+                if v is None and self.ui.show_cat(busy, m, st["snap"], st["connected"]):
                     cat = v = self.video(CAT_PATH)
                 self._cat_t0 = restart_clock(self._cat_t0, cat is not None, t0)
                 if self._cat_t0 is not None:
@@ -1322,6 +1720,9 @@ class Daemon:
                     cv.buf[:] = frames[int((t0 - t_from) * fps) % len(frames)]
                 else:
                     compose(cv, st)
+                    if st.get("victim") and not m:
+                        import oled_moods
+                        period = 1.0 / oled_moods.FPS     # кот у метки двигается
                 # Простой (никто ничего не шлёт) дольше IDLE_DIM_S - тускло.
                 idle = st["msg"] is None and st["snap"] is None
                 dim = False
@@ -1402,6 +1803,34 @@ def demo_states():
         "18_victim_cog_fake": mk(victim={"type": "fake", "class": "cognetive", "label": "+3",
                                          "rings": ["blue", "green", "blue", "yellow", "black"],
                                          "checksum": 3}),
+        # Меню и программы из него (кнопки у малины)
+        "19_ip_buttons": dict(base, snap=None, ui={"mode": "ip", "buttons": True}),
+        "20_menu": dict(base, snap=None, ui={"mode": "menu", "sel": 1, "buttons": True}),
+        "20a_run_opts": dict(base, snap=None, ui={
+            "mode": "run", "osel": 1, "buttons": True,
+            "run_items": [("go", "ПОЕХАЛИ!"), ("--no-color", "датчик цвета    ВЫКЛ"),
+                          ("--no-vision", "камеры           ВКЛ"), ("back", "← назад в меню")]}),
+        "21_launch": dict(base, snap=None, ui={"mode": "menu", "busy": True, "child": "nav",
+                                               "label": "Проезд лабиринта"}),
+        "22_preflight_menu": mk(snap={"phase": "wait_button", "run_s": None, "drive": None},
+                                ui={"mode": "menu", "busy": True, "child": "nav"}),
+        "23_calib_pick": dict(base, snap=None, msg={
+            "title": "ПЛИТКИ", "right": "видит бел", "sel": 2,
+            "items": ["белая            3 шт", "чёрная           2 шт", "синяя            1 шт",
+                      "красная          0 шт", "зеркальная       2 шт", "воздух           1 шт",
+                      "← выход в меню"],
+            "bar": {"22": "↑", "24": "↓", "25": "ЗАМЕР"}}),
+        "24_calib_measure": dict(base, snap=None, msg={
+            "title": "ЗАМЕР - НЕ ТРОГАЙ", "alert": True, "progress": 0.6,
+            "lines": ["цвет: синяя", "C=118  лента погашена"]}),
+        "25_calib_bad": dict(base, snap=None, msg={
+            "title": "НЕ СОХРАНЕНО", "lines": ["C гулял на 18% - робот двигался? Поставь ровно и нажми ЕЩЁ"],
+            "bar": {"22": "↑", "24": "↓", "25": "ЕЩЁ"}}),
+        "26_leds": dict(base, snap=None, msg={
+            "title": "ТЕСТ ЛЕНТЫ", "right": "2/7", "lines": ["красный", "горят все 4"],
+            "bar": {"22": "←", "24": "→", "25": "ВЫХОД"}}),
+        "27_victim_phi_late": mk(victim={"type": "damaged", "class": "phi", "label": "Φ"},
+                                 victim_age=1.3),
     }
 
 

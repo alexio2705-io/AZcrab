@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""Калибровка датчика цвета по плиткам на поле: страница + кнопка GPIO27.
+"""Калибровка датчика цвета по плиткам на поле: с робота (экран, кнопки,
+лента) или со страницы.
+
+С робота (её запускают и из меню на экране, oled.py): на экране список
+цветов и сколько образцов каждого уже снято, в шапке - что датчик видит
+сейчас. Кнопки у малины (внизу экрана нарисованы, как стоят): ↑/↓ - цвет,
+ЗАМЕР (крайняя правая, GPIO25; GPIO27 тоже) - замер. Лента светится
+выбранным цветом, на время замера гаснет (не засвечивать датчик), потом
+вспыхивает зелёным - сохранено или красным - нет. Последний пункт -
+«выход в меню».
 
 На странице - живые каналы APDS9960 и решение, которое по ним примет робот
 (тот же tile_classify.classify(), что и в nav.py). Выбираешь цвет, ставишь
-робота на плитку этого цвета, жмёшь кнопку GPIO27 - замер усредняется
-MEASURE_S секунд и сразу пишется в ~/maze/tile_calib.json. nav.py читает
-этот файл на старте.
+робота на плитку этого цвета, жмёшь ЗАМЕР - замер усредняется MEASURE_S
+секунд и сразу пишется в ~/maze/tile_calib.json. nav.py читает этот файл
+на старте.
 
 Каждый цвет можно снять несколько раз на разных плитках (и в разных местах
 зала) - в памяти хранятся все образцы, и распознавание идёт по ближайшему.
@@ -21,25 +30,39 @@ MEASURE_S секунд и сразу пишется в ~/maze/tile_calib.json. n
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
+from typing import Any
 
 from flask import Flask, jsonify, request
 
 import color as link            # разбор телеметрии ESP (тот же, что в color.py)
 import tile_classify as tc
 
+from oled import BTN_MODE, BTN_NEXT, BTN_OK, BTN_PREV  # noqa: E402
+
 HTTP_PORT = 8002
-BTN_GPIO = 27                   # к GND при нажатии, подтяжка - внутренняя
+BTN_GPIO = BTN_OK               # ЗАМЕР; BTN_MODE (GPIO27, как раньше) - тоже замер
 MEASURE_S = 1.5
 # Замер отбрасывается, если C за время усреднения гуляет сильнее этого
 # (доля от среднего) - робота двигали или под ним стык плиток.
 STABLE_FRAC = 0.12
+RESULT_S = 4.0                  # столько на экране «сохранено/не сохранено»
+FLASH_S = 1.0                   # столько лента горит зелёным/красным после замера
+EXIT = "exit"                   # последний пункт списка - выход в меню
+
+# Лента, пока выбран цвет: тем же цветом, неярко (как цвет плитки, а не
+# сигнал). Чёрная и воздух - еле заметно, чтобы было видно, что лента жива.
+LED_COLORS = {"white": (40, 40, 40), "black": (4, 4, 4), "blue": (0, 0, 70),
+              "red": (70, 0, 0), "silver": (20, 28, 45), "air": (25, 12, 0)}
+LED_OK, LED_BAD = (0, 90, 0), (90, 0, 0)
 
 app = Flask(__name__)
 _lock = threading.Lock()
 _samples = tc.load()
-_st = {"selected": None, "busy": False, "msg": "", "msg_ok": True, "presses": 0}
+_st = {"selected": tc.COLORS[0], "sel": 0, "busy": False, "msg": "", "msg_ok": True,
+       "presses": 0, "progress": None, "result": None}
 
 
 def _read():
@@ -54,6 +77,77 @@ def _say(msg, ok=True):
         _st["msg"], _st["msg_ok"] = msg, ok
 
 
+class Lamp:
+    """Лента: ровный цвет, вспышка на время, погасить. Ленты нет (нет
+    spidev или /dev/spidev0.0) - всё молча ничего не делает."""
+
+    def __init__(self):
+        self.px = None
+        self._lock = threading.Lock()
+        self._base = (0, 0, 0)
+        self._flash_until = 0.0
+        try:
+            import leds                 # без spidev leds.py делает sys.exit
+            self.px = leds.NeoPixels()
+        except (ImportError, SystemExit, OSError) as e:
+            print(f"  [!] лента недоступна ({e}) - калибровка без неё", flush=True)
+
+    def _show(self, rgb):
+        if self.px is not None:
+            self.px.fill(*rgb)
+            self.px.show()
+
+    def set(self, rgb):
+        """Ровный цвет (после вспышки лента вернётся к нему)."""
+        with self._lock:
+            self._base = rgb
+            if time.monotonic() >= self._flash_until:
+                self._show(rgb)
+
+    def flash(self, rgb, seconds=FLASH_S):
+        with self._lock:
+            self._flash_until = time.monotonic() + seconds
+            self._show(rgb)
+
+        def back():
+            time.sleep(seconds)
+            with self._lock:
+                if time.monotonic() >= self._flash_until - 0.01:
+                    self._show(self._base)
+        threading.Thread(target=back, daemon=True).start()
+
+    def off(self):
+        with self._lock:
+            self._flash_until = 0.0
+            self._show((0, 0, 0))
+
+    def close(self):
+        if self.px is not None:
+            try:
+                self.px.close()
+            except OSError:
+                pass
+
+
+_lamp = None
+
+
+def _lamp_selected():
+    """Лента - цветом выбранного пункта (выход - погашена)."""
+    if _lamp is None:
+        return
+    with _lock:
+        color = _st["selected"] if _st["sel"] < len(tc.COLORS) else None
+    _lamp.set(LED_COLORS.get(color or "", (0, 0, 0)))
+
+
+def _result(ok, text):
+    with _lock:
+        _st["result"] = (ok, text, time.monotonic() + RESULT_S)
+    if _lamp is not None:
+        _lamp.flash(LED_OK if ok else LED_BAD)
+
+
 def measure():
     """Замер выбранного цвета: среднее за MEASURE_S, проверка, что робот
     стоял, запись в файл. Вызывается и кнопкой, и со страницы."""
@@ -64,27 +158,36 @@ def measure():
         if color is None:
             _st["msg"], _st["msg_ok"] = "сначала выбери цвет на странице", False
             return
-        _st["busy"] = True
+        _st["busy"], _st["progress"], _st["result"] = True, 0.0, None
     try:
+        if _lamp is not None:
+            _lamp.off()                 # лента не должна подсвечивать плитку
+            time.sleep(0.1)
         _say(f"замер: {tc.NAMES[color]}, не трогай робота {MEASURE_S:.1f}с...")
         acc = [0.0] * 4
         cs = []
-        end = time.time() + MEASURE_S
+        t0 = time.time()
+        end = t0 + MEASURE_S
         while time.time() < end:
             v = _read()
             for i in range(4):
                 acc[i] += v[i]
             cs.append(v[3])
+            with _lock:
+                _st["progress"] = (time.time() - t0) / MEASURE_S
             time.sleep(0.02)
         n = len(cs)
         r, g, b, c = (x / n for x in acc)
         spread = (max(cs) - min(cs)) / max(c, 1.0)
         if c < tc.MIN_C and color != "air":
             _say(f"C={c:.0f} - датчик ничего не видит, замер не сохранён", False)
+            _result(False, f"C={c:.0f} - датчик ничего не видит")
             return
         if spread > STABLE_FRAC:
             _say(f"C гулял на {spread*100:.0f}% (робот двигался?) - не сохранено, "
                  f"нажми ещё раз", False)
+            _result(False, f"C гулял на {spread*100:.0f}% - робот двигался? "
+                           f"Поставь ровно и нажми ЕЩЁ")
             return
         smp = {"r": round(r, 1), "g": round(g, 1), "b": round(b, 1), "c": round(c, 1),
                "n": n, "ts": time.strftime("%H:%M:%S")}
@@ -94,37 +197,49 @@ def measure():
         tc.save(snapshot)
         _say(f"сохранено: {tc.NAMES[color]} #{len(snapshot[color])}  "
              f"R={r:.0f} G={g:.0f} B={b:.0f} C={c:.0f}")
+        _result(True, f"{_MID[color]} #{len(snapshot[color])}  C={c:.0f}")
     finally:
         with _lock:
-            _st["busy"] = False
+            _st["busy"], _st["progress"] = False, None
+        if _lamp is not None:
+            _lamp.set(LED_COLORS.get(color, (0, 0, 0)))
 
 
-def _button_thread():
-    """Опрос GPIO27 раз в 10мс, 30мс антидребезга, одно срабатывание на
-    нажатие. Без RPi.GPIO (прав нет, не малина) - только кнопка на странице."""
+def _exit_to_menu(keys):
+    """«Выход в меню»: погасить ленту, отпустить кнопки, выйти. Меню на
+    экране (oled.py) увидит, что калибровка кончилась, и покажется снова."""
+    print("Выход в меню.", flush=True)
+    if _lamp is not None:
+        _lamp.close()
+    if keys is not None:
+        keys.close()
     try:
-        import RPi.GPIO as GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(BTN_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    except Exception as e:
-        _say(f"GPIO{BTN_GPIO} недоступен ({e}) - замер только с кнопки на странице", False)
+        link._link.close()
+    except Exception:                   # noqa: BLE001
+        pass
+    os._exit(0)                         # flask в главном потоке - иначе не выйти
+
+
+def on_key(pin, keys=None):
+    """Кнопка у малины: ↑/↓ - пункт списка, ЗАМЕР - замер или выход."""
+    n = len(tc.COLORS) + 1              # цвета + выход
+    with _lock:
+        _st["presses"] += 1
+        if _st["busy"]:
+            return                      # во время замера - ничего
+        sel = _st["sel"]
+        if pin in (BTN_PREV, BTN_NEXT):
+            sel = (sel + (1 if pin == BTN_NEXT else -1)) % n
+            _st["sel"], _st["result"] = sel, None
+            if sel < len(tc.COLORS):
+                _st["selected"] = tc.COLORS[sel]
+    if pin in (BTN_PREV, BTN_NEXT):
+        _lamp_selected()
         return
-    pressed = False
-    low_since = None
-    while True:
-        low = GPIO.input(BTN_GPIO) == GPIO.LOW
-        now = time.monotonic()
-        if low:
-            low_since = low_since or now
-            if not pressed and now - low_since >= 0.03:
-                pressed = True
-                with _lock:
-                    _st["presses"] += 1
-                threading.Thread(target=measure, daemon=True).start()
-        else:
-            low_since = None
-            pressed = False
-        time.sleep(0.01)
+    if pin in (BTN_OK, BTN_MODE):
+        if sel >= len(tc.COLORS):
+            _exit_to_menu(keys)
+        threading.Thread(target=measure, daemon=True).start()
 
 
 # Коротко для дисплея сзади (oled.py): мелкий шрифт, 25 символов в строке.
@@ -135,10 +250,30 @@ _MID = {"white": "бел", "black": "чёрн", "blue": "син", "red": "кра
         "silver": "зерк", "air": "возд"}
 
 
+def calib_screen(st, samples, verdict, c, now) -> dict[str, Any]:
+    """Что показать на экране робота -> аргументы oled.say(). Чистая
+    функция: по ней же тест."""
+    if st["busy"]:
+        name = tc.NAMES[st["selected"]].split(" (")[0]
+        return dict(title="ЗАМЕР - НЕ ТРОГАЙ", alert=True, progress=st["progress"] or 0.0,
+                    lines=[f"цвет: {name}", f"C={c:.0f}  лента погашена"])
+    res = st.get("result")
+    if res and now < res[2]:
+        return dict(title="СОХРАНЕНО" if res[0] else "НЕ СОХРАНЕНО", lines=[res[1]],
+                    bar={BTN_PREV: "↑", BTN_NEXT: "↓", BTN_OK: "ЕЩЁ"})
+    # «зеркальная (чекпоинт)» -> «зеркальная»: пояснение есть на странице
+    items = [f"{tc.NAMES[k].split(' (')[0]:<15}{len(samples.get(k, [])):>2} шт" for k in tc.COLORS]
+    items.append("← выход в меню")
+    sel = st["sel"]
+    return dict(title="ПЛИТКИ", right=f"видит {_MID.get(verdict, '?') if verdict else '?'}",
+                items=items, sel=sel,
+                bar={BTN_PREV: "↑", BTN_NEXT: "↓", BTN_OK: "ВЫХОД" if sel >= len(tc.COLORS) else "ЗАМЕР"})
+
+
 def _oled_thread():
-    """Экран калибровки на дисплее робота: стоишь у робота с кнопкой -
-    видно, какой цвет выбран, что датчик видит сейчас и чем кончился замер,
-    без телефона в руке."""
+    """Экран калибровки на дисплее робота: стоишь у робота с кнопками -
+    видно, какой цвет выбран, сколько образцов снято, что датчик видит
+    сейчас и чем кончился замер, без телефона в руке."""
     import oled
     oled.ensure_daemon()
     while True:
@@ -147,27 +282,12 @@ def _oled_thread():
             with _lock:
                 samples = {k: list(v) for k, v in _samples.items()}
                 st = dict(_st)
-            verdict, d, _, _ = tc.classify(samples, r, g, b, c)
-            sel = st["selected"]
-            seen = _MID.get(verdict, "?") if verdict else "не знаю"
-            if d is not None:
-                seen += f" d={d:.1f}"
-            # «зеркальная (чекпоинт)» -> «зеркальная»: пояснение есть на странице
-            lines = [f"цвет: {tc.NAMES[sel].split(' (')[0] if sel else 'выбери на странице'}",
-                     f"видит: {seen} C={c:.0f}",
-                     " ".join(f"{_SHORT[k]}{len(samples.get(k, []))}"   # число образцов
-                              for k in tc.COLORS)]
-            if st["msg"]:
-                # Длинное сообщение переносится по словам на оставшиеся строки.
-                lines.append(("" if st["msg_ok"] else "! ") + st["msg"])
-            else:
-                lines.append(f"кнопка GPIO{BTN_GPIO} - замер")
-            oled.say("ЗАМЕР - НЕ ТРОГАЙ" if st["busy"] else "КАЛИБР. ПЛИТОК",
-                     lines, alert=st["busy"], small=True, ttl=1.5)
+            verdict = tc.classify(samples, r, g, b, c)[0]
+            oled.say(ttl=1.5, **calib_screen(st, samples, verdict, c, time.monotonic()))
         except Exception as e:          # экран - не повод ронять калибровку
             print(f"  [!] дисплей: {type(e).__name__}: {e}", flush=True)
             time.sleep(5.0)
-        time.sleep(0.25)
+        time.sleep(0.1 if _st["busy"] else 0.25)
 
 
 @app.route("/api/state")
@@ -198,8 +318,9 @@ def api_select():
     if color not in tc.COLORS:
         return jsonify({"error": "нет такого цвета"}), 400
     with _lock:
-        _st["selected"] = color
-    _say(f"выбран цвет: {tc.NAMES[color]} - поставь робота и нажми GPIO{BTN_GPIO}")
+        _st["selected"], _st["sel"], _st["result"] = color, tc.COLORS.index(color), None
+    _lamp_selected()
+    _say(f"выбран цвет: {tc.NAMES[color]} - поставь робота и нажми ЗАМЕР на роботе")
     return jsonify({"ok": True})
 
 
@@ -377,7 +498,7 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="panel">
       <div class="sec"><span>Замер</span></div>
-      <div class="steps">1. Выбери цвет · 2. поставь робота на плитку · 3. нажми кнопку <b>GPIO__BTN__</b></div>
+      <div class="steps">1. Выбери цвет · 2. поставь робота на плитку · 3. нажми <b>ЗАМЕР</b> на роботе (крайняя правая кнопка у малины, GPIO__BTN__)</div>
       <div class="btns" id="colors"></div>
       <div class="actions"><button class="btn p" onclick="post('/api/measure')">Замерить без кнопки</button><span id="presses"></span></div>
       <div class="note" id="msg">-</div>
@@ -463,12 +584,25 @@ def main():
     link._connect()
     print(f"Телеметрия идёт. Образцов в {tc.CALIB_PATH}: "
           f"{sum(len(v) for v in _samples.values())}")
-    threading.Thread(target=_button_thread, daemon=True).start()
+    global _lamp
+    _lamp = Lamp()
+    _lamp_selected()
+    import pi_keys
+    keys = None
+
+    def press(pin):
+        on_key(pin, keys)
+    keys = pi_keys.Keys(press)
+    if not keys.ok:
+        _say(f"кнопки недоступны ({keys.error}) - замер только с кнопки на странице", False)
     threading.Thread(target=_oled_thread, daemon=True).start()
-    print(f"Страница: http://<ip малины>:{HTTP_PORT}   кнопка замера: GPIO{BTN_GPIO}")
+    print(f"Страница: http://<ip малины>:{HTTP_PORT}   на роботе: ↑ GPIO{BTN_PREV}, "
+          f"↓ GPIO{BTN_NEXT}, ЗАМЕР GPIO{BTN_GPIO} (и GPIO{BTN_MODE})")
     try:
         app.run(host="0.0.0.0", port=HTTP_PORT, threaded=True)
     finally:
+        _lamp.close()
+        keys.close()
         link._link.close()
 
 

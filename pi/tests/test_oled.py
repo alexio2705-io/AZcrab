@@ -352,21 +352,242 @@ class TestCatAndButton(unittest.TestCase):
         self.assertIsNone(t)
         self.assertEqual(oled.restart_clock(t, True, 20.0), 20.0)   # вернули - с начала
 
-    def test_cat_mode(self):
-        c = oled.CatMode()
-        self.assertTrue(c.show(False, None, None, False))          # после включения - кот
-        c.step(1, busy=False, connected=False)                     # нажали - экран с IP
-        self.assertFalse(c.show(False, None, None, False))
-        c.step(2, busy=False, connected=False)                     # ещё раз - кот
-        self.assertTrue(c.on)
-        c.step(3, busy=True, connected=False)                      # nav.py ждёт старта - кнопка его
-        self.assertTrue(c.on)
-        self.assertFalse(c.show(True, None, None, False))          # и кота не видно
-        c.step(3, busy=False, connected=True)                      # заезд идёт
-        self.assertFalse(c.show(False, None, {"phase": "exploring"}, True))
-        c.step(3, busy=False, connected=False)                     # кончился - итог, не кот
-        self.assertFalse(c.on)
-        self.assertFalse(c.show(False, {"title": "x"}, None, False))   # say() важнее
+    def test_ui_cycles_cat_ip_menu(self):
+        u = oled.Ui(opts_path=os.devnull)
+        P = {oled.BTN_PREV: 0, oled.BTN_NEXT: 0, oled.BTN_MODE: 0, oled.BTN_OK: 0}
+
+        def press(pin, busy=False, connected=False, can_cancel=False):
+            P[pin] += 1
+            return u.step(dict(P), busy, connected, can_cancel)
+        self.assertIsNone(u.step(dict(P), False, False))
+        self.assertTrue(u.show_cat(False, None, None, False))        # после включения - кот
+        self.assertIsNone(press(oled.BTN_OK))                        # на коте 25 ничего не делает
+        press(oled.BTN_MODE)
+        self.assertEqual(u.mode, "ip")
+        self.assertFalse(u.show_cat(False, None, None, False))
+        press(oled.BTN_MODE)
+        self.assertEqual(u.mode, "menu")
+        press(oled.BTN_PREV)                                         # вверх с первого - на последний
+        self.assertEqual(u.sel, len(oled.PROGRAMS) - 1)
+        press(oled.BTN_NEXT)
+        press(oled.BTN_NEXT)
+        self.assertEqual(u.sel, 1)
+        self.assertEqual(press(oled.BTN_OK), "launch")
+        self.assertIsNone(press(oled.BTN_PREV, busy=True))           # калибровка идёт - кнопки её
+        self.assertEqual(u.sel, 1)
+        u.child_done("calib")                                        # вышла - снова меню
+        self.assertEqual(u.mode, "menu")
+        press(oled.BTN_MODE)
+        self.assertEqual(u.mode, "cat")                              # по кругу
+
+    def test_ui_run_options_choose_flags_and_remember(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "menu_run.json")
+            u = oled.Ui(opts_path=path)
+            P = {oled.BTN_PREV: 0, oled.BTN_NEXT: 0, oled.BTN_MODE: 0, oled.BTN_OK: 0}
+            u.step(dict(P), False, False)
+
+            def press(pin):
+                P[pin] += 1
+                return u.step(dict(P), False, False)
+            u.mode = "menu"
+            self.assertIsNone(press(oled.BTN_OK))                    # проезд - сперва настройки
+            self.assertEqual((u.mode, u.osel), ("run", 0))
+            self.assertEqual(u.launch_prog()[2], ("nav.py",))        # всё включено - без флагов
+            press(oled.BTN_NEXT)
+            press(oled.BTN_OK)                                       # датчик цвета - ВЫКЛ
+            self.assertEqual(u.launch_prog()[2], ("nav.py", "--no-color"))
+            self.assertIn("без", u.launch_prog()[0])
+            press(oled.BTN_PREV)
+            self.assertEqual(press(oled.BTN_OK), "launch")           # ПОЕХАЛИ
+            self.assertFalse(oled.Ui(opts_path=path).opts["--no-color"])   # запомнилось
+            press(oled.BTN_MODE)                                     # 27 - назад в меню, не кот
+            self.assertEqual(u.mode, "menu")
+            press(oled.BTN_OK)
+            press(oled.BTN_PREV)                                     # с ПОЕХАЛИ вверх - «назад»
+            press(oled.BTN_OK)
+            self.assertEqual(u.mode, "menu")
+
+    def test_ui_cancel_only_when_allowed(self):
+        u = oled.Ui()
+        P = {oled.BTN_PREV: 0}
+        u.step(dict(P), True, True)
+        P[oled.BTN_PREV] += 1
+        self.assertIsNone(u.step(dict(P), True, True, can_cancel=False))   # с ноута - не трогаем
+        P[oled.BTN_PREV] += 1
+        self.assertEqual(u.step(dict(P), True, True, can_cancel=True), "cancel")
+
+    def test_ui_run_end_shows_result_not_cat(self):
+        u = oled.Ui()
+        u.step({}, False, True)                                      # заезд с ноута идёт
+        u.step({}, False, False)                                     # кончился
+        self.assertEqual(u.mode, "ip")
+        self.assertFalse(u.show_cat(False, None, {"phase": "done"}, False))
+        u.mode = "cat"
+        self.assertFalse(u.show_cat(False, {"title": "x"}, None, False))   # say() важнее
+        self.assertFalse(u.show_cat(True, None, None, False))             # кнопки заняты - не кот
+
+    def test_pinctrl_many(self):
+        out = ("22: ip    pu | hi // GPIO22 = input\n"
+               "24: ip    pu | lo // GPIO24 = input\n"
+               "25: ip    pn | hi // GPIO25 = input\n"
+               "27: ip    pu | hi // GPIO27 = input\n")
+        got = oled.parse_pinctrl_many(out)
+        self.assertEqual(got[22], (True, True))
+        self.assertEqual(got[24], (False, True))
+        self.assertEqual(got[25], (True, False))
+        calls = []
+
+        class R:
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return R(out if cmd[1] == "get" else "")
+        lv = oled.read_pins([22, 24, 25, 27], run=run)
+        self.assertEqual(lv, {22: True, 24: False, 25: True, 27: True})
+        self.assertEqual(calls[0], ["pinctrl", "get", "22,24,25,27"])     # один вызов на все
+        self.assertIn(["pinctrl", "set", "25", "ip", "pu"], calls)        # подтяжку вернули
+
+    def test_panel_counts_presses_per_pin(self):
+        seq = iter([{22: True, 24: True}, {22: False, 24: True}, {22: False, 24: True},
+                    {22: True, 24: True}])
+        b = oled.ButtonPanel(pins=(22, 24), read=lambda: next(seq), start=False)
+        for _ in range(4):
+            b.poll()
+        self.assertEqual(b.presses(), {22: 1, 24: 0})
+
+    def test_launcher_runs_program_and_reports_end(self):
+        started = []
+
+        class P:
+            pid = 12345
+            returncode = 0
+
+            def __init__(self, cmd, **kw):
+                started.append((cmd, kw))
+                self.done = False
+
+            def poll(self):
+                return 0 if self.done else None
+        with tempfile.TemporaryDirectory() as d:
+            la = oled.Launcher(base=d, python="/venv/bin/python", popen=P)  # pyright: ignore[reportArgumentType]
+            self.assertTrue(la.start(oled.PROGRAMS[1]))
+            self.assertFalse(la.start(oled.PROGRAMS[0]))              # второй раз не запускаем
+            cmd, kw = started[0]
+            self.assertEqual(cmd, ["/venv/bin/python", "-u", os.path.join(d, "tile_calib.py")])
+            self.assertTrue(kw["start_new_session"])
+            self.assertTrue(la.running())
+            self.assertIsNone(la.poll())
+            la.proc.done = True  # pyright: ignore[reportAttributeAccessIssue]
+            self.assertEqual(la.poll(), "calib")
+            self.assertIsNone(la.kind)
+            la.start(oled.PROGRAMS[0])
+            self.assertTrue(any(n.startswith("run_") for n in os.listdir(d)))   # лог заезда - как с ноута
+
+
+class TestMenuScreens(unittest.TestCase):
+    def setUp(self):
+        self.states = oled.demo_states()
+
+    def test_menu_and_launch_screens(self):
+        s = self.states
+        self.assertTrue(_same(oled.scr_menu, s["20_menu"]))
+        self.assertTrue(_same(oled.scr_run_opts, s["20a_run_opts"]))
+        self.assertTrue(_same(oled.scr_launch, s["21_launch"]))
+        # меню не перебивает живой заезд
+        st = dict(s["4_run"], ui={"mode": "menu", "busy": False})
+        self.assertTrue(_same(oled.scr_run, st))
+
+    def test_bar_marks_buttons_with_labels(self):
+        cv = oled.Canvas()
+        oled.button_bar(cv, {oled.BTN_OK: "ПУСК"})
+        x_ok = dict(oled.BAR_SLOTS)[oled.BTN_OK]
+        x_prev = dict(oled.BAR_SLOTS)[oled.BTN_PREV]
+        self.assertTrue(cv.get(x_ok + 1, oled.BAR_Y + 1))           # подписанная - залита
+        self.assertFalse(cv.get(x_prev + 5, oled.BAR_Y + 4))        # пустая - только рамка
+        self.assertTrue(cv.get(x_prev, oled.BAR_Y + 4))
+        # порядок как на плате из-за робота: 22, 24, 27, 25
+        self.assertEqual([p for p, _ in sorted(oled.BAR_SLOTS, key=lambda s: s[1])],
+                         [22, 24, 27, 25])
+
+    def test_cancel_shown_only_for_run_from_menu(self):
+        a, b = oled.Canvas(), oled.Canvas()
+        oled.compose(a, self.states["22_preflight_menu"])
+        oled.compose(b, self.states["3_preflight"])
+        x = dict(oled.BAR_SLOTS)[oled.BTN_PREV]
+        self.assertTrue(a.get(x + 1, oled.BAR_Y + 1))
+        self.assertFalse(b.get(x + 5, oled.BAR_Y + 4))
+
+    def test_idle_screen_shows_menu_button_only_with_buttons(self):
+        a, b = oled.Canvas(), oled.Canvas()
+        oled.compose(a, self.states["19_ip_buttons"])
+        oled.compose(b, self.states["1_idle"])
+        self.assertNotEqual(a.buf, b.buf)
+
+    def test_list_keeps_selection_visible(self):
+        st = dict(self.states["23_calib_pick"])
+        st["msg"] = dict(st["msg"], sel=6)                          # «выход» - седьмой из семи
+        cv = oled.Canvas()
+        oled.compose(cv, st)
+        y = 12 + 10 * 3                                             # 4-я строка - инверсия
+        self.assertTrue(cv.get(oled.W - 2, y + 5))
+
+
+CAT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "docs", "telegram", "cat.oledv")
+
+
+class TestMoods(unittest.TestCase):
+    def frames(self):
+        if os.path.exists(CAT_FILE):
+            import oled_video
+            return oled_video.load(CAT_FILE)[1]
+        self.skipTest("нет docs/telegram/cat.oledv")
+
+    def test_each_letter_has_moving_cat(self):
+        import oled_moods
+        frames = self.frames()
+        for ch in "ΦΨΩ":
+            seen = set()
+            for k in range(30):
+                cv = oled.Canvas()
+                self.assertTrue(oled_moods.draw(cv, ch, frames, k / 10))
+                self.assertFalse(any(cv.get(x, y) for x in range(oled_moods.CAT_XMAX + 1, oled.W)
+                                     for y in range(oled.H)), ch)   # кот не лезет на букву
+                seen.add(bytes(cv.buf))
+            self.assertGreater(len(seen), 5, ch)                     # двигается
+
+    def test_moods_fit_cat_frame(self):
+        # Грустное лицо дорисовано по чертам кадра 0: глаза там, где их ищет
+        # oled_moods (тёмные зрачки внутри силуэта), рот - светлый вокруг.
+        import oled_moods
+        frames = self.frames()
+        cv = oled.Canvas()
+        cv.buf[:] = frames[0]
+        for ex, ey in (oled_moods.EYE_L, oled_moods.EYE_R):
+            dark = sum(1 for x in range(int(ex) - 3, int(ex) + 4)
+                       for y in range(int(ey) - 3, int(ey) + 4) if not cv.get(x, y))
+            self.assertGreater(dark, 20)
+
+    def test_victim_screen_falls_back_without_cat(self):
+        st = dict(oled.demo_states()["14_victim_phi"], cat=None)
+        old = oled.CAT_PATH
+        oled.CAT_PATH = "/нет/такого/cat.oledv"
+        self.addCleanup(setattr, oled, "CAT_PATH", old)
+        a, b = oled.Canvas(), oled.Canvas()
+        oled.compose(a, st)
+        oled.draw_glyph(b, "Φ")
+        self.assertEqual(a.buf, b.buf)
+
+    def test_victim_screen_with_cat(self):
+        frames = self.frames()
+        st = dict(oled.demo_states()["14_victim_phi"], cat=frames, victim_age=0.4)
+        cv = oled.Canvas()
+        oled.compose(cv, st)
+        left = sum(cv.get(x, y) for x in range(0, 60) for y in range(oled.H))
+        self.assertGreater(left, 300)                               # слева кот
 
 
 class TestMessages(unittest.TestCase):
