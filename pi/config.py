@@ -196,6 +196,8 @@ KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
 VICTIM_CLASSES = {"cognetive", "omega", "phi", "psi"}
 # Буквенный класс -> тип жертвы (комплекты за тип - KITS_BY_TYPE).
 CLASS_TO_VICTIM = {"phi": "damaged", "psi": "stable", "omega": "unharmed"}
+# Когнитивная цель: сумма колец -> тип жертвы, другая сумма - фейк.
+COG_SUM_TO_TYPE = {2: "damaged", 1: "stable", 0: "unharmed"}
 
 
 def add_victim_class(cls, kits):
@@ -205,6 +207,12 @@ def add_victim_class(cls, kits):
     VICTIM_CLASSES.add(cls)
     CLASS_TO_VICTIM[cls] = cls
     KITS_BY_TYPE[cls] = kits
+
+
+def cog_marks_not_victims():
+    """Задание: когнитивные метки - не жертвы (ни мигания, ни комплектов),
+    но кольца читаются и пишутся в state.victim_log, как у фейка."""
+    COG_SUM_TO_TYPE.clear()
 
 
 # Метку уже видели, а стоя она не прочиталась (нет в кадре или кольца не

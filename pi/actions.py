@@ -12,10 +12,16 @@
     give_kits(w, n, wall_dir=None)  выдать n комплектов: на месте или спиной к стене
 
   Ехать:
-    start_walk()                    робот на старте: Walk + осмотр стартовой клетки
+    new_walk()                      робот на старте (0,0), курс 0
+    look_around(w)                  осмотр клетки, как в разведке: стены, плитка, камеры
     explore_until(w, done)          разведка, пока done() не вернёт True
     go_to_cell(w, cell)             доехать до клетки и встать в ней
     go_to_color(w, color)           доехать до ближайшей известной клетки цвета
+    go_to_nearest(w, cells)         доехать до ближайшей (по пути) из клеток
+    nearest(w, cells)               какая из клеток ближе всех по пути
+    visit_targets(w, targets, work, done, stop)
+                                    по очереди: к ближайшей из targets() и work(клетка);
+                                    целей не видно - разведка, пока не появятся
     (arrive=... - что делать по приезде в каждую клетку; по умолчанию
      разведка - explore.arrive_explore, поездки - explore.arrive_home)
 
@@ -100,11 +106,16 @@ def give_kits(w, n, wall_dir=None):
 # ══════════════════════════════════════════════════════════════
 #  Ехать
 # ══════════════════════════════════════════════════════════════
-def start_walk(phase="exploring"):
-    """Робот на старте (0,0), курс 0: осмотр стартовой клетки, как в разведке."""
-    w = explore.Walk(phase=phase)
+def new_walk(phase="exploring"):
+    """Робот на старте (0,0), курс 0. Дальше - look_around(w): без осмотра
+    стартовой клетки в карте нет стен, и разведке некуда ехать."""
+    return explore.Walk(phase=phase)
+
+
+def look_around(w):
+    """Осмотр клетки, где стоим, как новой клетки в разведке: стены, плитка
+    (реакция по tile_rules), камеры."""
     explore.arrive_explore(w, True)
-    return w
 
 
 def explore_until(w, done, arrive=None):
@@ -128,12 +139,35 @@ def go_to_cell(w, cell, arrive=None):
 def go_to_color(w, color, arrive=None):
     """Доехать до ближайшей (по пути) известной клетки цвета color.
     Возвращает эту клетку или None, если таких клеток на карте нет."""
-    cells = cells_of(color)
+    return go_to_nearest(w, cells_of(color), arrive)
+
+
+def go_to_nearest(w, cells, arrive=None):
+    """Доехать до ближайшей по пути из клеток cells. Возвращает её или None,
+    если список пуст."""
     if not cells:
         return None
-    cell = min(cells, key=lambda c: path_cells(w, c))
+    cell = nearest(w, cells)
     go_to_cell(w, cell, arrive)
     return cell
+
+
+def visit_targets(w, targets, work, done, stop):
+    """Пока не done() и не stop(): известна цель (targets() не пуст) - ехать
+    к ближайшей и work(клетка); не известна - разведка, пока не появится.
+    Разведывать больше нечего - выход."""
+    while not done() and not stop():
+        cells = targets()
+        if cells:
+            go_to_nearest(w, cells)
+            work(w.cell)
+        elif not explore_until(w, lambda: bool(targets()) or stop()):
+            return
+
+
+def nearest(w, cells):
+    """Ближайшая по пути (path_cells) из клеток cells."""
+    return min(cells, key=lambda c: path_cells(w, c))
 
 
 # ══════════════════════════════════════════════════════════════

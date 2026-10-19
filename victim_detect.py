@@ -62,7 +62,7 @@ CLASS_LABEL = {
     'unharmed': 'Ω',
 }
 COG_CLASS = 'cognetive'
-SUM_TO_TYPE = {2: 'damaged', 1: 'stable', 0: 'unharmed'}   # иначе — фейк
+SUM_TO_TYPE = config.COG_SUM_TO_TYPE   # сумма колец → тип, иначе — фейк
 RING_SCORE = rc.COLOR_SCORE                                # баллы колец (для nav.py)
 
 
