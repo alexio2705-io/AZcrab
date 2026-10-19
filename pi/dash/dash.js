@@ -31,7 +31,7 @@ const WAIT_HINT = {wait_motors: 'Включите питание моторов 
                    wait_link: 'Проверьте ESP и провод к Pi - заезд продолжится сам',
                    wait_lidar: 'Проверьте кабель и питание лидара'};
 const MODE = {ramp: 'горка', kick: 'толчок через препятствие'};
-const VNAME = {damaged: 'Повреждён', stable: 'Стабилен', unharmed: 'Не повреждён', fake: 'Фейк', cognetive: 'Когнитивная цель'};
+const VNAME = {damaged: 'Повреждён', stable: 'Стабилен', unharmed: 'Не повреждён', fake: 'Фейк', unread: 'Кольца не прочитаны', cognetive: 'Когнитивная цель'};
 const GLYPH = {damaged: 'Φ', stable: 'Ψ', unharmed: 'Ω', cognetive: '◎'};
 const VCOLOR = {damaged: '--damaged', stable: '--stable', unharmed: '--unharmed', cognetive: '--cog'};
 const TILE = {white: ['белая', '#e9e9e4'], black: ['чёрная', '#050505'], blue: ['синяя', '#3987e5'],

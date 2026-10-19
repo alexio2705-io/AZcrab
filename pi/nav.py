@@ -94,7 +94,9 @@ import corridor
 import runplan
 import watch_logic
 from victim_watch import VictimWatcher
-from victim_detect import VictimDetector, CONF_FAST, MIN_BOX_PX, YOLO_MODEL_PATH, SAVE_DIR
+from victim_detect import (VictimDetector, CONF_FAST, MIN_BOX_PX, YOLO_MODEL_PATH, SAVE_DIR,
+                           RING_SCORE, SUM_TO_TYPE)
+from front_victim import FrontVictimDetector
 from leds import NeoPixels, blink_pink, blink_return, RED, SLEEP, VICTIM_STOP_S, MARGIN_S
 
 LINK_PORT = "/dev/serial0"
@@ -397,9 +399,9 @@ ANCHOR_STALE_CM = 15.0
 # переживает поворот - после первого поворота подача уже подобрана. Итоговое
 # значение печатается после каждого поворота: когда устоится, его можно
 # вписать в TURN_FF_INIT.
-TURN_RATE_MAX_DPS = 220.0   # полка угловой скорости корпуса
-TURN_ACCEL_DPS2 = 700.0     # пик углового ускорения на разгоне
-TURN_DECEL_DPS2 = 550.0     # замедление к цели - мягче разгона: у цели прыжки хуже всего
+TURN_RATE_MAX_DPS = 100.0   # полка угловой скорости корпуса
+TURN_ACCEL_DPS2 = 400.0     # пик углового ускорения на разгоне
+TURN_DECEL_DPS2 = 350.0     # замедление к цели - мягче разгона: у цели прыжки хуже всего
 TURN_FF_INIT = 0.22         # см/с колеса на градус/с корпуса, стартовая оценка
 TURN_FF_MIN = 0.10
 TURN_FF_MAX = 0.60
@@ -533,6 +535,14 @@ BUMPER_BACKOFF_MM = 70.0
 # поворота на 45° - большого хода не нужно, 70мм в этом манёвре оказалось
 # заметно больше, чем требуется.
 BUMPER_SIDE_BACKOFF_MM = 30.0
+
+# Откат, когда упёрлись бампером, уже заехав в клетку (bumper_entered):
+# клетка засчитана, перед роботу не нужен - только отпустить концевики и
+# не задеть препятствие на повороте.
+BUMPER_ENTERED_BACKOFF_MM = 25.0
+# Засчитываем клетку, только если после отката до её центра не больше
+# 100 мм (центр робота на 200 мм за центром прежней).
+BUMPER_ENTER_MM = 200.0
 
 # Если робот крутится не в ту сторону (гироскоп намотан зеркально) -
 # поменять на -1, это единственное место со знаком поворота.
@@ -882,6 +892,7 @@ LIFT_POLL_S = 0.02
 
 _c_white = None            # калибровка на стартовой клетке
 _pitch_level = 0.0         # pitch на ровном полу, замеряется вместе с белым
+_roll_level = 0.0          # roll там же: угол на старте - это ноль, как бы ни стоял датчик
 _color_ignore_until = 0.0  # гистерезис после съезда с препятствия
 _blue_cells = set()        # клетки, хоть раз распознанные как синие - помним навсегда
 _DIR_NAME = {0: "N", 1: "E", 2: "S", 3: "W"}
@@ -1014,6 +1025,14 @@ _write_lock = threading.Lock()
 # с этой стороны.
 _victim_r = None   # правая камера (watch_logic.CAM_IDX)
 _victim_l = None   # левая камера
+_victim_f = None   # передняя USB-камера (front_victim.py)
+# Передняя стена, прочитанная передней камерой (клетка, направление). Отдельно
+# от _scanned_walls: передняя видит у стены полосу ~8 см, боковая стоя -
+# ~12 см и на повороте всю стену, поэтому её чтение боковым не мешает.
+_front_scanned = set()
+# Передняя камера включается, только когда стена ближе этого (лидар, от
+# центра робота): в центре клетки до передней стены ~145 мм.
+FRONT_CAM_WALL_MM = 200.0
 _leds = None
 
 
@@ -1479,29 +1498,31 @@ def calibrate_white(seconds=0.6):
     как раньше: чёрную от белой по долям каналов не отличить, а абсолютная
     яркость зависит от освещения зала, так что опора - стартовая клетка.
     """
-    global _c_white, _pitch_level, _color_ignore_until
-    acc = pitch_acc = n = 0
+    global _c_white, _pitch_level, _roll_level, _color_ignore_until
+    acc = pitch_acc = roll_acc = n = 0
     end = time.time() + seconds
     while time.time() < end:
         acc += get_rgbc()[3]
         pitch_acc += get_pitch()
+        roll_acc += get_roll()
         n += 1
         time.sleep(0.02)
     _pitch_level = pitch_acc / max(n, 1)
+    _roll_level = roll_acc / max(n, 1)
     _color_ignore_until = 0.0
     if not USE_COLOR_SENSOR:
-        print(f"  pitch0={_pitch_level:.1f}°, датчик цвета отключён")
+        print(f"  pitch0={_pitch_level:.1f}° roll0={_roll_level:.1f}°, датчик цвета отключён")
         return
     if _tile_samples:
         w = _tile_samples["white"]
         _c_white = sum(x["c"] for x in w) / len(w)
-        print(f"  pitch0={_pitch_level:.1f}°, белая из калибровки C={_c_white:.0f}, "
+        print(f"  pitch0={_pitch_level:.1f}° roll0={_roll_level:.1f}°, белая из калибровки C={_c_white:.0f}, "
               f"под роботом сейчас: {tile_color()}")
         return
     _c_white = acc / max(n, 1)
     print(f"  калибровка белой: C={_c_white:.0f}  "
           f"(порог чёрной {black_threshold():.0f}), "
-          f"pitch0={_pitch_level:.1f}°")
+          f"pitch0={_pitch_level:.1f}° roll0={_roll_level:.1f}°")
     if _c_white < 150:
         print("  [WARN] маловато света - чёрную от белой различит ненадёжно")
 
@@ -1736,13 +1757,13 @@ def brake():      _drive_cmd_now("B")
 
 def tilt_deg():
     """Наибольший перекос корпуса относительно ровного пола, градусы."""
-    return max(abs(get_pitch() - _pitch_level), abs(get_roll()))
+    return max(abs(get_pitch() - _pitch_level), abs(get_roll() - _roll_level))
 
 
 def is_tilted():
     """Стоим перекошенно - на препятствии, а не на полу."""
     return (abs(get_pitch() - _pitch_level) >= TILT_PITCH_DEG
-            or abs(get_roll()) >= TILT_ROLL_DEG)
+            or abs(get_roll() - _roll_level) >= TILT_ROLL_DEG)
 
 
 def settle_brake(pause_s=0.10):
@@ -2180,7 +2201,7 @@ def handle_lift(resume_hdg):
         # На полу |a| не превышает 0.06, а сразу после установки, пока
         # человек ещё рядом, доходит до 0.25 - LIFT_STEADY_MS2 между ними.
         level = (telem_fresh()
-                 and abs(get_roll()) < LIFT_SETTLE_ROLL_DEG
+                 and abs(get_roll() - _roll_level) < LIFT_SETTLE_ROLL_DEG
                  and abs(get_yaw_rate()) < LIFT_SETTLE_RATE_DPS
                  and get_accel() < LIFT_STEADY_MS2)
         steady = steady + dt if level else 0.0
@@ -2415,7 +2436,7 @@ def gyro_heading():
 
 
 @_timed("поворот")
-def turn_to(target, label=None):
+def turn_to(target, label=None, seen=None, walls=None):
     """Поворот на АБСОЛЮТНЫЙ курс target (град), без привязки к сетке 90°.
 
     Нужен отдельно от turn(): у объезда препятствия (bumper_side) курс после
@@ -2427,9 +2448,39 @@ def turn_to(target, label=None):
     Возвращает True, если доехал до цели; False - прервали (пауза, пропала
     телеметрия) или вышел TURN_TIMEOUT_S. Тогда курс в карте "как просили"
     считать нельзя - вызывающий берёт его с гироскопа (gyro_heading()).
+
+    seen - список: на повороте включён наблюдатель меток, и сюда пишутся
+    уверенные рамки (сторона, курс в момент кадра, рамка) - см.
+    _turn_marks(). Стоя в центре клетки камера видит ~125 мм из 280 мм
+    стены, а на повороте её проносит вдоль всей стены. walls - стены клетки
+    по карте (_maze): камера включена, только пока напротив неё стена, по
+    которой карта говорит True; нет стены или не знаем - YOLO не крутим.
     """
     global _turn_ff
     settled = 0
+    watch = seen is not None and _watcher is not None and not _watcher.dead
+    yaw_hist = watch_logic.OdoHistory(keep_s=2.0)
+    yaw_unw = last_yaw = get_yaw()      # без перескока 360 -> 0
+
+    def _watch_sides():
+        if not walls:
+            return set()
+        h = int(round(angle_err(get_yaw(), YAW_ORIGIN) / 90.0)) % 4
+        return {s for s in ("left", "right") if walls[watch_logic.wall_of(h, s)] is True}
+
+    def _watch_poll():
+        nonlocal yaw_unw, last_yaw
+        y = get_yaw()
+        yaw_unw += angle_err(y, last_yaw)
+        last_yaw = y
+        yaw_hist.add(time.monotonic(), yaw_unw)
+        for b in _watcher.poll():
+            x1, y1, x2, y2 = b.xyxy
+            # по высоте не меньше 1/8 кадра - как требует чтение стоя: рамку,
+            # обрезанную краем до полоски, стоя не прочитать
+            if (b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
+                    and y2 - y1 >= watch_logic.FRAME_PX * 0.125):
+                seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf, b.cls))
     tag = label if label is not None else f"{target:.1f}°"
 
     print(f"    поворот {tag}  цель={target:.1f}°  yaw={get_yaw():.1f}°")
@@ -2458,6 +2509,9 @@ def turn_to(target, label=None):
         now = time.monotonic()
         elapsed = now - t_ramp
         rate = get_yaw_rate()
+        if watch:
+            _watcher.arm(_watch_sides())
+            _watch_poll()
         # Остаток угла В СТОРОНУ ЦЕЛИ (>0 - крутиться по часовой), и он же с
         # поправкой на запаздывание: к моменту исполнения команды робот уже
         # довернётся на rate * TURN_LEAD_S.
@@ -2555,6 +2609,9 @@ def turn_to(target, label=None):
         telem_seq = wait_telem(telem_seq, TURN_DT)
 
     settle_brake(0.10)
+    if watch:
+        _watch_poll()               # кадры, что ещё в обработке
+        _watcher.arm(set())
     done = settled >= TURN_SETTLE
     print(f"    итог yaw={get_yaw():.1f}°  ошибка={angle_err(get_yaw(), target):+.1f}°  "
           f"за {time.monotonic() - t0:.2f}с  TURN_FF={_turn_ff:.3f}"
@@ -2684,7 +2741,8 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
       'front_obstacle' - впереди внезапно что-то близко (не на границе
                          клетки), остановились, не доехав до середины;
                          робот уже вернулся в центр исходной клетки
-      'bumper_*'       - концевики
+      'bumper_*'       - концевики; 'bumper_entered' - упёрлись обоими, уже
+                         заехав в следующую клетку (засчитана, робот откатился)
     """
     z0 = get_z_cnt()
     zero_odo()
@@ -2694,6 +2752,12 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
         print("    [WARN] ESP не подтвердил 'Z' за 0.2с - база одометрии без гарантии")
 
     target_yaw = snap_target()
+    # Ноль наклона - стоя в начале поездки: робот всегда выезжает из центра
+    # клетки на ровном полу (на горке он не останавливается). BNO после
+    # поворотов показывает на ровном полу до +9° от pitch0 стартовой клетки
+    # и держит это секунды (заезд 17.10 15:31), а за одну поездку уходит не
+    # больше чем на 5° - от pitch0 это была "горка" на ровном полу.
+    pitch_start = get_pitch()
 
     last_l, last_r = get_odo()
     traveled_cm = 0.0
@@ -2733,6 +2797,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
     global _last_ramp, _drive_live
     _last_ramp = None
     ramp_state = None
+    ramp_rejected = False    # горку отменили после езды "до гребня" без счёта клеток
     ramp_sign = 0
     ramp_cand_cm = 0.0
     ramp_flat_cm = None
@@ -2822,7 +2887,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
 
         # Наклон нужен уже здесь: по нему решается, каким таймером мерить
         # залипание одометрии - штатным или «мы на препятствии».
-        pitch_delta = get_pitch() - _pitch_level
+        pitch_delta = get_pitch() - pitch_start
 
         # ── Одометрия ─────────────────────────────────────────
         cl, cr = get_odo()
@@ -2895,6 +2960,18 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
             side = bumper_side()
             reason = {"left": "bumper_left", "right": "bumper_right"}.get(side, "bumper_both")
             print(f"\n    БАМПЕР ({side}) на {traveled_cm*10:.0f}мм")
+            # Упёрлись, заехав в следующую клетку, и после отката останемся
+            # близко к её центру - значит, мы в ней (заезд 17.10 20:40: стена
+            # в 146мм после отката, а карта осталась в прежней клетке и
+            # потеряла по оси клетку).
+            if reason == "bumper_both":
+                from_cm = forced_from_cm if wall_forced else boundary_cm - cell_cm
+                past_mm = (traveled_cm - from_cm) * 10.0 - BUMPER_ENTERED_BACKOFF_MM
+                if ramp_state is None and past_mm >= BUMPER_ENTER_MM:
+                    cells += 1
+                    reason = "bumper_entered"
+                    print(f"    уже в следующей клетке ({past_mm:.0f}мм за центром "
+                          f"после отката) - засчитываю")
             break
 
         # ── Чёрная плитка: заезжать нельзя ────────────────────
@@ -2978,6 +3055,7 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                               f"лестница/препятствие")
                         boundary_cm, stopping, pending, reason = ramp_saved
                         ramp_state = None
+                        ramp_rejected = True
                         ramp_flat_cm = None
                         ramp_log = []
                     else:
@@ -3087,6 +3165,12 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
                                                  pitch_delta, OBSTACLE_REARM_DEG, wall_forced)
                 watch_armed = watcher.arm(sides if flat and vmark is None else set())
                 for b in watcher.poll():
+                    if not side_hold.frame_ok(b.side, b.t_frame):
+                        # Кадр снят, когда стены с этой стороны не было:
+                        # метка на дальней стене, через проём.
+                        print(f"\n    [W] {b.side} {b.cls} {b.conf:.2f} - в момент кадра "
+                              f"стены нет, не беру  {b.image or ''}")
+                        continue
                     m = _watch_decide(b, cell, hdg, odo_t, vmark is not None)
                     if m is not None:
                         # Тормозим К МЕТКЕ: встать с ней в центре кадра, тем
@@ -3548,27 +3632,45 @@ def _drive_cells(max_cells, expect_ramp, cell, hdg, plan):
         # робота обратно к чёрному.
         if black_back_cm > 0.2:
             creep_mm(-black_back_cm * 10.0, target_yaw)
+    elif reason == "bumper_entered":
+        # Клетка засчитана, впереди стена или препятствие: только отпустить
+        # концевики. Доводку не делаем - по стене за препятствием она снова
+        # повела бы носом в него.
+        creep_mm(-BUMPER_ENTERED_BACKOFF_MM, target_yaw)
     else:
         # Проверяем СВЕЖИМ замером всегда. Раньше остановка "по стене" считалась
         # заведомо точной и доводка пропускалась - но дистанция там берётся из
         # f_est, продлённой одометрией между сканами лидара. Если та оценка
         # врала, ошибка ничем не ловилась, и следующий проезд начинался ближе к
         # стене, чем робот думал - ровно так он и попал бампером в стену.
+        #
+        # Горку отменили, а "до гребня" ехали без счёта клеток и проскочили
+        # центр засчитанной: назад в него, иначе карта отстаёт от робота на
+        # клетку-другую (заезд 17.10 15:31: 740мм засчитаны одной клеткой).
+        over_cm = traveled_cm - boundary_cm
+        if ramp_rejected and reason in ("stop", "done") and over_cm * 10.0 > ALIGN_TOL_MM:
+            print(f"    горка отменена, проскочили центр клетки на {over_cm*10:.0f}мм - назад")
+            creep_mm(-over_cm * 10.0, target_yaw,
+                     timeout_s=2.0 + 1.5 * over_cm / ALIGN_SPEED_CMS)
         align_at_wall(target_yaw)
     print()
     return cells, reason
 
 
-def creep_mm(dist_mm, target_yaw, timeout_s=2.0):
+def creep_mm(dist_mm, target_yaw, timeout_s=2.0, speed_cms=None, accel_cms2=None):
     """Проехать ровно dist_mm (знак = направление), держа курс по гироскопу.
 
     Меряем лидаром, а ЕДЕМ по одометрии: лидар обновляется 10 Гц, по нему
     15мм не отработать - прежняя доводка отмеряла ход секундомером и поэтому
     промахивалась. Разворот руля здесь работает одинаково вперёд и назад:
     вращение задаёт разность колёс, а не их знак.
+
+    accel_cms2 - плавно: разгон и торможение с этим ускорением (не ниже
+    CREEP_MIN_CMS), иначе сразу speed_cms (см. creep_soft).
     """
     l0, r0 = get_odo()
-    v = math.copysign(ALIGN_SPEED_CMS, dist_mm)
+    v_max = ALIGN_SPEED_CMS if speed_cms is None else speed_cms
+    v = math.copysign(v_max, dist_mm)
     goal_cm = abs(dist_mm) / 10.0
 
     t0 = time.time()
@@ -3583,16 +3685,39 @@ def creep_mm(dist_mm, target_yaw, timeout_s=2.0):
         # показывает, где робот был ~30мс назад, поэтому цель считается
         # достигнутой чуть раньше. Без этого доводка регулярно проскакивала и
         # следующая итерация отыгрывала назад.
-        if abs(((cl - l0) + (cr - r0)) * 0.5) >= goal_cm - abs(v) * STOP_LEAD_S:
+        done_cm = abs(((cl - l0) + (cr - r0)) * 0.5)
+        if done_cm >= goal_cm - abs(v) * STOP_LEAD_S:
             break
+        if accel_cms2:
+            # плавно: разгон по времени, торможение по остатку пути
+            v = math.copysign(max(CREEP_MIN_CMS, min(
+                v_max, CREEP_MIN_CMS + accel_cms2 * (time.time() - t0),
+                math.sqrt(2.0 * accel_cms2 * max(0.0, goal_cm - done_cm)))), dist_mm)
         yaw_e = angle_err(get_yaw(), target_yaw)
         st = -(yaw_e * GYRO_KP + get_yaw_rate() * GYRO_KD_RATE)
-        st = max(-8.0, min(8.0, st))
+        # медленно - руль слабее, чтобы ни одно колесо не крутилось назад
+        lim = 8.0 if not accel_cms2 else max(2.0, 0.6 * abs(v))
+        st = max(-lim, min(lim, st))
         motors(v + st * TURN_SIGN, v - st * TURN_SIGN)
         telem_seq = wait_telem(telem_seq)
 
     brake()
     time.sleep(0.08)
+
+
+# Подъезды у метки (к ней, сдвиг для другого блика, отъезд передней камерой и
+# обратно) - медленнее доводки и без рывков: робот рядом со стеной, камера
+# снимает, а прежние 18 см/с с места выглядели как дёрганье туда-обратно.
+MARK_CREEP_CMS = 9.0
+MARK_CREEP_ACCEL_CMS2 = 20.0
+CREEP_MIN_CMS = 4.0
+
+
+def creep_soft(dist_mm, target_yaw):
+    """creep_mm у метки: MARK_CREEP_CMS с плавным разгоном и торможением."""
+    t = 1.5 + abs(dist_mm) / 10.0 / (MARK_CREEP_CMS * 0.5)
+    creep_mm(dist_mm, target_yaw, timeout_s=t, speed_cms=MARK_CREEP_CMS,
+             accel_cms2=MARK_CREEP_ACCEL_CMS2)
 
 
 @_timed("доводка")
@@ -3716,7 +3841,7 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     # 2. Подъезд
     if creep:
         print(f"    метка: подъезд {creep:+.0f}мм по {src}")
-        creep_mm(creep, target_yaw)
+        creep_soft(creep, target_yaw)
         r = _interrupt_reason()
         if r:
             return r
@@ -3733,11 +3858,32 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     trav = trav_mm()
     tcell = _cell_at(cell, hdg, watch_logic.cell_index(trav))
     wall_dir = watch_logic.wall_of(hdg, side)
-    try:
-        result = det.read_wall(tcell[0], tcell[1], wall_dir)
-    except Exception as e:
-        print(f"    [WARN] чтение метки ({side}): {e}")
-        result = None
+    # Читаем, только если с этой стороны стена: по карте её нет - не читаем,
+    # и стоя лидар должен её видеть. Иначе камера смотрит в проём и метка -
+    # на дальней стене.
+    known = _maze.get(tcell)
+    if known is not None and known[wall_dir] is False:
+        no_wall = "по карте"
+    elif not wall_present(measure_walls(WALL_VOTE_SCANS)[side], SIDE_THRESH):
+        no_wall = "по лидару"
+    else:
+        no_wall = None
+    if no_wall:
+        print(f"    метка: стены {_DIR_NAME[wall_dir]} у {tcell} {no_wall} нет - "
+              f"это дальняя стена, не читаю")
+        _reject_mark(cell, hdg, side, m["pos_mm"])
+        return _interrupt_reason()
+    what = f"чтение метки ({side})"
+    _reset_unread(det)
+    result = _read_wall(det, tcell, wall_dir, what, expect=True)
+    unread = getattr(det, "last_unread", None)
+    if result is None:
+        result, unread2, _ = _reread_aligned(det, tcell, wall_dir, target_yaw, 0.0,
+                                             what, MARK_READ_TRIES - 1)
+        unread = unread2 or unread
+        trav = trav_mm()
+    if result is None and unread is not None:
+        result = _decide_unread(det, unread)
     if result is None:
         print(f"    метка не подтвердилась - место отбраковано ({side}, {trav:.0f}мм)")
         _reject_mark(cell, hdg, side, m["pos_mm"])
@@ -3772,6 +3918,314 @@ def _mark_world(result, cell, hdg, wall_dir, traveled_mm):
     return watch_logic.world_along(cell, hdg, wall_dir, pos, LEVEL_STRIDE)
 
 
+# Метку уже видели, а стоя она не прочиталась (нет в кадре или кольца не
+# сошлись) - столько чтений всего, между ними робот подравнивается по ней.
+MARK_READ_TRIES = 3
+# Метка в центре кадра, а не читается (блик, трещина) - сдвиг на столько,
+# попеременно вперёд и назад: другой угол - другой блик.
+MARK_NUDGE_MM = 25.0
+# Дальше этого от места, где начали, вдоль стены не уезжаем: впереди может
+# быть стена клетки.
+MARK_ALIGN_MAX_MM = 80.0
+
+
+def _read_wall(det, cell, wall_dir, what, expect=False):
+    try:
+        return det.read_wall(cell[0], cell[1], wall_dir, expect=expect)
+    except Exception as e:
+        print(f"    [WARN] {what}: {e}")
+        return None
+
+
+def _reread_aligned(det, cell, wall_dir, yaw, est_mm, what, tries, expect=True):
+    """Метка не прочиталась - подровняться по ней и прочитать ещё раз, до
+    tries раз. Метка в кадре - подъезд вдоль стены, чтобы встала в центр
+    кадра; её нет в кадре - по оценке est_mm (сколько ехать, чтобы она
+    оказалась напротив камеры); уже в центре - сдвиг MARK_NUDGE_MM. Едем
+    курсом yaw (по сетке - вдоль стены). Возвращает (метка или None,
+    det.last_unread последнего чтения с целью или None, сколько проехали мм:
+    вернуть робота на место - забота вызывающего)."""
+    moved, unread = 0.0, getattr(det, "last_unread", None)
+    for k in range(tries):
+        if _interrupt_reason():
+            break
+        try:
+            found = det.best_fast()
+        except Exception as e:
+            print(f"    [WARN] {what}: кадр стоя: {e}")
+            found = None
+        creep, src = watch_logic.creep_to_mark(None if found is None else found[2],
+                                               est_mm - moved, ALIGN_TOL_MM, max_mm=1e9)
+        if creep is None or abs(creep) < ALIGN_TOL_MM:
+            creep, src = (MARK_NUDGE_MM if k % 2 == 0 else -MARK_NUDGE_MM), "сдвиг"
+        creep = max(-MARK_ALIGN_MAX_MM, min(MARK_ALIGN_MAX_MM, moved + creep)) - moved
+        if abs(creep) >= 1.0:
+            print(f"    {what}: не прочиталась - подравниваюсь по метке {creep:+.0f}мм ({src})")
+            creep_soft(creep, yaw)
+            moved += creep
+        result = _read_wall(det, cell, wall_dir, what, expect=expect)
+        if result is not None:
+            return result, None, moved
+        unread = getattr(det, "last_unread", None) or unread
+    return None, unread, moved
+
+
+# Передняя камера видит метку, а прочитать не может (обрезана краем кадра,
+# блик, неуверенная рамка): столько повторных чтений. Перед каждым - встать
+# по сетке, отъехать назад на FRONT_BACK_MM (не ближе FRONT_BACK_CLEAR_MM к
+# задней стене: полкорпуса 97 мм + запас), чтобы метка вошла в кадр целиком,
+# и довернуть корпус к ней, если её центр дальше FRONT_AIM_TOL_DEG от оси
+# камеры. Отъезд на 2x50 мм в заезде 18.10 делал мишень такой мелкой, что
+# чёрное кольцо читалось зелёным - поэтому шаг 30 мм.
+FRONT_READ_TRIES = 2
+FRONT_AIM_TOL_DEG = 2.0
+FRONT_BACK_MM = 30.0
+FRONT_BACK_CLEAR_MM = 120.0
+
+
+def _front_reread(det, cell, wall_dir, unread):
+    """Повторное чтение передней стены (см. FRONT_READ_TRIES). Потом
+    обратно на курс сетки и на место. -> (метка или None, last_unread)."""
+    g = snap_target()
+    backed, result = 0.0, None
+    for _ in range(FRONT_READ_TRIES):
+        if _interrupt_reason():
+            break
+        turn_to(g, label="по сетке")
+        step = _front_back_step(FRONT_BACK_MM)
+        if step >= 1.0:
+            print(f"    перёд: метка не читается - назад {step:.0f}мм")
+            creep_soft(-step, g)
+            backed += step
+        else:
+            print("    перёд: метка не читается, сзади стена - назад некуда")
+        try:
+            ang = det.locate()
+        except Exception as e:
+            print(f"    [WARN] перёд: где метка: {e}")
+            ang = None
+        if ang is not None and abs(ang) >= FRONT_AIM_TOL_DEG:
+            print(f"    перёд: метка {ang:+.0f}° от оси камеры - доворачиваю к ней")
+            turn_to((get_yaw() + ang) % 360.0, label="к метке")
+        result = _read_wall(det, cell, wall_dir, "перёд", expect=True)
+        if result is not None:
+            break
+        unread = getattr(det, "last_unread", None) or unread
+    if abs(angle_err(get_yaw(), g)) > TURN_TOL_DEG:
+        turn_to(g, label="по сетке")
+    if backed >= 1.0:
+        creep_soft(backed, g)               # обратно в центр клетки
+    return result, unread
+
+
+def _reset_unread(det):
+    """Перед серией чтений одной метки: история неполных чтений - с нуля."""
+    if det is not None and hasattr(det, "unread_hist"):
+        det.unread_hist = []
+
+
+def _decide_unread(det, unread):
+    """Мишень в кадре, а кольца так и не прочитались ни разу целиком -
+    решение всё равно нужно (робот не остаётся с «не знаю»): каждое кольцо
+    - из самого надёжного из чтений этой серии (watch_logic.guess_rings).
+    Формат - как у прочитанной метки, плюс 'guessed'."""
+    hist = list(getattr(det, "unread_hist", None) or []) or [unread]
+    rings = watch_logic.guess_rings(hist)
+    checksum = sum(RING_SCORE.get(c) or 0 for c in rings)
+    vtype = SUM_TO_TYPE.get(checksum, "fake")
+    print(f"    кольца так и не прочитались ({len(hist)} чтен.) - по надёжным: "
+          f"{rings} = {checksum:+d} → {vtype}")
+    return {**unread, "rings": rings, "checksum": checksum, "type": vtype,
+            "label": f"{checksum:+d}", "blink": vtype in KITS_BY_TYPE, "guessed": True}
+
+
+def _corner_dup(cell, wall_dir, along, cls):
+    """Та же метка уже прочитана на соседней стене у того же угла клетки
+    (см. watch_logic.CORNER_MM)."""
+    for key, a in watch_logic.corner_neighbours(cell, wall_dir, along, LEVEL_STRIDE):
+        dup = _marks.near(key, a, cls)
+        if dup is not None and dup[2] == "read":
+            return True
+    return False
+
+
+# Стены клеток, где метку с поворота уже пробовали читать: второй раз не
+# пробуем - иначе неудачное чтение повторялось на каждом повороте в клетке.
+_turn_mark_tried = set()
+
+
+def _turn_marks(cx, cy, seen):
+    """Метки, замеченные наблюдателем на повороте в клетке (cx, cy) (см.
+    turn_to(seen=...)): для каждой стены - рамка, снятая ближе всего к
+    перпендикуляру (watch_logic.TURN_MARK_PHI_MIN..MAX). Если стена по карте
+    есть, там ещё ничего не читали и не пробовали: довернуться на курс того
+    кадра (под ним метка в центре кадра), прочитать стоя (read_wall) и
+    отрепортить. Возвращает курс сетки после выдачи комплектов или None
+    (курс не менялся; робот может стоять не по сетке - вызывающий
+    доворачивает сам)."""
+    best = {}
+    for side, yf, xyxy, conf, cls in seen:
+        rel = angle_err(yf, YAW_ORIGIN)
+        h = int(round(rel / 90.0)) % 4
+        phi = angle_err(rel, 90.0 * h)
+        if not watch_logic.TURN_MARK_PHI_MIN <= abs(phi) <= watch_logic.TURN_MARK_PHI_MAX:
+            continue                      # диагональ (какая стена - неясно) или сетка
+        wall_dir = watch_logic.wall_of(h, side)
+        if (cx, cy, wall_dir) in _turn_mark_tried:
+            continue
+        px = max(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])
+        k = (side, wall_dir)
+        if k not in best or abs(phi) < abs(best[k][4]):
+            best[k] = (px, yf, xyxy, h, phi, cls)
+    out_hdg = None
+    for (side, wall_dir), (px, yf, xyxy, h, phi, cls) in best.items():
+        det = _victim_r if side == "right" else _victim_l
+        if det is None or get_esp_paused():
+            continue
+        pos = watch_logic.turned_mark_pos(phi, side, watch_logic.px_to_mm(
+            watch_logic.mark_center_y(xyxy)))
+        if pos is None:
+            continue
+        key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos, LEVEL_STRIDE)
+        if abs(along - watch_logic.wall_center_along((cx, cy), wall_dir, LEVEL_STRIDE)) \
+                > watch_logic.CELL_MM / 2:
+            # Луч лёг на эту стену за углом клетки: метка на соседней стене
+            # (с поворота угол виден с обеих сторон).
+            print(f"    [W] на повороте: {side} {px:.0f}px, стена {_DIR_NAME[wall_dir]} "
+                  f"{along:.0f}мм - за углом клетки, пропускаю")
+            continue
+        if _corner_dup((cx, cy), wall_dir, along, cls):
+            print(f"    [W] на повороте: {side} {px:.0f}px у угла - уже прочитана "
+                  f"на соседней стене, пропускаю")
+            continue
+        known = _maze.get((cx, cy))
+        if known is None or known[wall_dir] is not True:
+            # Стены с этой стороны клетки нет: камера смотрит в проём на
+            # стену соседней клетки или дальше. Метку там не читаем.
+            print(f"    [W] на повороте: {side} {px:.0f}px, стены {_DIR_NAME[wall_dir]} "
+                  f"по карте нет - дальняя стена, пропускаю")
+            continue
+        if _marks.near(key, along, cls) is not None:
+            continue                      # уже читали (или отбраковали) рядом
+        _turn_mark_tried.add((cx, cy, wall_dir))
+        print(f"    [W] на повороте: {side} {px:.0f}px под {phi:+.0f}°, стена "
+              f"{_DIR_NAME[wall_dir]} {along:.0f}мм - доворачиваю на {yf:.0f}°")
+        turn_to(yf, label="к метке")
+        what = f"чтение метки ({side})"
+        _reset_unread(det)
+        result = _read_wall(det, (cx, cy), wall_dir, what, expect=True)
+        unread = None
+        if result is not None:
+            phi_now = angle_err(angle_err(get_yaw(), YAW_ORIGIN), 90.0 * h)
+            pos2 = watch_logic.turned_mark_pos(
+                phi_now, side, watch_logic.px_to_mm(sum(result["box_y"]) / 2.0))
+            if pos2 is not None:
+                key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos2, LEVEL_STRIDE)
+        else:
+            # Под углом не прочиталась (метка у края кадра, кольца наискось):
+            # встать по сетке, подъехать вдоль стены, чтобы метка оказалась
+            # напротив камеры, прочитать оттуда - и обратно в центр клетки.
+            unread = getattr(det, "last_unread", None)
+            g = snap_target()
+            print(f"    {what}: под углом не прочиталась - встаю по сетке и подравниваюсь")
+            turn_to(g, label="по сетке")
+            result, unread2, moved = _reread_aligned(det, (cx, cy), wall_dir, g,
+                                                     pos + watch_logic.CAM_BACK_MM,
+                                                     what, MARK_READ_TRIES)
+            unread = unread2 or unread
+            src = result or unread2
+            if src is not None:
+                key, along = _mark_world(src, (cx, cy), h, wall_dir, moved)
+            if abs(moved) >= 1.0:
+                creep_soft(-moved, g)
+        cls_now = (result or unread or {}).get("class")
+        dup = _marks.near(key, along, cls_now)
+        if (dup is not None and dup[2] == "read") or \
+                _corner_dup((cx, cy), wall_dir, along, cls_now):
+            print(f"    [W] метка в {along:.0f}мм - уже прочитана, не репортю")
+            continue
+        if result is None and unread is not None:
+            result = _decide_unread(det, unread)
+        if result is None:
+            # кадр на повороте - слабое свидетельство: место не
+            # отбраковываем, наблюдатель на ходу и скан стоя ещё могут её
+            # прочитать
+            print("    метка с поворота не подтвердилась")
+            continue
+        _marks.add(key, along, "read", result.get("class"))
+        _victim_log.append({**result, "side": side, "wall_dir": wall_dir,
+                            "ts": time.strftime("%H:%M:%S")})
+        print(f"    метка с поворота: {result['label']} → стена {_DIR_NAME[wall_dir]} у ({cx},{cy})")
+        if result.get("blink"):
+            out_hdg = report_victim(result, side, wall_dir, h)
+    if out_hdg is not None:
+        if abs(angle_err(get_yaw(), snap_target())) > TURN_TOL_DEG:
+            turn_to(snap_target(), label="по сетке")     # без комплектов стоим, как читали
+        # курс - по гироскопу: после первой метки робот мог довернуть ко
+        # второй, и курс выдачи комплектов первой уже не тот
+        out_hdg = gyro_heading()
+    return out_hdg
+
+
+# Переднюю стену читаем с отъезда: в кадр входит больше стены, и метка у края
+# реже обрезана. Назад - не ближе FRONT_BACK_CLEAR_MM к задней стене.
+FRONT_VIEW_BACK_MM = 30.0
+
+
+def _front_back_step(want_mm):
+    """Сколько можно отъехать назад (мм), не ближе FRONT_BACK_CLEAR_MM к
+    задней стене."""
+    w = measure_walls(1, fresh=True)
+    room = want_mm if w["back"] is None else w["back"] - FRONT_BACK_CLEAR_MM
+    return max(0.0, min(want_mm, room))
+
+
+def _scan_front(cx, cy, hdg):
+    """Передняя стена передней камерой: по сетке, назад на FRONT_VIEW_BACK_MM,
+    прочитать (не читается - _front_reread, так и не прочиталась -
+    _decide_unread), обратно в центр клетки; жертва - мигание и комплекты
+    сразу (report_victim). Возвращает курс, на котором робот остался."""
+    det, wall_dir = _victim_f, hdg
+    g = snap_target()
+    turn_to(g, label="по сетке")
+    step = _front_back_step(FRONT_VIEW_BACK_MM)
+    if step >= 1.0:
+        creep_soft(-step, g)
+    _reset_unread(det)
+    try:
+        result = det.scan(cx, cy, wall_dir)
+    except Exception as e:              # сбой камеры не должен ронять заезд
+        print(f"    [WARN] скан front: {e}")
+        result = None
+    if result is None:
+        unread = getattr(det, "last_unread", None)
+        if unread is not None or getattr(det, "last_seen", None) is not None:
+            result, unread = _front_reread(det, (cx, cy), wall_dir, unread)
+            if result is None and unread is not None:
+                result = _decide_unread(det, unread)
+            if result is None:
+                print("    перёд: похожее на метку не подтвердилось")
+    if step >= 1.0:
+        creep_soft(step, g)                 # обратно в центр клетки
+    if result is None:
+        return hdg
+    # метку на этой стене передняя прочитала - боковым после поворота её
+    # больше не смотреть (ничего не нашла - смотрят, у них кадр шире)
+    _scanned_walls.add((cx, cy, wall_dir))
+    # передняя камера смотрит по оси робота - метка в середине отрезка стены
+    key, along = watch_logic.world_along((cx, cy), 0, wall_dir, 0.0, LEVEL_STRIDE)
+    dup = _marks.near(key, along)
+    if dup is not None and dup[2] == "read":
+        print(f"    [W] front: {result['label']} - уже прочитана рядом, не репортю")
+        return hdg
+    _marks.add(key, along, "read")
+    _victim_log.append({**result, "side": "front", "wall_dir": wall_dir,
+                        "ts": time.strftime("%H:%M:%S")})
+    if result.get("blink") and not get_esp_paused():
+        return report_victim(result, "front", wall_dir, hdg)
+    return hdg
+
+
 @_timed("камеры")
 def scan_sides(cx, cy, hdg, walls_rel=None):
     """Проверяет ОБЕ боковые стены (лево и право по камерам) и, если стена
@@ -3790,10 +4244,23 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
     стоит спиной к метке и обратно не поворачивается (см. report_victim) -
     вызывающий обязан взять этот курс себе.
     """
-    if _victim_r is None and _victim_l is None:
+    if _victim_r is None and _victim_l is None and _victim_f is None:
         return hdg
     if get_esp_paused():
         return hdg
+    # Передняя стена - передней камерой, стоя, пока не развернулись (в тупике
+    # и перед поворотом её иначе видят только боковые с поворота). Отдельным
+    # шагом и первой: она отъезжает от стены, а боковые снимают с выдержкой.
+    # Выдала комплекты - робот развёрнут, scan_cell() повторит скан с нового
+    # курса.
+    if (_victim_f is not None and (cx, cy, hdg) not in _front_scanned
+            and (cx, cy, hdg) not in _scanned_walls):
+        w = measure_walls(2)
+        if wall_present(w["front"], FRONT_CAM_WALL_MM):
+            _front_scanned.add((cx, cy, hdg))
+            h = _scan_front(cx, cy, hdg)
+            if h != hdg or get_esp_paused():
+                return h
     sides = []
     for side, det in (("right", _victim_r), ("left", _victim_l)):
         wall_dir = (hdg + (1 if side == "right" else 3)) % 4
@@ -3824,6 +4291,7 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
     results = {}
 
     def _scan(side, det, wall_dir):
+        _reset_unread(det)
         try:
             results[side] = det.scan(cx, cy, wall_dir)
         except Exception as e:   # сбой одной камеры не должен ронять заезд
@@ -3840,11 +4308,24 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
 
     for side, det, wall_dir in jobs:
         result = results.get(side)
+        moved = 0.0
         if result is None:
-            continue
+            unread = getattr(det, "last_unread", None)
+            if unread is None:
+                continue
+            # Цель в кадре, а кольца не прочитались: подравняться по ней
+            # (в центр кадра, потом сдвиг - другой блик) и прочитать ещё раз.
+            g = snap_target()
+            result, unread2, moved = _reread_aligned(det, (cx, cy), wall_dir, g, 0.0,
+                                                     f"скан {side}", MARK_READ_TRIES - 1)
+            unread = unread2 or unread
+            if result is None:
+                result = _decide_unread(det, unread)
+            if abs(moved) >= 1.0:
+                creep_soft(-moved, g)       # обратно в центр клетки
         # Та же метка могла быть прочитана на ходу из соседней клетки (или
         # с другой стороны стыка) - второй раз не репортим.
-        key, along = _mark_world(result, (cx, cy), hdg, wall_dir, 0.0)
+        key, along = _mark_world(result, (cx, cy), hdg, wall_dir, moved)
         dup = _marks.near(key, along)
         if dup is not None and dup[2] == "read":
             print(f"    [W] {side}: {result['label']} в {along:.0f}мм - уже прочитана "
@@ -4236,7 +4717,9 @@ def flood_fill_run(max_cells):
             steps = (90, 90) if abs(delta) == 180 else (delta,)
             replan = False
             for i, step in enumerate(steps):
-                ok = turn(step)
+                tgt = snap_target(step)
+                seen = []
+                ok = turn_to(tgt, label=f"{step:+.0f}°", seen=seen, walls=_maze.get((cx, cy)))
                 if get_esp_paused():
                     replan = True
                     break
@@ -4246,6 +4729,16 @@ def flood_fill_run(max_cells):
                     _write_state(cx, cy, hdg, checkpoint, "exploring")
                     replan = True
                     break
+                if seen:
+                    h = _turn_marks(cx, cy, seen)
+                    if h is not None:
+                        # выдали комплекты - стоим спиной к метке, шаг заново
+                        hdg = h
+                        _write_state(cx, cy, hdg, checkpoint, "exploring")
+                        replan = True
+                        break
+                    if abs(angle_err(get_yaw(), tgt)) > TURN_TOL_DEG:
+                        turn_to(tgt, label="обратно")
                 # После поворота стены поменялись местами - встаём в центр
                 # клетки по тому, что видно. Мерить после поворота точнее, чем
                 # предсказывать до него. Посередине разворота на 180° - не
@@ -4446,13 +4939,23 @@ def return_to_start(cx, cy, hdg, checkpoint):
         d = path[0]
         delta = DIR_DELTA[(d - hdg) % 4]
         if delta != 0:
-            ok = turn(delta)
+            tgt = snap_target(delta)
+            seen = []
+            ok = turn_to(tgt, label=f"{delta:+.0f}°", seen=seen, walls=_maze.get((cx, cy)))
             if get_esp_paused():
                 continue
             if not ok:
                 hdg = gyro_heading()
                 _write_state(cx, cy, hdg, checkpoint, "returning")
                 continue
+            if seen:
+                h = _turn_marks(cx, cy, seen)
+                if h is not None:
+                    hdg = h
+                    _write_state(cx, cy, hdg, checkpoint, "returning")
+                    continue
+                if abs(angle_err(get_yaw(), tgt)) > TURN_TOL_DEG:
+                    turn_to(tgt, label="обратно")
             align_at_wall(snap_target())
             hdg = d
             _write_state(cx, cy, hdg, checkpoint, "returning")
@@ -4700,7 +5203,7 @@ def _on_hangup(_signum, _frame):
 
 
 def main():
-    global _link, YAW_ORIGIN, _victim_r, _victim_l, _leds, _watcher, _t_run
+    global _link, YAW_ORIGIN, _victim_r, _victim_l, _victim_f, _leds, _watcher, _t_run
     signal.signal(signal.SIGHUP, _on_hangup)
 
     global PER_CELL_STOP, CHECKPOINT_TILE, USE_COLOR_SENSOR
@@ -4814,6 +5317,13 @@ def main():
             except Exception as e:
                 print(f"  [WARN] наблюдатель не поднялся: {e}")
                 _watcher = None
+
+        print("Инициализация детектора жертв (YOLO, передняя USB-камера)...")
+        try:
+            _victim_f = FrontVictimDetector()
+        except Exception as e:
+            print(f"  [WARN] передняя камера недоступна: {e}")
+            _victim_f = None
 
         print("Инициализация ленты индикации...")
         try:

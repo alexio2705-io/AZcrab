@@ -58,8 +58,11 @@ _leds = _stub("leds", NeoPixels=object, blink_pink=lambda *a, **k: None,
               blink_return=lambda *a, **k: None, RED=(255, 0, 0), SLEEP=(0, 0, 0),
               VICTIM_STOP_S=5.0, MARGIN_S=0.3)
 _stub("victim_detect", VictimDetector=object, CONF_FAST=0.25, MIN_BOX_PX=40,
-      YOLO_MODEL_PATH="", SAVE_DIR="")
+      YOLO_MODEL_PATH="", SAVE_DIR="",
+      RING_SCORE={'black': -2, 'red': -1, 'yellow': 0, 'green': 1, 'blue': 2},
+      SUM_TO_TYPE={2: 'damaged', 1: 'stable', 0: 'unharmed'})
 _stub("victim_watch", VictimWatcher=object)
+_stub("front_victim", FrontVictimDetector=object)
 
 import corridor  # noqa: E402
 import nav  # noqa: E402

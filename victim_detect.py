@@ -3,15 +3,15 @@
 Детектор жертв для RoboCup Rescue Maze.
 Какой cam_idx на какой стороне - watch_logic.CAM_IDX.
 
-Модель: YOLO26n maze_v26n_B.pt (обучена 26.09.2026 на кадрах этих же камер
-+ буквы из датасета robocup-ffq6y/maze, CC BY 4.0; 320x320). Классы:
+Модель: YOLO26n maze_v26n_C3.pt (B + ложные метки и нарисованные жертвы,
+docs/model_C_report.md; 320x320). Классы:
   'phi'       → Φ → damaged  → 2 аптечки
   'psi'       → Ψ → stable   → 1 аптечка
   'omega'     → Ω → unharmed → 0 аптечек
   'cognetive' → когнитивная цель: цвета 5 колец (ring_colors.py), сумма
                 2 → damaged, 1 → stable, 0 → unharmed, иначе фейк (не жертва)
-Модель C (maze_v26n_C.pt) знает ещё ложные метки 'H', 'S', 'U', 'letter' -
-они не жертвы и отбрасываются в _best (watch_logic.victim_boxes).
+Модели C/C3 знают ещё ложные метки 'H', 'S', 'U', 'letter' - они не жертвы
+и отбрасываются в _best (watch_logic.victim_boxes).
 
 Скан стены: быстрый проход по обычному кадру 320x320; если что-то есть —
 отдельный снимок 960x960 с выдержкой 500 мс (та же область сенсора, втрое
@@ -31,10 +31,12 @@ import ring_colors as rc  # noqa: E402
 import watch_logic as wl  # noqa: E402
 from dataset_web import STILL_SIZE, Camera  # noqa: E402
 
-# Модель можно переключить без правки кода: MAZE_MODEL=A ~/maze/venv/bin/python nav.py
-# B (по умолчанию) — свои кадры + чужие буквы: на проверке mAP50 0.966, как у A,
-# но на живых камерах заметно лучше. A — только свои кадры.
-YOLO_MODEL_PATH = f"/home/madness/maze/models/maze_v26n_{os.environ.get('MAZE_MODEL', 'B')}.pt"
+# Модель можно переключить без правки кода: MAZE_MODEL=B ~/maze/venv/bin/python nav.py
+# C3 (по умолчанию) — B + приманки (H/S/U/прочие буквы) и нарисованные жертвы:
+# приманки за жертву 0 из 1244 фото-приманок (у B 18%), свои кадры как у B.
+# C — то же без нарисованных жертв: чистую печать иногда зовёт приманкой.
+# B — только Φ/Ψ/Ω/цели, A — только свои кадры.
+YOLO_MODEL_PATH = f"/home/madness/maze/models/maze_v26n_{os.environ.get('MAZE_MODEL', 'C3')}.pt"
 SAVE_DIR        = '/home/madness/maze/detections'
 
 IMGSZ        = 320
@@ -62,6 +64,7 @@ CLASS_LABEL = {
 }
 COG_CLASS = 'cognetive'
 SUM_TO_TYPE = {2: 'damaged', 1: 'stable', 0: 'unharmed'}   # иначе — фейк
+RING_SCORE = rc.COLOR_SCORE                                # баллы колец (для nav.py)
 
 
 def _iou(a, b):
@@ -93,6 +96,13 @@ class VictimDetector:
 
         self.scanned = set()   # (клетка, стена) уже просканированы
         self.log = []
+        # Последнее read_wall(): когнитивная цель в кадре, а кольца не
+        # прочитались - то, что о ней известно (type 'unread'), иначе None.
+        self.last_unread = None
+        # Все такие чтения подряд (nav.py чистит перед серией и решает по
+        # самому надёжному) и что нашёл проход 1 последнего чтения.
+        self.unread_hist = []
+        self.last_seen = None
         print(f'[VD] Готов ({side})')
 
     def _best(self, frame, conf):
@@ -123,27 +133,36 @@ class VictimDetector:
         камера. Дедупликация по (клетка, стена): после поворота робот видит
         ДРУГУЮ стену той же клетки — её тоже надо просканировать.
         """
+        self.last_unread = None
         key = (cell_x, cell_y, wall_dir)
         if key in self.scanned:
             return None
         self.scanned.add(key)
         return self.read_wall(cell_x, cell_y, wall_dir)
 
-    def read_wall(self, cell_x: int, cell_y: int, wall_dir=None):
+    def read_wall(self, cell_x: int, cell_y: int, wall_dir=None, expect=False):
         """То же чтение, что в scan(), но без дедупа по (клетка, стена): по
         сигналу наблюдателя на ходу стену исходной клетки читаем ещё раз -
         стоя в центре её уже смотрели, но метка была вне кадра. В результате
         дополнительно 'box_y' - (y1, y2) рамки в долях высоты кадра, по нему
-        nav.py считает, где метка вдоль стены (дедуп по положению)."""
+        nav.py считает, где метка вдоль стены (дедуп по положению).
+
+        expect=True - метку здесь уже видели (на ходу, с поворота, этой же
+        камерой минуту назад): неуверенную рамку подтверждаем с порогом
+        CONF_FAST, а не CONF. Иначе стоя напротив цели с conf 0.31 робот
+        считал «не подтвердилось» и ездил вдоль стены."""
         # ── Проход 1: обычный кадр — по нему решаем, что за метка ──
         # (модель обучена на таких кадрах; на снимке 500 мс она может,
         # например, принять крупную Ω за когнитивную цель)
+        self.last_unread = None
+        self.last_seen = None
         self.cam.latest()                  # сброс кадра, снятого ещё на ходу
         frame = self.cam.latest()
         found = self._best(frame, CONF_FAST)
         if found is None:
             return None
         cls_name, conf, box = found
+        self.last_seen = (cls_name, conf)
         side_px = max(box[2] - box[0], box[3] - box[1])
         if side_px < MIN_BOX_PX:
             print(f'[VD] клетка=({cell_x},{cell_y}): {cls_name} {conf:.2f} слишком мелкая '
@@ -169,7 +188,7 @@ class VictimDetector:
         if still is not None:
             k = still.shape[1] / frame.shape[1]
             xyxy = [v * k for v in box]
-            still_found = self._best(still, CONF)
+            still_found = self._best(still, CONF_FAST if expect else CONF)
             if still_found and _iou(still_found[2], xyxy) > 0.3:
                 xyxy = still_found[2]          # та же метка — рамка точнее
             shot = (f'{still.shape[1]}x{still.shape[0]} {md.get("ExposureTime", 0) / 1000:.0f}мс'
@@ -179,11 +198,13 @@ class VictimDetector:
         dt = time.time() - t0
         if conf < CONF:
             # на обычном кадре неуверенно — тогда решает снимок
-            if still_found is None:
+            if still_found is not None:
+                cls_name, conf, xyxy = still_found
+            elif not expect:
                 print(f'[VD] клетка=({cell_x},{cell_y}): что-то похожее ({cls_name} {conf:.2f}), '
                       f'но не подтвердилось ({dt:.1f}с)')
                 return None
-            cls_name, conf, xyxy = still_found
+            # expect: метку здесь уже видели - верим проходу 1
         elif still_found and still_found[0] != cls_name:
             shot += f', на снимке {still_found[0]} {still_found[1]:.2f}'
 
@@ -192,6 +213,8 @@ class VictimDetector:
         if cls_name == COG_CLASS:
             ring_info, _, _ = rc.read_rings(still, xyxy, self.ring_cfg, draw_on=shown)
             rings = [r['color'] for r in ring_info]
+            ring_ok = [bool(r['reliable']) for r in ring_info]
+            ring_agree = [r['agree'] for r in ring_info]
             checksum = rc.checksum(ring_info)
             victim_type = None if checksum is None else SUM_TO_TYPE.get(checksum, 'fake')
             label = '?' if checksum is None else f'{checksum:+d}'
@@ -211,9 +234,16 @@ class VictimDetector:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6 * shown.shape[1] / IMGSZ / 2, (0, 255, 0), 2)
         cv2.imwrite(os.path.join(SAVE_DIR, fname), shown)
 
+        box_y = (round(xyxy[1] / still.shape[0], 4), round(xyxy[3] / still.shape[0], 4))
         if victim_type is None:
             print(f'[VD] ○ когнитивная цель, кольца не прочитались {rings}  '
                   f'клетка=({cell_x},{cell_y})  conf={conf:.2f}  [{shot}, {dt:.1f}с]')
+            self.last_unread = {'type': 'unread', 'label': '?', 'image': fname,
+                                'cell': (cell_x, cell_y), 'class': cls_name,
+                                'conf': round(conf, 3), 'blink': False, 'rings': rings,
+                                'ring_ok': ring_ok, 'ring_agree': ring_agree,
+                                'checksum': None, 'box_y': box_y}
+            self.unread_hist.append(self.last_unread)
             return None
 
         # Мигаем только для настоящих жертв; фейк фиксируем без мигания.
@@ -228,7 +258,7 @@ class VictimDetector:
             'blink':    blink,
             'rings':    rings,      # цвета колец от центра наружу (когнитивная) или None
             'checksum': checksum,
-            'box_y':    (round(xyxy[1] / still.shape[0], 4), round(xyxy[3] / still.shape[0], 4)),
+            'box_y':    box_y,
         }
         self.log.append(result)
         tag = '★ ЖЕРТВА' if blink else '○ МЕТКА (без мигания)'

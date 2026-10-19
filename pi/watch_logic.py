@@ -164,6 +164,39 @@ def world_along(cell, hdg, wall_dir, pos_mm, stride):
     return key, center + sgn * pos_mm
 
 
+# Метка ближе этого к углу клетки - кандидат в ту же, что на соседней стене
+# у того же угла: с поворота камера видит угол с обеих стен, и одну Ψ в
+# заезде 18.10 00:34 прочитали на E и на S клетки (-2,-2) - два комплекта.
+CORNER_MM = 100.0
+
+
+def wall_center_along(cell, wall_dir, stride):
+    """Координата вдоль стены wall_dir (как в world_along) центра её отрезка
+    у клетки cell. Дальше CELL_MM/2 от неё метки на этой стене быть не может."""
+    return world_along(cell, 0, wall_dir, 0.0, stride)[1]
+
+
+def corner_neighbours(cell, wall_dir, along, stride, near_mm=CORNER_MM):
+    """Метка на стене wall_dir клетки cell в along (world_along) ближе near_mm
+    к углу клетки - [(ключ соседней стены у этого угла, координата угла
+    вдоль неё)], иначе []."""
+    cx, cy = cell
+    level = level_of(cy, stride)
+    xc, yc, half = cx * CELL_MM, (cy - level * stride) * CELL_MM, CELL_MM / 2
+    out = []
+    if wall_dir in (1, 3):                    # E/W: вдоль - y, у углов N и S
+        xw = xc + (half if wall_dir == 1 else -half)
+        for adj, y in ((0, yc + half), (2, yc - half)):
+            if abs(along - y) <= near_mm:
+                out.append(((adj, cy), xw))
+    else:                                     # N/S: вдоль - x, у углов E и W
+        yw = yc + (half if wall_dir == 0 else -half)
+        for adj, x in ((1, xc + half), (3, xc - half)):
+            if abs(along - x) <= near_mm:
+                out.append(((adj, cx, level), yw))
+    return out
+
+
 def cell_index(traveled_mm):
     """Над какой по счёту клеткой поездки робот (0 - исходная): меньше
     ATTRIB_MM от центра клетки - она, дальше - следующая. Поездка без
@@ -279,9 +312,10 @@ def creep_to_mark(box_y, est_mm, tol_mm, max_mm=CREEP_MAX_MM):
     return mm, src
 
 
-# Сторона включена ещё столько после того, как лидар перестал видеть стену:
-# на стыке клеток боковое окно мигает, а камере дёргаться незачем.
-WATCH_SIDE_HOLD_S = 0.2
+# Сторона включена ещё столько после того, как лидар перестал видеть стену.
+# Ноль: камера смотрит только туда, где стена есть сейчас. С 0.2с она
+# успевала заглянуть в проём за концом стены и прочитать метку на дальней.
+WATCH_SIDE_HOLD_S = 0.0
 
 
 def watch_allowed(ramp_state, bump_on, assist_mode, pitch_delta, rearm_deg, wall_forced):
@@ -357,23 +391,60 @@ class SideHold:
     def __init__(self, hold_s=WATCH_SIDE_HOLD_S, t0=0.0):
         self.hold_s = hold_s
         self.last = {}
+        self.hist = {}           # side -> [(t, есть стена)] по тактам поездки
         self.t0 = t0             # кадры раньше этого - не этой поездки
 
     def update(self, t, present):
         for side, p in present.items():
             if p:
                 self.last[side] = t
+            h = self.hist.setdefault(side, [])
+            h.append((t, bool(p)))
+            if len(h) > 2000:    # ~10с при 200Гц - кадры старше не приходят
+                del h[:1000]
         return {s for s, tl in self.last.items() if t - tl <= self.hold_s}
 
     def reset(self, t0=None):
         self.last.clear()
+        self.hist.clear()
         if t0 is not None:
             self.t0 = t0
 
     def frame_ok(self, side, t_frame):
         """Рамку с кадра t_frame брать: кадр снят в этой поездке (не на
-        повороте перед ней - там наблюдатель смотрит в обе стороны), и стену
-        с его стороны лидар видел не раньше hold_s до кадра. Ответ воркера
-        приходит через 0.1-0.3 с, когда стена уже могла кончиться, - поэтому
-        по времени кадра, а не по текущему такту."""
-        return t_frame >= self.t0 and self.last.get(side, -1e9) >= t_frame - self.hold_s
+        повороте перед ней - там наблюдатель смотрит в обе стороны), и на
+        последнем такте до кадра лидар видел стену с его стороны. Ответ
+        воркера приходит через 0.1-0.3 с, когда стена уже могла кончиться
+        (или начаться следующая), - поэтому по времени кадра, а не по
+        текущему такту."""
+        if t_frame < self.t0:
+            return False
+        h = self.hist.get(side, [])
+        i = bisect.bisect_right(h, (t_frame, True)) - 1
+        return i >= 0 and h[i][1]
+
+
+def guess_rings(readings, n=5):
+    """Кольца мишени по нескольким неполным чтениям (VictimDetector.unread_hist)
+    - решение нужно всегда. Для каждого кольца: цвет из того чтения, где оно
+    надёжно и согласие точек выше всех; надёжного нет - голосование по всем
+    чтениям с весом согласия; не видно ни разу - жёлтое (0 баллов)."""
+    out = []
+    for i in range(n):
+        best, votes = None, {}
+        for r in readings:
+            cols = r.get("rings") or []
+            if i >= len(cols) or cols[i] == "?":
+                continue
+            ok = (r.get("ring_ok") or [False] * n)[i]
+            agree = (r.get("ring_agree") or [0.0] * n)[i]
+            if ok and (best is None or agree > best[1]):
+                best = (cols[i], agree)
+            votes[cols[i]] = votes.get(cols[i], 0.0) + max(agree, 0.1)
+        if best is not None:
+            out.append(best[0])
+        elif votes:
+            out.append(max(votes, key=lambda c: votes[c]))
+        else:
+            out.append("yellow")
+    return out

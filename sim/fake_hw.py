@@ -157,7 +157,7 @@ class FakeDetector:
         self.scanned.add(key)
         return self.read_wall(cell_x, cell_y, wall_dir)
 
-    def read_wall(self, cell_x, cell_y, wall_dir=None):
+    def read_wall(self, cell_x, cell_y, wall_dir=None, expect=False):
         _sleep(STILL_SCAN_S)
         found = detections(self.sim, self.side, still=True, rng=self.rng)
         found = [f for f in found if f[2][3] - f[2][1] >= watch_logic.FRAME_PX * 0.125]

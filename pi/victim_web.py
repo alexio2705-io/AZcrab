@@ -26,7 +26,7 @@ import colors_page  # noqa: E402
 import ring_colors as rc  # noqa: E402
 from dataset_web import CAM_NAMES, STILL_SIZE, Camera, log  # noqa: E402
 
-MODEL_PATH = os.path.expanduser(f"~/maze/models/maze_v26n_{os.environ.get('MAZE_MODEL', 'B')}.pt")
+MODEL_PATH = os.path.expanduser(f"~/maze/models/maze_v26n_{os.environ.get('MAZE_MODEL', 'C3')}.pt")
 HTTP_PORT = 8000
 IMGSZ = 320
 CONF = 0.45

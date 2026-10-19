@@ -196,7 +196,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
 <script>
 const CELL = 56;   // единиц viewBox на клетку карты
-const NAMES = {damaged: 'ПОВРЕЖДЁН', stable: 'СТАБИЛЕН', unharmed: 'НЕ ПОВРЕЖДЁН', fake: 'ФЕЙК'};
+const NAMES = {damaged: 'ПОВРЕЖДЁН', stable: 'СТАБИЛЕН', unharmed: 'НЕ ПОВРЕЖДЁН', fake: 'ФЕЙК', unread: 'КОЛЬЦА НЕ ПРОЧИТАНЫ'};
 const GLYPH = {damaged: 'Φ', stable: 'Ψ', unharmed: 'Ω'};
 const COLOR = {damaged: '#E5534B', stable: '#C7D84B', unharmed: '#3FB27F'};
 const PHASE = {waiting: ['ожидание', 'off'], exploring: ['разведка', 'on'], sleep: ['сон', 'off'],

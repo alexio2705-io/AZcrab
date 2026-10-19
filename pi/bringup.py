@@ -291,7 +291,7 @@ def check_calib():
 def check_model():
     models = glob.glob(os.path.join(MAZE, "models", "*.pt")) + \
         glob.glob(os.path.join(MAZE, "models", "*_ncnn_model"))
-    want = os.environ.get("MAZE_MODEL", "B")
+    want = os.environ.get("MAZE_MODEL", "C3")
     if not models:
         report("FAIL", "модель YOLO", f"в {MAZE}/models пусто")
         return

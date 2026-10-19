@@ -148,19 +148,31 @@ class TestSideHoldFrames(unittest.TestCase):
         h = wl.SideHold(t0=10.0)
         h.update(10.1, {"right": True, "left": False})
         self.assertFalse(h.frame_ok("right", 9.9))
-        self.assertTrue(h.frame_ok("right", 10.05))
+        self.assertFalse(h.frame_ok("right", 10.05))   # стену ещё не видели
+        self.assertTrue(h.frame_ok("right", 10.15))
 
     def test_side_without_wall_dropped(self):
         h = wl.SideHold(t0=10.0)
         h.update(10.1, {"right": True, "left": False})
-        self.assertFalse(h.frame_ok("left", 10.05))
+        self.assertFalse(h.frame_ok("left", 10.15))
 
     def test_late_answer_after_wall_ended(self):
         h = wl.SideHold(t0=0.0)
         h.update(5.0, {"right": True})
-        h.update(5.4, {"right": False})          # ответ пришёл, стена уже кончилась
+        h.update(5.2, {"right": False})          # стена кончилась
+        h.update(5.4, {"right": False})          # ответ пришёл позже
         self.assertTrue(h.frame_ok("right", 5.1))
         self.assertFalse(h.frame_ok("right", 5.3))
+
+    def test_gap_frame_dropped_after_next_wall_starts(self):
+        # Кадр снят в проёме, а ответ пришёл, когда уже началась стена
+        # следующей клетки - всё равно не брать (метка на дальней стене).
+        h = wl.SideHold(t0=0.0)
+        h.update(5.0, {"right": True})
+        h.update(5.2, {"right": False})
+        h.update(5.5, {"right": True})
+        self.assertFalse(h.frame_ok("right", 5.3))
+        self.assertTrue(h.frame_ok("right", 5.6))
 
     def test_reset_moves_start(self):
         h = wl.SideHold(t0=0.0)
@@ -168,6 +180,31 @@ class TestSideHoldFrames(unittest.TestCase):
         h.reset(6.0)
         h.update(6.1, {"right": True})
         self.assertFalse(h.frame_ok("right", 5.9))
+
+
+class TestCorner(unittest.TestCase):
+    # Заезд 18.10 00:34, клетка (-2,-2): Ψ на E в -746мм (у угла с S) и с
+    # другого кадра поворота - на S в -422мм, за углом.
+    def test_center(self):
+        self.assertEqual(wl.wall_center_along((-2, -2), 2, 1000), -600.0)
+        self.assertEqual(wl.wall_center_along((-2, -2), 1, 1000), -600.0)
+
+    def test_corner_e_to_s(self):
+        self.assertEqual(wl.corner_neighbours((-2, -2), 1, -746.0, 1000),
+                         [((2, -2), -450.0)])
+
+    def test_corner_s_to_e(self):
+        self.assertEqual(wl.corner_neighbours((-2, -2), 2, -470.0, 1000),
+                         [((1, -2, 0), -750.0)])
+
+    def test_middle_of_wall(self):
+        self.assertEqual(wl.corner_neighbours((-2, -2), 1, -600.0, 1000), [])
+
+    def test_same_mark_found(self):
+        reg = wl.MarkRegistry()
+        reg.add((1, -2, 0), -746.0, "read", "psi")
+        (key, a), = wl.corner_neighbours((-2, -2), 2, -470.0, 1000)
+        self.assertIsNotNone(reg.near(key, a, "psi"))
 
 
 class TestDecideStop(unittest.TestCase):
