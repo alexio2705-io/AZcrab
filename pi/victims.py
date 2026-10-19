@@ -293,27 +293,42 @@ def report_victim(result, side, wall_dir, hdg):
 
     if n_kits == 0:
         return hdg
+    return give_kits(n_kits, wall_dir, hdg)
 
-    # Спиной к метке: курс, противоположный стене. Считаем от ТЕКУЩЕГО
-    # курса, а не от стороны камеры - если в клетке две жертвы, после
-    # выдачи первой робот уже развёрнут, и вторая может оказаться спереди.
-    back_hdg = (wall_dir + 2) % 4
-    delta = config.DIR_DELTA[(back_hdg - hdg) % 4]
-    if delta != 0:
-        ok = turning.turn(delta)
-        if esp_link.get_esp_paused():
+
+def give_kits(n_kits, wall_dir=None, hdg=0):
+    """Выдать n_kits комплектов. wall_dir=None - на месте, без разворота
+    (задания). Иначе - спиной к стене wall_dir, как у жертвы (см.
+    report_victim). Возвращает курс после выдачи."""
+    if wall_dir is not None:
+        hdg, ok = _back_to_wall(wall_dir, hdg)
+        if not ok:
             return hdg
-        if not ok and turning.gyro_heading() != back_hdg:
-            print("    не развернулся спиной к метке - комплекты не выдаю")
-            return turning.gyro_heading()
-        hdg = back_hdg
-        turning.align_at_wall(turning.snap_target())     # "зад" - к метке, по правилам
-
     for _ in range(n_kits):
         if esp_link.get_esp_paused():
             return hdg
         dispense_kit()
     return hdg
+
+
+def _back_to_wall(wall_dir, hdg):
+    """Развернуться спиной к стене wall_dir и встать к ней по правилам.
+    Возвращает (курс, удалось ли)."""
+    # Спиной к метке: курс, противоположный стене. Считаем от ТЕКУЩЕГО
+    # курса, а не от стороны камеры - если в клетке две жертвы, после
+    # выдачи первой робот уже развёрнут, и вторая может оказаться спереди.
+    back_hdg = (wall_dir + 2) % 4
+    delta = config.DIR_DELTA[(back_hdg - hdg) % 4]
+    if delta == 0:
+        return hdg, True
+    ok = turning.turn(delta)
+    if esp_link.get_esp_paused():
+        return hdg, False
+    if not ok and turning.gyro_heading() != back_hdg:
+        print("    не развернулся спиной к метке - комплекты не выдаю")
+        return turning.gyro_heading(), False
+    turning.align_at_wall(turning.snap_target())     # "зад" - к метке, по правилам
+    return back_hdg, True
 
 
 @timing._timed("жертва")

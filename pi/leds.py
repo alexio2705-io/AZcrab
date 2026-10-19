@@ -156,6 +156,28 @@ def blink_pink(px: NeoPixels, seconds: float = VICTIM_STOP_S + MARGIN_S,
     px.show()
 
 
+def blink_n(px: NeoPixels, times: int, on_s: float = BLINK_ON_S,
+            off_s: float = BLINK_OFF_S, color=PINK, stop=None) -> None:
+    """Мигает times раз: ВКЛ on_s, ВЫКЛ off_s, цветом color (r, g, b) - для
+    заданий (actions.blink). Время по часам, как у blink_pink: задержки SPI
+    и сна не копятся. stop() вернула True - показ обрывается."""
+    r, g, b = color
+    t = time.monotonic()
+    for _ in range(times):
+        if stop is not None and stop():
+            break
+        px.fill(r, g, b)
+        px.show()
+        t += on_s
+        time.sleep(max(0.0, t - time.monotonic()))
+        px.clear()
+        px.show()
+        t += off_s
+        time.sleep(max(0.0, t - time.monotonic()))
+    px.clear()
+    px.show()
+
+
 def blink_return(px: NeoPixels, seconds: float = RETURN_STOP_S + RETURN_MARGIN_S) -> None:
     """Мигает тем же (розовым) индикатором, что и находка жертвы, но своим
     рисунком - ВКЛ 1с/ВЫКЛ 1с, не менее 10с: сигнал распознанного возврата

@@ -462,7 +462,7 @@ def _bumper_side(w, reason):
 # ══════════════════════════════════════════════════════════════
 #  Разведка: BFS / flood-fill
 # ══════════════════════════════════════════════════════════════
-def _unvisited(c):
+def unvisited(c):
     return c not in state.visited
 
 
@@ -510,7 +510,7 @@ def flood_fill_run(max_cells):
     w = Walk(phase="exploring", max_cells=max_cells)
     arrive_explore(w, True)     # стартовая клетка
     while w.total < max_cells:
-        if step(w, _unvisited, arrive=arrive_explore) == "no_path":
+        if step(w, unvisited, arrive=arrive_explore) == "no_path":
             print("  ✓ Неразведанных клеток, достижимых по известной карте, "
                   "больше нет - разведка завершена")
             w.show("explored")

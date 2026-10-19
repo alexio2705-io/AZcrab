@@ -69,3 +69,21 @@
 
 Тесты: `pi/tests/test_tile_rules.py` (таблица обычного заезда, красный чекпоинт, запись `tile_map`,
 реакция на каждом визите и по памяти, правило «один раз»).
+
+## 3. Глаголы (`pi/actions.py`)
+
+- Шпаргалка всех глаголов — в начале `actions.py`.
+- Стоя: `blink` (новая `leds.blink_n`, `blink_pink` не тронута), `blink_victim`, `blink_finish`,
+  `stand`, `stand_motors_off`, `give_kits(w, n, wall_dir=None)`.
+- `victims.give_kits(n, wall_dir, hdg)` вынесена из `report_victim` дословно; разворот спиной к
+  стене — `victims._back_to_wall`. `report_victim` зовёт `give_kits` — поведение то же.
+- Ехать: `start_walk`, `explore_until(w, done)` (цикл разведки с внешним условием),
+  `go_to_cell`, `go_to_color` (ближайшая по пути клетка цвета, через `explore.go_to`).
+  `explore._unvisited` стала `explore.unvisited` — её зовёт `explore_until`.
+- Время: `Timer(limit_s)` — `elapsed`, `left`, `trip_s`, `time_to_go`. Среднее на клетку —
+  `sec_per_cell`: статьи хронометража «ход + поворот + доводка + лидар» / клеток проехано, до 3 клеток
+  — 4 с. К оценке пути запас ×1,3. Пути по карте нет — оценка по прямой (решать надо всегда).
+- Найдено: `cells_of(color)` (`state.tile_map`), `marks_found(classes)` (`state.victim_log`).
+
+Тесты: `pi/tests/test_actions.py` (среднее на клетку, длина пути, таймер и «пора ехать»,
+клетки по цвету, метки по классам).
