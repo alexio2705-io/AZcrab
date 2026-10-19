@@ -381,31 +381,16 @@ def flood_fill_run(max_cells):
             continue
 
         if reason == "bumper_both":
-            # Пока робот прижат к стене, лидар её не видит - следующий же
-            # замер сказал бы "впереди свободно". Откат возвращает стену в
-            # поле зрения, а карта сразу узнаёт про эту стену.
-            print(f"    откат {bumper.BUMPER_BACKOFF_MM:.0f}мм - вплотную стену не видно")
-            driving.creep_mm(-bumper.BUMPER_BACKOFF_MM, turning.snap_target())
+            # Откат, и карта сразу узнаёт про эту стену (см. bumper.py).
+            bumper.back_off_from_wall()
             maze_map.block_direction(cx, cy, hdg)
             stalls = 0
             continue
 
         elif reason in ("bumper_left", "bumper_right"):
-            # Сработал только ОДИН концевик - задели что-то одним боком, не
-            # стеной по центру. Объезд: поворот на 45° В СТОРОНУ ОТ задетого
-            # бока, откат, возврат на исходный курс - и следующая итерация
-            # сама попробует то же ребро заново. Знак подобран эмпирически
-            # (как TURN_SIGN) - по факту "слева" оказалось направо.
-            base_yaw = turning.snap_target()
-            away_deg = -45 if reason == "bumper_left" else 45
-            side_ru = "слева" if reason == "bumper_left" else "справа"
-            print(f"    асимметричный бампер ({side_ru}) - "
-                  f"поворот {away_deg:+.0f}°, откат {bumper.BUMPER_SIDE_BACKOFF_MM:.0f}мм, возврат курса")
-            turning.turn(away_deg)
-            if not esp_link.get_esp_paused():
-                driving.creep_mm(-bumper.BUMPER_SIDE_BACKOFF_MM, esp_link.get_yaw())
-            if not esp_link.get_esp_paused():
-                turning.turn_to(base_yaw)
+            # Объезд одним боком (см. bumper.py) - и следующая итерация сама
+            # попробует то же ребро заново, до BUMPER_SIDE_RETRIES раз.
+            bumper.dodge_side_hit(reason)
             bumper_side_fails += 1
             if bumper_side_fails >= bumper.BUMPER_SIDE_RETRIES:
                 print("    асимметричный бампер повторился - считаю ребро непроезжим")
@@ -535,17 +520,13 @@ def return_to_start(cx, cy, hdg, checkpoint):
             maze_map.close_edge(cx, cy, hdg)          # см. то же место в flood_fill_run
             continue
         if reason == "bumper_both":
-            driving.creep_mm(-bumper.BUMPER_BACKOFF_MM, turning.snap_target())
+            bumper.back_off_from_wall()
             maze_map.block_direction(cx, cy, hdg)
             continue
         if reason in ("bumper_left", "bumper_right"):
-            base_yaw = turning.snap_target()
-            away_deg = -45 if reason == "bumper_left" else 45
-            turning.turn(away_deg)
-            if not esp_link.get_esp_paused():
-                driving.creep_mm(-bumper.BUMPER_SIDE_BACKOFF_MM, esp_link.get_yaw())
-            if not esp_link.get_esp_paused():
-                turning.turn_to(base_yaw)
+            # На пути домой ребро после одного объезда сразу закрываем, без
+            # повторов, как при обходе.
+            bumper.dodge_side_hit(reason)
             maze_map.block_direction(cx, cy, hdg)
             continue
 
