@@ -1,4 +1,16 @@
-"""Метки жертв на ходу: остановка у метки, доворот на неё, перечитывание."""
+"""Метки жертв, замеченные не стоя в центре клетки.
+
+Три случая, по функции на каждый:
+  - на ходу: watch_marks_while_driving() - шаг поездки drive_cells, заметил
+    метку у стены - тормозим к ней; _mark_stop() - стоя у неё: найти,
+    подъехать, прочитать, выдать комплекты;
+  - на повороте: _turn_marks() - доворот на курс кадра, где метка была ближе
+    всего к перпендикуляру, и чтение стоя (шаги - в её докстринге);
+  - перёд не читается: _front_reread() - отъехать, довернуть корпус к метке,
+    прочитать ещё раз.
+Не прочиталась целиком - решаем по надёжным кольцам (_decide_unread): робот
+не остаётся с «не знаю».
+"""
 from __future__ import annotations
 
 import time
@@ -154,13 +166,7 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     # Читаем, только если с этой стороны стена: по карте её нет - не читаем,
     # и стоя лидар должен её видеть. Иначе камера смотрит в проём и метка -
     # на дальней стене.
-    known = state.maze.get(tcell)
-    if known is not None and known[wall_dir] is False:
-        no_wall = "по карте"
-    elif not lidar_walls.wall_present(lidar_walls.measure_walls(config.WALL_VOTE_SCANS)[side], SIDE_THRESH):
-        no_wall = "по лидару"
-    else:
-        no_wall = None
+    no_wall = _no_wall_reason(tcell, wall_dir, side)
     if no_wall:
         print(f"    метка: стены {config._DIR_NAME[wall_dir]} у {tcell} {no_wall} нет - "
               f"это дальняя стена, не читаю")
@@ -194,6 +200,17 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
         return r
     if result.get("blink"):
         return victims._report_on_move(result, side, wall_dir, hdg, target_yaw)
+    return None
+
+
+def _no_wall_reason(tcell, wall_dir, side):
+    """Почему у метки нет стены: "по карте", "по лидару" (замер стоя) или
+    None - стена есть, читать можно."""
+    known = state.maze.get(tcell)
+    if known is not None and known[wall_dir] is False:
+        return "по карте"
+    if not lidar_walls.wall_present(lidar_walls.measure_walls(config.WALL_VOTE_SCANS)[side], SIDE_THRESH):
+        return "по лидару"
     return None
 
 
@@ -333,15 +350,10 @@ def _corner_dup(cell, wall_dir, along, cls):
     return False
 
 
-def _turn_marks(cx, cy, seen):
-    """Метки, замеченные наблюдателем на повороте в клетке (cx, cy) (см.
-    turn_to(seen=...)): для каждой стены - рамка, снятая ближе всего к
-    перпендикуляру (watch_logic.TURN_MARK_PHI_MIN..MAX). Если стена по карте
-    есть, там ещё ничего не читали и не пробовали: довернуться на курс того
-    кадра (под ним метка в центре кадра), прочитать стоя (read_wall) и
-    отрепортить. Возвращает курс сетки после выдачи комплектов или None
-    (курс не менялся; робот может стоять не по сетке - вызывающий
-    доворачивает сам)."""
+def _best_turn_frames(cx, cy, seen):
+    """Шаг 1 доворота: из кадров, снятых на повороте, для каждой (камера,
+    стена) - рамка, снятая ближе всего к перпендикуляру к стене.
+    -> {(side, wall_dir): (px, yf, xyxy, h, phi, cls)}"""
     best = {}
     for side, yf, xyxy, conf, cls in seen:
         rel = turning.angle_err(yf, state.YAW_ORIGIN)
@@ -356,87 +368,132 @@ def _turn_marks(cx, cy, seen):
         k = (side, wall_dir)
         if k not in best or abs(phi) < abs(best[k][4]):
             best[k] = (px, yf, xyxy, h, phi, cls)
+    return best
+
+
+def _turn_mark_place(cx, cy, side, wall_dir, px, xyxy, h, phi, cls):
+    """Шаг 2 доворота: где метка на стене и стоит ли к ней доворачиваться.
+    -> (pos, key, along) или None - пропустить (почему - в логе)."""
+    pos = watch_logic.turned_mark_pos(phi, side, watch_logic.px_to_mm(
+        watch_logic.mark_center_y(xyxy)))
+    if pos is None:
+        return None
+    key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos, config.LEVEL_STRIDE)
+    if abs(along - watch_logic.wall_center_along((cx, cy), wall_dir, config.LEVEL_STRIDE)) \
+            > watch_logic.CELL_MM / 2:
+        # Луч лёг на эту стену за углом клетки: метка на соседней стене
+        # (с поворота угол виден с обеих сторон).
+        print(f"    [W] на повороте: {side} {px:.0f}px, стена {config._DIR_NAME[wall_dir]} "
+              f"{along:.0f}мм - за углом клетки, пропускаю")
+        return None
+    if _corner_dup((cx, cy), wall_dir, along, cls):
+        print(f"    [W] на повороте: {side} {px:.0f}px у угла - уже прочитана "
+              f"на соседней стене, пропускаю")
+        return None
+    known = state.maze.get((cx, cy))
+    if known is None or known[wall_dir] is not True:
+        # Стены с этой стороны клетки нет: камера смотрит в проём на
+        # стену соседней клетки или дальше. Метку там не читаем.
+        print(f"    [W] на повороте: {side} {px:.0f}px, стены {config._DIR_NAME[wall_dir]} "
+              f"по карте нет - дальняя стена, пропускаю")
+        return None
+    if state.marks.near(key, along, cls) is not None:
+        return None                       # уже читали (или отбраковали) рядом
+    return pos, key, along
+
+
+def _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along):
+    """Шаг 3 доворота: робот уже довернулся на курс кадра - прочитать метку.
+    Не прочиталась под углом - встать по сетке, подровняться вдоль стены,
+    прочитать оттуда и вернуться в центр клетки.
+    -> (метка или None, неполное чтение или None, key, along)"""
+    what = f"чтение метки ({side})"
+    _reset_unread(det)
+    result = _read_wall(det, (cx, cy), wall_dir, what, expect=True)
+    unread = None
+    if result is not None:
+        phi_now = turning.angle_err(turning.angle_err(esp_link.get_yaw(), state.YAW_ORIGIN), 90.0 * h)
+        pos2 = watch_logic.turned_mark_pos(
+            phi_now, side, watch_logic.px_to_mm(sum(result["box_y"]) / 2.0))
+        if pos2 is not None:
+            key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos2, config.LEVEL_STRIDE)
+    else:
+        # Под углом не прочиталась (метка у края кадра, кольца наискось):
+        # встать по сетке, подъехать вдоль стены, чтобы метка оказалась
+        # напротив камеры, прочитать оттуда - и обратно в центр клетки.
+        unread = getattr(det, "last_unread", None)
+        g = turning.snap_target()
+        print(f"    {what}: под углом не прочиталась - встаю по сетке и подравниваюсь")
+        turning.turn_to(g, label="по сетке")
+        result, unread2, moved = _reread_aligned(det, (cx, cy), wall_dir, g,
+                                                 pos + watch_logic.CAM_BACK_MM,
+                                                 what, config.MARK_READ_TRIES)
+        unread = unread2 or unread
+        src = result or unread2
+        if src is not None:
+            key, along = _mark_world(src, (cx, cy), h, wall_dir, moved)
+        if abs(moved) >= 1.0:
+            driving.creep_soft(-moved, g)
+    return result, unread, key, along
+
+
+def _record_turn_mark(det, cx, cy, side, wall_dir, h, key, along, result, unread):
+    """Шаг 4 доворота: записать прочитанную метку и выдать комплекты.
+    -> (True, курс после выдачи) или (False, None) - комплектов не выдавали."""
+    cls_now = (result or unread or {}).get("class")
+    dup = state.marks.near(key, along, cls_now)
+    if (dup is not None and dup[2] == "read") or \
+            _corner_dup((cx, cy), wall_dir, along, cls_now):
+        print(f"    [W] метка в {along:.0f}мм - уже прочитана, не репортю")
+        return False, None
+    if result is None and unread is not None:
+        result = _decide_unread(det, unread)
+    if result is None:
+        # кадр на повороте - слабое свидетельство: место не
+        # отбраковываем, наблюдатель на ходу и скан стоя ещё могут её
+        # прочитать
+        print("    метка с поворота не подтвердилась")
+        return False, None
+    state.marks.add(key, along, "read", result.get("class"))
+    state.victim_log.append({**result, "side": side, "wall_dir": wall_dir,
+                        "ts": time.strftime("%H:%M:%S")})
+    print(f"    метка с поворота: {result['label']} → стена {config._DIR_NAME[wall_dir]} у ({cx},{cy})")
+    if result.get("blink"):
+        return True, victims.report_victim(result, side, wall_dir, h)
+    return False, None
+
+
+def _turn_marks(cx, cy, seen):
+    """Доворот на метки, замеченные наблюдателем на повороте в клетке (cx, cy)
+    (см. turn_to(seen=...)). По шагам:
+      1. _best_turn_frames  - для каждой стены рамка, снятая ближе всего к
+         перпендикуляру (watch_logic.TURN_MARK_PHI_MIN..MAX);
+      2. _turn_mark_place   - где метка; пропуск, если за углом, уже прочитана,
+         стены по карте нет или рядом уже читали;
+      3. довернуться на курс того кадра (под ним метка в центре кадра) и
+         _read_turn_mark   - прочитать стоя (read_wall);
+      4. _record_turn_mark  - записать и выдать комплекты.
+    Возвращает курс сетки после выдачи комплектов или None (курс не менялся;
+    робот может стоять не по сетке - вызывающий доворачивает сам)."""
+    best = _best_turn_frames(cx, cy, seen)
     out_hdg = None
     for (side, wall_dir), (px, yf, xyxy, h, phi, cls) in best.items():
         det = state.victim_r if side == "right" else state.victim_l
         if det is None or esp_link.get_esp_paused():
             continue
-        pos = watch_logic.turned_mark_pos(phi, side, watch_logic.px_to_mm(
-            watch_logic.mark_center_y(xyxy)))
-        if pos is None:
+        place = _turn_mark_place(cx, cy, side, wall_dir, px, xyxy, h, phi, cls)
+        if place is None:
             continue
-        key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos, config.LEVEL_STRIDE)
-        if abs(along - watch_logic.wall_center_along((cx, cy), wall_dir, config.LEVEL_STRIDE)) \
-                > watch_logic.CELL_MM / 2:
-            # Луч лёг на эту стену за углом клетки: метка на соседней стене
-            # (с поворота угол виден с обеих сторон).
-            print(f"    [W] на повороте: {side} {px:.0f}px, стена {config._DIR_NAME[wall_dir]} "
-                  f"{along:.0f}мм - за углом клетки, пропускаю")
-            continue
-        if _corner_dup((cx, cy), wall_dir, along, cls):
-            print(f"    [W] на повороте: {side} {px:.0f}px у угла - уже прочитана "
-                  f"на соседней стене, пропускаю")
-            continue
-        known = state.maze.get((cx, cy))
-        if known is None or known[wall_dir] is not True:
-            # Стены с этой стороны клетки нет: камера смотрит в проём на
-            # стену соседней клетки или дальше. Метку там не читаем.
-            print(f"    [W] на повороте: {side} {px:.0f}px, стены {config._DIR_NAME[wall_dir]} "
-                  f"по карте нет - дальняя стена, пропускаю")
-            continue
-        if state.marks.near(key, along, cls) is not None:
-            continue                      # уже читали (или отбраковали) рядом
+        pos, key, along = place
         state.turn_mark_tried.add((cx, cy, wall_dir))
         print(f"    [W] на повороте: {side} {px:.0f}px под {phi:+.0f}°, стена "
               f"{config._DIR_NAME[wall_dir]} {along:.0f}мм - доворачиваю на {yf:.0f}°")
         turning.turn_to(yf, label="к метке")
-        what = f"чтение метки ({side})"
-        _reset_unread(det)
-        result = _read_wall(det, (cx, cy), wall_dir, what, expect=True)
-        unread = None
-        if result is not None:
-            phi_now = turning.angle_err(turning.angle_err(esp_link.get_yaw(), state.YAW_ORIGIN), 90.0 * h)
-            pos2 = watch_logic.turned_mark_pos(
-                phi_now, side, watch_logic.px_to_mm(sum(result["box_y"]) / 2.0))
-            if pos2 is not None:
-                key, along = watch_logic.world_along((cx, cy), h, wall_dir, pos2, config.LEVEL_STRIDE)
-        else:
-            # Под углом не прочиталась (метка у края кадра, кольца наискось):
-            # встать по сетке, подъехать вдоль стены, чтобы метка оказалась
-            # напротив камеры, прочитать оттуда - и обратно в центр клетки.
-            unread = getattr(det, "last_unread", None)
-            g = turning.snap_target()
-            print(f"    {what}: под углом не прочиталась - встаю по сетке и подравниваюсь")
-            turning.turn_to(g, label="по сетке")
-            result, unread2, moved = _reread_aligned(det, (cx, cy), wall_dir, g,
-                                                     pos + watch_logic.CAM_BACK_MM,
-                                                     what, config.MARK_READ_TRIES)
-            unread = unread2 or unread
-            src = result or unread2
-            if src is not None:
-                key, along = _mark_world(src, (cx, cy), h, wall_dir, moved)
-            if abs(moved) >= 1.0:
-                driving.creep_soft(-moved, g)
-        cls_now = (result or unread or {}).get("class")
-        dup = state.marks.near(key, along, cls_now)
-        if (dup is not None and dup[2] == "read") or \
-                _corner_dup((cx, cy), wall_dir, along, cls_now):
-            print(f"    [W] метка в {along:.0f}мм - уже прочитана, не репортю")
-            continue
-        if result is None and unread is not None:
-            result = _decide_unread(det, unread)
-        if result is None:
-            # кадр на повороте - слабое свидетельство: место не
-            # отбраковываем, наблюдатель на ходу и скан стоя ещё могут её
-            # прочитать
-            print("    метка с поворота не подтвердилась")
-            continue
-        state.marks.add(key, along, "read", result.get("class"))
-        state.victim_log.append({**result, "side": side, "wall_dir": wall_dir,
-                            "ts": time.strftime("%H:%M:%S")})
-        print(f"    метка с поворота: {result['label']} → стена {config._DIR_NAME[wall_dir]} у ({cx},{cy})")
-        if result.get("blink"):
-            out_hdg = victims.report_victim(result, side, wall_dir, h)
+        result, unread, key, along = _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along)
+        reported, hdg_after = _record_turn_mark(det, cx, cy, side, wall_dir, h, key, along,
+                                                result, unread)
+        if reported:
+            out_hdg = hdg_after
     if out_hdg is not None:
         if abs(turning.angle_err(esp_link.get_yaw(), turning.snap_target())) > config.TURN_TOL_DEG:
             turning.turn_to(turning.snap_target(), label="по сетке")     # без комплектов стоим, как читали
