@@ -18,6 +18,43 @@ import turning
 import victims
 
 
+def watch_marks_while_driving(trip):
+    """Наблюдатель меток: заметил метку у стены - тормозим к ней."""
+    # ── Наблюдатель меток ─────────────────────────────────
+    # Только на ровном (не горка, не всплеск, не ассист) и только к
+    # стене. Заметил - тормозим тем же профилем к stop_point (ниже, см.
+    # mark_first), а наблюдатель гасим сразу: камера вернётся к обычной
+    # выдержке, пока робот ещё тормозит.
+    if trip.watcher is not None:
+        if trip.watcher.dead:
+            trip.watcher, trip.watch_armed = None, False
+        else:
+            sides = trip.side_hold.update(trip.now_m, {
+                "right": lidar_walls.wall_present(trip.walls["right"], SIDE_THRESH),
+                "left": lidar_walls.wall_present(trip.walls["left"], SIDE_THRESH)})
+            flat = watch_logic.watch_allowed(trip.ramp_state, trip.bump_on, trip.assist_mode,
+                                             trip.pitch_delta, config.OBSTACLE_REARM_DEG, trip.wall_forced)
+            trip.watch_armed = trip.watcher.arm(sides if flat and trip.vmark is None else set())
+            for b in trip.watcher.poll():
+                if not trip.side_hold.frame_ok(b.side, b.t_frame):
+                    # Кадр снят, когда стены с этой стороны не было:
+                    # метка на дальней стене, через проём.
+                    print(f"\n    [W] {b.side} {b.cls} {b.conf:.2f} - в момент кадра "
+                          f"стены нет, не беру  {b.image or ''}")
+                    continue
+                m = _watch_decide(b, trip.cell, trip.hdg, trip.odo_t, trip.vmark is not None)
+                if m is not None:
+                    # Тормозим К МЕТКЕ: встать с ней в центре кадра, тем
+                    # же профилем. Не успеваем - как можно раньше и
+                    # подъезд назад (см. watch_logic.brake_target_cm).
+                    m["stop_cm"], late = watch_logic.brake_target_cm(
+                        m["pos_mm"], trip.traveled_cm, trip.fwd, config.MARK_BRAKE_DECEL_CMS2, config.STOP_LEAD_S)
+                    trip.vmark = m
+                    trip.watch_armed = trip.watcher.arm(set())
+                    print(f"    метка на ходу: торможу {'(поздно) ' if late else 'к метке '}"
+                          f"через {(m['stop_cm'] - trip.traveled_cm) * 10:.0f}мм")
+
+
 def _interrupt_reason():
     """Причина бросить поездку посреди остановки у метки - те же, что
     проверяет такт drive_cells."""

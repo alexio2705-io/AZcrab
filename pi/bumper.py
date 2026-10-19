@@ -61,6 +61,28 @@ def bumper_side():
     return first
 
 
+def check_bumper_while_driving(trip):
+    """Нажат бампер: остановить поездку и решить, засчитать ли клетку."""
+    # ── Бампер: концевики спереди ─────────────────────────
+    if get_bumper():
+        side = bumper_side()
+        trip.reason = {"left": "bumper_left", "right": "bumper_right"}.get(side, "bumper_both")
+        print(f"\n    БАМПЕР ({side}) на {trip.traveled_cm*10:.0f}мм")
+        # Упёрлись, заехав в следующую клетку, и после отката останемся
+        # близко к её центру - значит, мы в ней (заезд 17.10 20:40: стена
+        # в 146мм после отката, а карта осталась в прежней клетке и
+        # потеряла по оси клетку).
+        if trip.reason == "bumper_both":
+            from_cm = trip.forced_from_cm if trip.wall_forced else trip.boundary_cm - trip.cell_cm
+            past_mm = (trip.traveled_cm - from_cm) * 10.0 - BUMPER_ENTERED_BACKOFF_MM
+            if trip.ramp_state is None and past_mm >= BUMPER_ENTER_MM:
+                trip.cells += 1
+                trip.reason = "bumper_entered"
+                print(f"    уже в следующей клетке ({past_mm:.0f}мм за центром "
+                      f"после отката) - засчитываю")
+        return "stop"
+
+
 # Сколько раз подряд asymметричный бампер в одном направлении пробуем
 # объехать маневром, прежде чем сдаться и считать ребро стеной.
 BUMPER_SIDE_RETRIES = 3

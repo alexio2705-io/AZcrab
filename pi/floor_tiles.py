@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 
+import runplan
 import tile_classify
 
 import config
@@ -220,3 +221,36 @@ def calibrate_white(seconds=0.6):
           f"pitch0={state.pitch_level:.1f}° roll0={state.roll_level:.1f}°")
     if state.c_white < 150:
         print("  [WARN] маловато света - чёрную от белой различит ненадёжно")
+
+
+def check_floor_while_driving(trip):
+    """Цвет плитки под роботом: чёрная - назад, синяя - стоп, чекпоинт."""
+    # ── Чёрная плитка: заезжать нельзя ────────────────────
+    # Реагируем на первое же показание, без подтверждения вторым: датчик
+    # обновляется ~10Гц, и одно лишнее подтверждение стоит ещё ~5см хода
+    # вглубь чёрного. Запас по порогу большой (C=100 против порога ~210),
+    # так что ложные срабатывания маловероятны.
+    tile = tile_color()
+    if tile == config.TILE_BLACK:
+        trip.reason = "black"
+        # Назад - в центр клетки перед чёрной. Без остановок чёрная бывает
+        # и над клеткой, которую план уже засчитал пройденной.
+        trip.cells, trip.black_back_cm = runplan.black_retreat(trip.traveled_cm, trip.boundary_cm,
+                                                     trip.cells, trip.cell_cm)
+        print(f"\n    ЧЁРНАЯ (C={esp_link.get_rgbc()[3]}) на {trip.traveled_cm*10:.0f}мм - "
+              f"откат {trip.black_back_cm*10:.0f}мм")
+        return "stop"
+    if trip.plan is not None and tile != config.TILE_UNKNOWN:
+        # Над какой клеткой датчик: N - уже за её границей (+15мм).
+        k_under = trip.cells + 1 if trip.traveled_cm >= trip.boundary_cm - trip.cell_cm / 2.0 + 1.5 else trip.cells
+        trip.tiles.setdefault(k_under, set()).add(tile)
+        if (tile == config.TILE_BLUE and k_under == trip.cells >= 1 and not trip.stopping
+                and trip.traveled_cm < trip.boundary_cm - trip.cell_cm - 3.0):
+            # Синюю заметили уже после решения "прямо": её центр ещё
+            # впереди - встаём там (правила: стоянка на синей).
+            trip.boundary_cm -= trip.cell_cm
+            trip.stopping, trip.pending, trip.reason = True, False, "stop"
+            print(f"\n    → кл.{trip.cells}: синяя после решения - стоп в её центре")
+        if tile == state.CHECKPOINT_TILE and 1 <= k_under <= trip.cells and k_under not in trip.cp_done:
+            trip.cp_done.add(k_under)
+            trip.plan.checkpoint(k_under)
