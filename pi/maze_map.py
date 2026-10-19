@@ -153,6 +153,26 @@ def block_direction(cx, cy, d):
     state.blocked.add(_next_cell(cx, cy, d))
 
 
+def forget_soft_blocks():
+    """Путь к цели пропал - забыть рёбра, закрытые препятствием и бампером
+    (state.soft_closed): ребро снова решают голоса лидара, клетка за ним
+    больше не непроезжая. Рёбра в чёрные клетки остаются закрытыми.
+    Возвращает, сколько рёбер забыто."""
+    n = 0
+    for cx, cy, d in list(state.soft_closed):
+        nxt = _next_cell(cx, cy, d)
+        if nxt in state.black_cells:
+            continue
+        key = _edge_key(cx, cy, d)
+        if state.edge_fixed.get(key) is True:
+            del state.edge_fixed[key]
+        _set_wall(cx, cy, d, state.wall_votes.get(key, 0) > 0)
+        state.blocked.discard(nxt)
+        state.soft_closed.discard((cx, cy, d))
+        n += 1
+    return n
+
+
 def open_dirs(cx, cy):
     """Направления из (cx,cy), про которые точно известно, что там открыто
     И соседняя клетка не помечена непроезжей."""

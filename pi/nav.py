@@ -299,12 +299,10 @@ def main():
         cx, cy, hdg, checkpoint, status = explore.flood_fill_run(cells)
         print(timing.time_report({}, time.monotonic() - t_run, prefix="⏱ разведка"))
         print(f"  статус разведки: {status}  позиция ({cx},{cy}) курс={config._DIR_NAME[hdg]}")
-        if status != "fatal":
-            cx, cy, hdg = explore.return_to_start(cx, cy, hdg, checkpoint)
-            if (cx, cy) == (0, 0):
-                dash_live._write_state(cx, cy, hdg, checkpoint, "blinking")
-                dash_live.blink_start_return()
-                dash_live._write_state(cx, cy, hdg, checkpoint, "done")
+        cx, cy, hdg = explore.return_to_start(cx, cy, hdg, checkpoint)
+        dash_live._write_state(cx, cy, hdg, checkpoint, "blinking")
+        dash_live.blink_start_return()
+        dash_live._write_state(cx, cy, hdg, checkpoint, "done")
     except KeyboardInterrupt:
         print("\nОстановлено.")
     finally:
