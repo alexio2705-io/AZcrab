@@ -1,4 +1,19 @@
-"""Лидар: поток сканов и решение, есть ли стена с каждой стороны."""
+"""Лидар: поток сканов и решение, есть ли стена с каждой стороны.
+
+Цепочка от лидара до «стена есть»:
+  1. lidar_proc.py (отдельный процесс) читает LD19 (ld19.py) и на каждый
+     оборот считает расстояния до стен: walls.measure() - маски на детали
+     робота, окна по углам, медиана. Там же окна и контур корпуса.
+  2. _lidar_thread() здесь принимает эти замеры строками JSON и кладёт в
+     state.telem: "wall" (на ходу), "wall_still" (стоя, симметричное окно
+     бортов), "wall_n" (сколько точек вошло в замер).
+  3. Читать: get_walls() - последний оборот (на ходу), measure_walls() -
+     медиана нескольких оборотов стоя, measure_front_confirmed() - то же, но
+     пустой перёд переспрашивает.
+  4. «Есть стена» - wall_present(мм, порог). Пороги - в walls.py:
+     WALL_THRESH (перёд), SIDE_THRESH (борта), BACK_THRESH (зад); для карты
+     стоя - FRONT_MAP_WALL_MM / BACK_MAP_WALL_MM в maze_map.py (_walls_rel_map).
+"""
 from __future__ import annotations
 
 import json
@@ -58,36 +73,9 @@ def _lidar_thread():
                          w["left_still_n"], w["back_n"])
                 except (ValueError, KeyError, TypeError):
                     continue
-                with state.lock:
-                    state.telem["wall"] = {"front": w["front"],
-                                      "right": w["right"],
-                                      "left": w["left"],
-                                      "back": w["back"]}
-                    # Бока симметричным окном - для замеров СТОЯ. Передняя и
-                    # задняя оси от окна бортов не зависят, поэтому те же.
-                    state.telem["wall_still"] = {"front": w["front"],
-                                            "right": w["right_still"],
-                                            "left": w["left_still"],
-                                            "back": w["back"]}
-                    state.telem["wall_n"] = {"front": w["front_n"],
-                                        "right": w["right_still_n"],
-                                        "left": w["left_still_n"],
-                                        "back": w["back_n"]}
-                state.lidar_dropped = msg.get("dropped", 0)
-                state.telem["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
-                state.scan_cnt += 1
-                pts = msg.get("pts")
-                if pts is not None:
-                    state.scan_pts.append((state.scan_cnt, msg.get("t"), msg.get("trev", 0.1), pts))
-
-                d = msg.get("dbg")
-                if d:
-                    dbg.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} "
-                              f"{d['side']} rise  right={w['right']}(n={w['right_n']})  "
-                              f"left={w['left']}(n={w['left_n']})  "
-                              f"pitch={esp_link.get_pitch():.1f} roll={esp_link.get_roll():.1f}  "
-                              f"pts=" + " ".join(f"{a}:{dd}" for a, dd in d["pts"]) + "\n")
-                    dbg.flush()
+                _store_scan(msg, w)
+                if msg.get("dbg"):
+                    _write_wall_debug(dbg, msg["dbg"], w)
             # stdout закрылся - процесс умер (порт отвалился, исключение).
             # Заезд без лидара невозможен, поэтому поднимаем заново; старые
             # замеры тем временем стареют, и wait_scan() это увидит.
@@ -100,22 +88,63 @@ def _lidar_thread():
             time.sleep(LIDAR_RESTART_S)
 
 
+def _store_scan(msg, w):
+    """Один оборот от lidar_proc.py -> state.telem и счётчик оборотов."""
+    with state.lock:
+        state.telem["wall"] = {"front": w["front"],
+                               "right": w["right"],
+                               "left": w["left"],
+                               "back": w["back"]}
+        # Бока симметричным окном - для замеров СТОЯ. Передняя и
+        # задняя оси от окна бортов не зависят, поэтому те же.
+        state.telem["wall_still"] = {"front": w["front"],
+                                     "right": w["right_still"],
+                                     "left": w["left_still"],
+                                     "back": w["back"]}
+        state.telem["wall_n"] = {"front": w["front_n"],
+                                 "right": w["right_still_n"],
+                                 "left": w["left_still_n"],
+                                 "back": w["back_n"]}
+    state.lidar_dropped = msg.get("dropped", 0)
+    state.telem["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
+    state.scan_cnt += 1
+    pts = msg.get("pts")
+    if pts is not None:
+        state.scan_pts.append((state.scan_cnt, msg.get("t"), msg.get("trev", 0.1), pts))
+
+
+def _write_wall_debug(dbg, d, w):
+    """Строка в wall_debug.log: бок только что стал "стена есть" (см. выше)."""
+    dbg.write(f"{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d} "
+              f"{d['side']} rise  right={w['right']}(n={w['right_n']})  "
+              f"left={w['left']}(n={w['left_n']})  "
+              f"pitch={esp_link.get_pitch():.1f} roll={esp_link.get_roll():.1f}  "
+              f"pts=" + " ".join(f"{a}:{dd}" for a, dd in d["pts"]) + "\n")
+    dbg.flush()
+
+
 def get_walls():
-    with state.lock: return dict(state.telem["wall"])
+    """Стены по последнему обороту (окно бортов для езды) - {'front',
+    'right', 'left', 'back': мм или None}."""
+    with state.lock:
+        return dict(state.telem["wall"])
 
 
 def get_walls_still():
     """Замер симметричным боковым окном - только когда робот СТОИТ."""
-    with state.lock: return dict(state.telem["wall_still"])
+    with state.lock:
+        return dict(state.telem["wall_still"])
 
 
 def get_wall_points():
     """Сколько точек вошло в медиану по каждой оси (диагностика: после масок
     ручек боковая дуга тонкая, и полезно видеть, не голодает ли она)."""
-    with state.lock: return dict(state.telem["wall_n"])
+    with state.lock:
+        return dict(state.telem["wall_n"])
 
 
 def wall_present(d, thresh):
+    """Стена есть: замер d (мм) есть и ближе порога thresh."""
     return d is not None and d < thresh
 
 
