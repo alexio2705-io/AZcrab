@@ -190,6 +190,22 @@ RESTART_SETTLE_S = 0.5
 # RoboCup 2026 Rescue Maze.
 KITS_BY_TYPE = {"damaged": 2, "stable": 1, "unharmed": 0}
 
+# Классы YOLO, которые считаются жертвами (watch_logic.victim_boxes). Модель C
+# знает ещё H/S/U/letter - в обычном заезде это ложные метки: по регламенту
+# похожие на жертвы буквы на стенах бывают, называть их нельзя.
+VICTIM_CLASSES = {"cognetive", "omega", "phi", "psi"}
+# Буквенный класс -> тип жертвы (комплекты за тип - KITS_BY_TYPE).
+CLASS_TO_VICTIM = {"phi": "damaged", "psi": "stable", "omega": "unharmed"}
+
+
+def add_victim_class(cls, kits):
+    """Задание: класс YOLO cls (например "H") - тоже жертва, kits комплектов
+    за неё (0 - только мигание). Звать ДО boot.start(): наблюдатель меток -
+    отдельный процесс и получает список классов при запуске."""
+    VICTIM_CLASSES.add(cls)
+    CLASS_TO_VICTIM[cls] = cls
+    KITS_BY_TYPE[cls] = kits
+
 
 # Метку уже видели, а стоя она не прочиталась (нет в кадре или кольца не
 # сошлись) - столько чтений всего, между ними робот подравнивается по ней.

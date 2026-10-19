@@ -29,6 +29,8 @@ import numpy as np
 
 from watch_logic import CAM_IDX, Stats
 
+import config
+
 # Потолок частоты кадров на камеру. Фактически упирается в инференс
 # (~85 мс на кадр на Pi 5): чем раньше замечена метка, тем ровнее робот
 # встаёт у неё - см. watch_logic.brake_target_cm.
@@ -99,8 +101,10 @@ class VictimWatcher:
         script = script or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "watch_proc.py")
         slots = [f"{SIDE_IDX[s]}:{self._shm[s].name}" for s in self.cams]
+        # Классы-жертвы - при запуске: у процесса свой config (см. add_victim_class).
+        victims = "victims=" + ",".join(sorted(config.VICTIM_CLASSES))
         self._proc = subprocess.Popen(
-            [sys.executable, "-u", script, model_path, save_dir, str(conf), *slots],
+            [sys.executable, "-u", script, model_path, save_dir, str(conf), *slots, victims],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
         for s in self.cams:
             self._idle[s].set()

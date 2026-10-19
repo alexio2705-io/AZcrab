@@ -102,3 +102,19 @@
   лента. Флаги командной строки не менялись.
 - `nav.py` — 101 строка (шапка-описание + `main()` на 20 строк).
 - `sys.exit` при запуске перенесены как есть (открытый вопрос).
+
+## 5. Классы меток и комплекты в `config`
+
+- `config.VICTIM_CLASSES` (было `watch_logic.VICTIM_CLASSES`), `config.CLASS_TO_VICTIM` (было в
+  `victim_detect.py`, там теперь ссылка на тот же словарь — `front_cam.py` импортирует оттуда же),
+  `config.KITS_BY_TYPE` (был там).
+- `config.add_victim_class(cls, kits)` — одна строка в задании: класс YOLO — жертва, `kits`
+  комплектов (0 — только мигание). Звать до `boot.start()`.
+- Наблюдатель на ходу — отдельный процесс со своим `config`: `victim_watch` передаёт ему список
+  аргументом `victims=a,b,c` при запуске, `watch_proc.py` его разбирает.
+- `victim_detect`: метка H/S/U задания получает подпись по имени класса (`CLASS_LABEL.get`),
+  `blink` = тип есть в `KITS_BY_TYPE` (так же уже решает `marks._decide_unread`). Для обычного
+  заезда это те же три типа — поведение не изменилось.
+
+Тесты: `pi/tests/test_victim_classes.py` (H/S приманки в обычном заезде, жертвы после
+`add_victim_class`, комплекты обычного заезда прежние). Старые тесты `victim_boxes` зелёные.

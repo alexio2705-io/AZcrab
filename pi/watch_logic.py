@@ -15,6 +15,8 @@ import bisect
 import math
 import os
 
+import config
+
 CELL_MM = 300.0
 
 # Камеры: OV5647 с рыбьим глазом 130°, кадр 320x320. Шлейф смотрит назад,
@@ -58,9 +60,7 @@ def prefer_ncnn(pt_path):
     return ncnn_dir if os.path.isdir(ncnn_dir) else pt_path
 
 
-# Классы-жертвы. Модель C знает ещё H/S/U/letter - ложные метки: по регламенту
-# похожие на жертвы буквы и символы на стенах бывают, называть их нельзя.
-VICTIM_CLASSES = frozenset(("cognetive", "omega", "phi", "psi"))
+# Классы-жертвы - config.VICTIM_CLASSES (задание может добавить H/S/U).
 DECOY_IOU = 0.5
 
 
@@ -78,8 +78,8 @@ def victim_boxes(boxes):
     и одна U приходит и как U 0.9, и как omega 0.5. Поэтому рамка жертвы
     выкидывается и тогда, когда на том же месте модель увереннее видит
     приманку."""
-    decoys = [b for b in boxes if b[0] not in VICTIM_CLASSES]
-    return [b for b in boxes if b[0] in VICTIM_CLASSES
+    decoys = [b for b in boxes if b[0] not in config.VICTIM_CLASSES]
+    return [b for b in boxes if b[0] in config.VICTIM_CLASSES
             and not any(d[1] >= b[1] and _iou(d[2], b[2]) > DECOY_IOU for d in decoys)]
 
 

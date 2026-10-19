@@ -15,7 +15,7 @@ cpu_count-1 = 3), а NCNN - до загрузки: менять opt.num_threads 
 сети поздно, свёртки остаются на значении при загрузке.
 
 Запуск (это делает victim_watch.py):
-    watch_proc.py МОДЕЛЬ ПАПКА CONF idx:shm [idx:shm]
+    watch_proc.py МОДЕЛЬ ПАПКА CONF idx:shm [idx:shm] [victims=класс,класс]
 stdin:  "idx номер_кадра номер_включения" - кадр 320x320 BGR уже лежит в
         общей памяти камеры idx (какая сторона - watch_logic.CAM_IDX);
 stdout: {"ready": true} после прогрева, дальше по строке JSON на запрос:
@@ -33,6 +33,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+import config  # noqa: E402
 import watch_logic as wl  # noqa: E402
 from victim_watch import attach_shm  # noqa: E402
 
@@ -64,6 +65,10 @@ def main():
     model_path, save_dir, conf = sys.argv[1], sys.argv[2], float(sys.argv[3])
     slots = {}
     for arg in sys.argv[4:]:
+        if arg.startswith('victims='):          # config.VICTIM_CLASSES из nav.py
+            config.VICTIM_CLASSES.clear()
+            config.VICTIM_CLASSES.update(arg[len('victims='):].split(','))
+            continue
         idx, name = arg.split(':', 1)
         slots[int(idx)] = attach_shm(name)     # создал и освободит nav.py
     frames = {i: np.ndarray(FRAME_SHAPE, np.uint8, buffer=s.buf) for i, s in slots.items()}

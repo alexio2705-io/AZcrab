@@ -27,6 +27,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 import cv2  # noqa: E402
 
+import config  # noqa: E402
 import ring_colors as rc  # noqa: E402
 import watch_logic as wl  # noqa: E402
 from dataset_web import STILL_SIZE, Camera  # noqa: E402
@@ -51,12 +52,10 @@ STILL_MAX_EXP_US = 500_000
 # за идентификацию дальше 15 см от жертвы штраф.
 MIN_BOX_PX   = 40
 
-# Маппинг имён классов YOLO → тип жертвы (буквенные метки)
-CLASS_TO_VICTIM = {
-    'phi':   'damaged',    # Φ
-    'psi':   'stable',     # Ψ
-    'omega': 'unharmed',   # Ω
-}
+# Маппинг имён классов YOLO → тип жертвы (буквенные метки): phi → Φ → damaged,
+# psi → Ψ → stable, omega → Ω → unharmed. Таблица одна - config.CLASS_TO_VICTIM
+# (задание может добавить H/S/U, см. config.add_victim_class).
+CLASS_TO_VICTIM = config.CLASS_TO_VICTIM
 CLASS_LABEL = {
     'damaged':  'Φ',
     'stable':   'Ψ',
@@ -220,7 +219,7 @@ class VictimDetector:
             label = '?' if checksum is None else f'{checksum:+d}'
         elif cls_name in CLASS_TO_VICTIM:
             victim_type = CLASS_TO_VICTIM[cls_name]
-            label = CLASS_LABEL[victim_type]
+            label = CLASS_LABEL.get(victim_type, cls_name)   # H/S/U задания - как есть
         else:
             print(f'[VD] Неизвестный класс: {cls_name} ({conf:.2f})')
             return None
@@ -247,7 +246,7 @@ class VictimDetector:
             return None
 
         # Мигаем только для настоящих жертв; фейк фиксируем без мигания.
-        blink = victim_type in ('damaged', 'stable', 'unharmed')
+        blink = victim_type in config.KITS_BY_TYPE
         result = {
             'type':     victim_type,
             'label':    label,
