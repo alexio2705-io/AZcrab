@@ -12,6 +12,7 @@ import state
 import bumper
 import esp_link
 import lidar_walls
+import tile_rules
 import turning
 
 
@@ -185,7 +186,7 @@ def decide_at_boundary(trip):
             fv, fn = trip.front_votes
             f_wall = (True if bumper.get_bumper() or (fv >= 2 and fv > fn) else
                       False if fn >= 2 and fn > fv else None)
-            if config.TILE_BLUE in trip.tiles.get(trip.kN, ()):
+            if tile_rules.must_stop(trip.tiles.get(trip.kN, ())):
                 print(f"\n    → кл.{trip.kN}: синяя - стоп в её центре")
                 go, walls_rel = False, {}
             else:

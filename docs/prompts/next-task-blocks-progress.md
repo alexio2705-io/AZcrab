@@ -47,3 +47,25 @@
 
 Тесты: `pi/tests/test_forget_blocks.py` (ребро препятствия забывается, чёрная остаётся,
 после забывания стену решают голоса лидара).
+
+## 2. Правила плиток (`pi/tile_rules.py`)
+
+- `RULES` — цвет → `Rule(роль, react, every_visit)`. Роли: `NORMAL`, `WALL`, `STOP`, `CHECKPOINT`.
+  Обычный заезд: чёрная — `WALL`, синяя — `STOP` + `floor_tiles.blue_stop` на каждом визите,
+  серебряная — `CHECKPOINT`, красная — `NORMAL`.
+- `--red-checkpoint` теперь `tile_rules.use_checkpoint(TILE_RED)`: красная — чекпоинт, серебряная —
+  обычная, `state.CHECKPOINT_TILE` выставляется там же (его читают калибровка и печать).
+- На таблицу переведены: `floor_tiles.check_floor_while_driving` (стена → откат, стоп → центр,
+  чекпоинт на ходу), `drive_front` (`tile_rules.must_stop`), `explore.arrive_explore` и
+  `arrive_home` (`tile_rules.on_arrive` вместо `blue_stop`), чекпоинт стоя.
+- `state.tile_map` пишется: по приезде (`on_arrive`), на ходу (`check_floor_while_driving`, клетка
+  `trip.plan.cell(k_under)`), при откате от стены (`explore._close_ahead`, клетка за ребром, цвет —
+  `state.last_wall_tile`).
+- Решено по ходу: память «однажды подтверждённому верим» (была `blue_cells`) обобщена в
+  `state.react_cells` (клетка → цвет, по которому уже была реакция). `tile_map` — просто последний
+  известный цвет, без «залипания»: иначе ложное чтение на ходу у края клетки включало бы стоянку на
+  белой. `blue_cells` остался (его пишет `blue_stop`, читает дашборд).
+- Поведение обычного заезда не менялось; в лог чёрной добавлен цвет плитки.
+
+Тесты: `pi/tests/test_tile_rules.py` (таблица обычного заезда, красный чекпоинт, запись `tile_map`,
+реакция на каждом визите и по памяти, правило «один раз»).

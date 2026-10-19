@@ -19,6 +19,7 @@ import marks
 import maze_map
 import ramps
 import recovery
+import tile_rules
 import turning
 import victims
 
@@ -414,7 +415,9 @@ def _close_ahead(w, n, reason):
         # жёстко зашитого разворота на 180. Чёрная не забывается никогда.
         print("    чёрная клетка - ребро непроезжее")
         maze_map.block_direction(w.cx, w.cy, w.hdg)
-        state.black_cells.add(maze_map._next_cell(w.cx, w.cy, w.hdg))
+        black = maze_map._next_cell(w.cx, w.cy, w.hdg)
+        state.black_cells.add(black)
+        tile_rules.remember(black, state.last_wall_tile)
     elif reason == "bumper_both":
         # Откат, и карта сразу узнаёт про эту стену (см. bumper.py).
         bumper.back_off_from_wall()
@@ -482,14 +485,12 @@ def arrive_explore(w, new_cell):
     if esp_link.get_esp_paused():
         return      # спим - ни синей стоянки, ни сканов; разберётся шаг
     tile = floor_tiles.tile_color()
-    # Живое распознавание ИЛИ клетка уже когда-то была признана синей -
-    # см. blue_stop()/_blue_cells: однажды подтверждённому факту доверяем
-    # больше, чем одному текущему замеру датчика цвета.
-    if tile == config.TILE_BLUE or w.cell in state.blue_cells:
-        floor_tiles.blue_stop(w.cell)
+    # Реакция по таблице (синяя - стоянка): на живой цвет ИЛИ на цвет, по
+    # которому клетка уже реагировала - см. tile_rules.on_arrive.
+    tile_rules.on_arrive(w.cell, tile)
     # Чекпоинт запоминается стоя в центре клетки: на ходу цвет не
     # читается при задранном носе (PITCH_COLOR_GUARD_DEG).
-    if tile == state.CHECKPOINT_TILE and w.checkpoint[:2] != w.cell:
+    if tile_rules.role(tile) == tile_rules.CHECKPOINT and w.checkpoint[:2] != w.cell:
         w.checkpoint = (w.cx, w.cy, w.hdg)
         print(f"  ✓ ЧЕКПОИНТ ({w.cx},{w.cy}) курс={config._DIR_NAME[w.hdg]}")
 
@@ -532,9 +533,8 @@ def arrive_home(w, new_cell):
     if not esp_link.get_esp_paused():
         maze_map.set_cell_walls(w.cx, w.cy, w.hdg, lidar_walls._measure_cell(w.hdg))
     # Синяя клетка требует стоянки на КАЖДОМ визите, включая обратный
-    # путь - см. blue_stop()/_blue_cells.
-    if floor_tiles.tile_color() == config.TILE_BLUE or w.cell in state.blue_cells:
-        floor_tiles.blue_stop(w.cell)
+    # путь - см. tile_rules.on_arrive.
+    tile_rules.on_arrive(w.cell, floor_tiles.tile_color())
 
 
 def return_to_start(cx, cy, hdg, checkpoint):

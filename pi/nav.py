@@ -93,6 +93,7 @@ import explore
 import floor_tiles
 import lidar_walls
 import recovery
+import tile_rules
 
 
 LINK_PORT = "/dev/serial0"
@@ -133,7 +134,7 @@ def main():
         state.USE_COLOR_SENSOR = False
         print("Датчик цвета отключён (--no-color): чёрные/синие/чекпоинты не видны")
     if "--red-checkpoint" in args:
-        state.CHECKPOINT_TILE = config.TILE_RED
+        tile_rules.use_checkpoint(config.TILE_RED)
     print(f"Чекпоинт: {'КРАСНАЯ (--red-checkpoint, тренировка)' if state.CHECKPOINT_TILE == config.TILE_RED else 'зеркальная'} плитка")
     args = [a for a in args if not a.startswith("-")]
     # N теперь потолок на ОБЩЕЕ число разведанных клеток (страховка от
