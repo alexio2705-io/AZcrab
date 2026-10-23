@@ -54,6 +54,7 @@ import time
 import zlib
 from collections import deque
 
+from battery_probe import BatteryProbe
 from oled_font import FONTS
 
 W, H = 128, 64
@@ -677,6 +678,11 @@ def scr_idle(cv, st):
     line2(cv, 2, f"CPU {'--' if temp is None else f'{temp:.0f}'}°C",
           f"ОЗУ {'--' if mem is None else f'{mem:.0f}'}%")
     pw = _power(st.get("throttled"))
+    ui = st.get("ui") or {}
+    if not pw.startswith("!") and "volts" in ui:
+        # Вместо "питание ок" - батарея моторов (battery_probe); пульт без
+        # демона замера не видит и показывает по-старому.
+        pw = f"{ui['volts']:.1f}V" if ui["volts"] is not None else "--.-V"
     if pw.startswith("!"):
         line(cv, 3, pw, inv=True)
     else:
@@ -1655,6 +1661,7 @@ class Daemon:
         self.buttons = ButtonPanel() if _has_pinctrl() else None
         self.ui = Ui()
         self.launcher = Launcher()
+        self.battery = BatteryProbe()
         self._cat_t0 = None          # когда кот появился на экране: с этого кадра - с начала
         self._busy, self._busy_t = False, -1e9
         self._presses_n = 0
@@ -1700,9 +1707,12 @@ class Daemon:
         n = sum(presses.values())
         if n != self._presses_n:             # нажали - экран снова яркий
             self._presses_n, self._idle_since = n, None
+        # Порт ESP читаем сами, только пока никто из программ не запущен.
+        self.battery.wanted = not busy
         st["ui"] = {"mode": self.ui.mode, "sel": self.ui.sel, "buttons": self.buttons is not None,
                     "osel": self.ui.osel, "run_items": self.ui.run_items(),
-                    "busy": busy, "child": self.launcher.kind, "label": self.launcher.label}
+                    "busy": busy, "child": self.launcher.kind, "label": self.launcher.label,
+                    "volts": self.battery.volts(t0)}
         return busy
 
     def run(self):
@@ -1814,6 +1824,8 @@ def demo_states():
                                          "checksum": 3}),
         # Меню и программы из него (кнопки у малины)
         "19_ip_buttons": dict(base, snap=None, ui={"mode": "ip", "buttons": True}),
+        "19a_ip_volts": dict(base, snap=None, ui={"mode": "ip", "buttons": True, "volts": 14.8}),
+        "19b_ip_no_volts": dict(base, snap=None, ui={"mode": "ip", "buttons": True, "volts": None}),
         "20_menu": dict(base, snap=None, ui={"mode": "menu", "sel": 1, "buttons": True}),
         "20a_run_opts": dict(base, snap=None, ui={
             "mode": "run", "osel": 1, "buttons": True,

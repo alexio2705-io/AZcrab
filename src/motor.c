@@ -401,9 +401,11 @@ static void enc_rx_task(void *arg)
         uint8_t id = rx.identifier - MOTOR_BASE_ID;
         const uint8_t *d = rx.data;
         if (d[0] == 0x9A) {
-            // Legacy LK MF CAN protocol status1, not the newer MyActuator layout.
+            // LK MF status1: d[1] temperature, d[2..3] voltage 0.01 V/LSB.
+            // d[3..4] at 0.1 V (old guess) read 0.6 V on our motors.
+            uint16_t centivolts = (uint16_t)d[2] | ((uint16_t)d[3] << 8);
             portENTER_CRITICAL(&g_enc_mux);
-            g_health[id] = (health_t){.dv = (uint16_t)d[3] | ((uint16_t)d[4] << 8),
+            g_health[id] = (health_t){.dv = (uint16_t)((centivolts + 5) / 10),
                 .temp = (int8_t)d[1], .error = d[7], .t = esp_timer_get_time()};
             portEXIT_CRITICAL(&g_enc_mux);
             continue;
