@@ -362,6 +362,13 @@ class OdoHistory:
         d0, d1 = self.d[i - 1], self.d[i]
         return d0 + (d1 - d0) * (t - t0) / (t1 - t0)
 
+    def at_checked(self, t, tolerance_s=0.03):
+        """Reject observations outside recorded history instead of moving them
+        to its oldest/newest pose. Small timestamp jitter is tolerated."""
+        if not self.t or t is None or not self.t[0] - tolerance_s <= t <= self.t[-1] + tolerance_s:
+            return None
+        return self.at(t)
+
 
 class Stats:
     """Выборка для p50/p95/max: частота, задержки, такт цикла."""
@@ -425,26 +432,27 @@ class SideHold:
 
 
 def guess_rings(readings, n=5):
-    """Кольца мишени по нескольким неполным чтениям (VictimDetector.unread_hist)
-    - решение нужно всегда. Для каждого кольца: цвет из того чтения, где оно
-    надёжно и согласие точек выше всех; надёжного нет - голосование по всем
-    чтениям с весом согласия; не видно ни разу - жёлтое (0 баллов)."""
+    """Merge reliable partial readings; unseen/conflicting rings stay unknown.
+
+    Inventing yellow for an unseen ring invents a zero contribution and can
+    turn a decoy into a victim. Weak observations do not authorize signalling.
+    """
     out = []
     for i in range(n):
-        best, votes = None, {}
+        votes = {}
         for r in readings:
             cols = r.get("rings") or []
-            if i >= len(cols) or cols[i] == "?":
+            oks, agrees = r.get("ring_ok") or [], r.get("ring_agree") or []
+            if (i >= len(cols) or i >= len(oks) or i >= len(agrees)
+                    or not oks[i] or cols[i] not in {"black", "red", "yellow", "green", "blue"}):
                 continue
-            ok = (r.get("ring_ok") or [False] * n)[i]
-            agree = (r.get("ring_agree") or [0.0] * n)[i]
-            if ok and (best is None or agree > best[1]):
-                best = (cols[i], agree)
-            votes[cols[i]] = votes.get(cols[i], 0.0) + max(agree, 0.1)
-        if best is not None:
-            out.append(best[0])
-        elif votes:
-            out.append(max(votes, key=lambda c: votes[c]))
+            agree = agrees[i]
+            if not isinstance(agree, (int, float)) or not 0 < agree <= 1:
+                continue
+            votes[cols[i]] = votes.get(cols[i], 0.0) + agree
+        if votes:
+            winner = max(votes, key=votes.get)
+            out.append(winner if votes[winner] >= 0.7 * sum(votes.values()) else "?")
         else:
-            out.append("yellow")
+            out.append("?")
     return out

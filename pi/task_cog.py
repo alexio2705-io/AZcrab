@@ -61,7 +61,7 @@ def targets():
 
 def finish_cell():
     silver = actions.cells_of(SILVER)
-    return actions.nearest(w, silver) if silver else START
+    return (actions.nearest(w, silver) if silver else None) or START
 
 
 def late():

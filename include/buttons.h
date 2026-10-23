@@ -18,9 +18,9 @@
 // button goes low when held, the clickers go high - and buttons.c hides that,
 // so everything below means "pressed" for all three alike.
 //
-// buttons_init() adds a 30ms software debounce on top and polls everything
-// from a background task, so the readers below never touch a GPIO and are
-// safe to call from the control loop at any rate.
+// Polling is 1 ms. Panel changes and all releases need 30 ms agreement;
+// bumper presses are immediate on the first sample. Readers use a critical
+// section and are safe from the control loop. CAN braking is in robot_link.c.
 
 typedef enum {
     BTN_1,
@@ -39,7 +39,7 @@ bool button_pressed(button_t b);
 // applied - for checking wiring on the bench, not for control logic.
 int button_raw_level(button_t b);
 
-// How many raw level changes this pin has seen since boot, sampled every 5ms
+// How many raw level changes this pin has seen since boot, sampled every 1ms
 // with no debounce and no polarity. Never cleared - for proving on the bench
 // that a press reaches the pin at all, however briefly.
 uint32_t button_edge_count(button_t b);

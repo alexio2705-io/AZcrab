@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from multiprocessing import shared_memory
 
@@ -84,6 +85,8 @@ class VictimWatcher:
         self._fid = 0
         self._ts_warned = False
         self._failed = set()
+        self._processed_t = {s: None for s in self.cams}
+        self._frame_gaps = {s: deque(maxlen=8) for s in self.cams}
         self._frames_n = {s: 0 for s in self.cams}
         self._armed_s = {s: 0.0 for s in self.cams}
         self._armed_t: dict[str, float | None] = {s: None for s in self.cams}
@@ -98,6 +101,12 @@ class VictimWatcher:
         self._shm = {s: shared_memory.SharedMemory(create=True, size=nbytes) for s in self.cams}
         self._buf = {s: np.ndarray(FRAME_SHAPE, np.uint8, buffer=self._shm[s].buf)
                      for s in self.cams}
+        # Independent preview slots: never overwrite a frame used by inference.
+        self._preview = {s: shared_memory.SharedMemory(create=True, size=nbytes + 8) for s in self.cams}
+        self._preview_buf = {s: np.ndarray(FRAME_SHAPE, np.uint8, buffer=self._preview[s].buf, offset=8)
+                             for s in self.cams}
+        self._preview_seq = {s: 0 for s in self.cams}
+        self._preview_t = {s: None for s in self.cams}
         script = script or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "watch_proc.py")
         slots = [f"{SIDE_IDX[s]}:{self._shm[s].name}" for s in self.cams]
@@ -110,8 +119,11 @@ class VictimWatcher:
             self._idle[s].set()
             self._free[s].set()
         threading.Thread(target=self._reader, daemon=True).start()
+        self._cam_threads = []
         for s in self.cams:
-            threading.Thread(target=self._cam_loop, args=(s,), daemon=True).start()
+            th = threading.Thread(target=self._cam_loop, args=(s,), daemon=True)
+            self._cam_threads.append(th)
+            th.start()
 
     # ── управление из петли drive_cells ─────────────────────────
     def arm(self, sides):
@@ -134,6 +146,8 @@ class VictimWatcher:
                 self._armed[s] = on
                 if on:
                     self._armed_t[s] = now
+                    self._processed_t[s] = None
+                    self._frame_gaps[s].clear()
                 else:
                     t = self._armed_t[s]
                     if t is not None:
@@ -141,6 +155,20 @@ class VictimWatcher:
                     self._armed_t[s] = None
                 self._wake[s].set()
         return any_now
+
+    def coverage_gap(self, sides):
+        """Worst completed-frame gap/age, including results with no detections."""
+        now = time.monotonic()
+        with self._lock:
+            if self.dead or any(s in self._failed or s not in self.cams for s in sides):
+                return float('inf')
+            gaps = [.1]
+            for s in sides:
+                last = self._processed_t[s]
+                since = last if last is not None else self._armed_t[s]
+                gaps.append(max(.1, now - since) if since is not None else .1)
+                gaps.extend(self._frame_gaps[s])
+            return max(gaps)
 
     def poll(self):
         """Рамки, пришедшие с прошлого вызова (только текущего включения).
@@ -196,7 +224,9 @@ class VictimWatcher:
         """Для пульта: по стороне - имя общей памяти (кадр 320x320 BGR),
         включена ли, номер/время кадра и рамки последнего ответа воркера."""
         with self._lock:
-            return {s: {"shm": self._shm[s].name, "armed": self._armed[s],
+            return {s: {"shm": self._preview[s].name, "preview": True,
+                        "preview_fid": self._preview_seq[s], "preview_t": self._preview_t[s],
+                        "armed": self._armed[s],
                         "failed": s in self._failed, "dead": self.dead,
                         "ready": self.ready.is_set(), **self._live[s]}
                     for s in self.cams}
@@ -208,6 +238,8 @@ class VictimWatcher:
         for s in self.cams:
             self._wake[s].set()
         self.wait_idle(1.0)
+        for th in self._cam_threads:
+            th.join(timeout=4.0)
         try:
             if self._proc.stdin is not None:
                 self._proc.stdin.close()
@@ -217,6 +249,11 @@ class VictimWatcher:
             self._proc.kill()
         if self._proc.stdout is not None:
             self._proc.stdout.close()
+        if not any(th.is_alive() for th in self._cam_threads):
+            self._preview_buf.clear()
+            for shm in self._preview.values():
+                shm.close()
+                shm.unlink()
         self._buf.clear()               # иначе shm.close(): "exported pointers exist"
         for shm in self._shm.values():
             try:
@@ -286,6 +323,11 @@ class VictimWatcher:
                 return
             del self._pending[side]
             _, t_frame, arm_id, _ = p
+            if arm_id == self._arm_id and self._armed[side]:
+                previous = self._processed_t[side]
+                if previous is not None and t_frame > previous:
+                    self._frame_gaps[side].append(t_frame - previous)
+                self._processed_t[side] = t_frame
             self.infer.add(float(msg.get("ms", 0.0)))
             boxes = [WatchBox(side, str(b["cls"]), float(b["conf"]),
                               tuple(b["xyxy"]), t_frame, msg.get("img"))
@@ -311,7 +353,16 @@ class VictimWatcher:
                         break
                     fast = False
                 self._idle[side].set()
-                self._wake[side].wait(0.5)
+                # Does not change exposure or block the capture lock used by
+                # static recognition. Preview continues when inference is idle.
+                try:
+                    frame, md = cam.try_latest()
+                    if frame is not None and tuple(frame.shape) == FRAME_SHAPE:
+                        self._publish_preview(side, frame)
+                except Exception as e:
+                    self._fail(side, e)
+                    break
+                self._wake[side].wait(0.2)
                 self._wake[side].clear()
                 continue
             self._idle[side].clear()
@@ -336,6 +387,7 @@ class VictimWatcher:
             if frame is None:
                 time.sleep(0.02)
                 continue
+            self._publish_preview(side, frame)
             next_t = t_cap + 1.0 / WATCH_HZ    # от начала съёмки: ожидание кадра входит в период
             t_frame = self._frame_time(md)
             if log_exposure is not None:
@@ -372,3 +424,13 @@ class VictimWatcher:
             except Exception:
                 pass
         self._idle[side].set()
+
+    def _publish_preview(self, side, frame):
+        # Seqlock: odd while pixels are being copied; reader verifies twice.
+        seq = self._preview_seq[side] + 2
+        self._preview[side].buf[:8] = (seq - 1).to_bytes(8, "little")
+        self._preview_buf[side][...] = frame
+        self._preview[side].buf[:8] = seq.to_bytes(8, "little")
+        with self._lock:
+            self._preview_seq[side] = seq
+            self._preview_t[side] = time.monotonic()

@@ -1,42 +1,14 @@
-"""Цвет следующей клетки по передней USB-камере.
+"""Project the next grid tile into the prepared USB-camera frame.
 
-Камера стоит в носу боком и низко, у нижнего края кадра - бампер. prep()
-поворачивает кадр (верх - вперёд) и отрезает бампер; дальше все пиксели -
-уже этого кадра.
+Calibration H maps prepared 720-pixel-wide image coordinates to floor mm
+(x forward, y left). Pose adds the current tile offset and yaw relative to the
+grid. Pixels are selected by inverse projection; corners crossing the horizon
+cannot turn into a polygon covering unrelated image regions.
 
-Пол - плоскость, поэтому пиксель кадра переводится в точку пола одной
-матрицей перспективы H (пиксель -> мм в системе робота: x вперёд от центра
-робота, y влево). H снимается один раз: плитка известного размера кладётся
-на известное место перед роботом (обычно - чёрная или синяя плитка в
-соседней клетке, робот в центре своей), calibrate_h() находит её углы на
-кадре. Камера сдвинулась - снимать заново.
-
-Зная H и где робот в своей клетке (смещение центра и поворот относительно
-сетки), cell_polygon() даёт на кадре четырёхугольник следующей клетки - в
-любом положении робота, не только из центра. Внутри него каждый пиксель
-относится к ближайшему образцу цвета (как у датчика в tile_classify.py:
-доли каналов и логарифм яркости), клетка - цвет большинства. Образцы
-снимаются с этой же камеры на поле (sample_cell()): у неё свой баланс
-белого, образцы датчика ей не подходят.
-
-Пока калибровки по плитке нет, H берётся из модели камеры (DEFAULT_CAM):
-высота, наклон и фокус оценены 18.10.2026 по стене перед роботом - стык
-стены со столом на кадре против расстояния до неё по лидару, а точка схода
-стыка и верхнего края стены дала наклон и фокус. Пока нет образцов цвета,
-пиксели размечаются порогами HSV (hsv_label).
-
-Решение есть всегда (read_cell никогда не говорит «не знаю»): цвет
-большинства пикселей и уверенность conf 0..1. Каждый пиксель тоже всегда
-получает цвет - всё, что не чёрное, не синее и не красное, считается белым
-полом. Когда кадру верить нельзя, вывод делается по гироскопу и тому, что
-известно о поле:
-  - робот наклонён на горке (|tilt| >= RAMP_TILT_DEG) - пол впереди не та
-    плоскость, на которую посчитана H; на горке особых плиток не бывает,
-    так что впереди обычная клетка (белая, conf низкий);
-  - меньший наклон (нос задрало на неровности) - H поворачивается на него
-    (pitched_h), чтение идёт как обычно;
-  - клетка почти вся вне кадра (робот сильно повёрнут) - белая с conf 0:
-    датчик цвета всё равно проверит её под собой.
+read_cell() returns unknown/conf=0 for insufficient visibility or a slope whose
+floor plane is not represented by H. Colour samples and a calibrated camera
+are needed on the real field; the default pinhole model is only a starting
+estimate. A forward camera cannot observe every next tile at every yaw/offset.
 """
 from __future__ import annotations
 
@@ -214,12 +186,33 @@ def cell_pixels(frame, h_img2floor, pose=(0.0, 0.0, 0.0), ahead=1, margin=MARGIN
     """Пиксели клетки (N, 3), четырёхугольник на кадре и видимая доля клетки."""
     poly = to_image(h_img2floor, cell_polygon(pose, ahead, margin))
     h, w = frame.shape[:2]
-    full = np.zeros((h, w), np.uint8)
-    cv2.fillPoly(full, [np.round(poly).astype(np.int32)], 1)
-    n_in = int(full.sum())
-    area = abs(cv2.contourArea(poly.astype(np.float32)))
-    visible = n_in / area if area > 1 else 0.0
-    ys, xs = np.nonzero(full)
+    # Inverse mapping avoids filling a huge, inverted polygon when a corner
+    # crosses the horizon (large yaw or an offset close to the tile).
+    step = max(1, int(math.sqrt(h * w / (MAX_PX * 8))))
+    ys, xs = np.mgrid[0:h:step, 0:w:step]
+    ys, xs = ys.ravel(), xs.ravel()
+    hh = np.asarray(h_img2floor, float)
+    p = hh @ np.vstack((xs, ys, np.ones_like(xs)))
+    ref = hh @ np.array([w / 2, h - 1, 1.0])
+    valid = np.abs(p[2]) > 1e-9
+    valid &= p[2] * ref[2] > 0
+    fx = np.divide(p[0], p[2], out=np.full(len(xs), np.nan), where=valid)
+    fy = np.divide(p[1], p[2], out=np.full(len(xs), np.nan), where=valid)
+    ox, oy, a = pose
+    gx = fx * math.cos(a) - fy * math.sin(a) + ox
+    gy = fx * math.sin(a) + fy * math.cos(a) + oy
+    lo, hi = CELL_MM * (ahead - 0.5) + margin, CELL_MM * (ahead + 0.5) - margin
+    half = CELL_MM / 2 - margin
+    inside = valid & (gx >= lo) & (gx <= hi) & (np.abs(gy) <= half) & (fx > DEFAULT_CAM["x_mm"])
+    ys, xs = ys[inside], xs[inside]
+    # Visible area in FLOOR coordinates, rather than perspective pixel area.
+    xx, yy = np.meshgrid(np.linspace(lo, hi, 24), np.linspace(-half, half, 24))
+    dx, dy = xx.ravel() - ox, yy.ravel() - oy
+    rx, ry = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
+    q = np.linalg.inv(hh) @ np.vstack((rx, ry, np.ones_like(rx)))
+    uv = q[:2] / np.where(np.abs(q[2]) > 1e-9, q[2], np.nan)
+    visible = float(np.mean((rx > DEFAULT_CAM["x_mm"]) & (uv[0] >= 0) & (uv[0] < w)
+                            & (uv[1] >= 0) & (uv[1] < h)))
     if len(ys) > MAX_PX:
         idx = np.linspace(0, len(ys) - 1, MAX_PX).astype(int)
         ys, xs = ys[idx], xs[idx]
@@ -258,17 +251,22 @@ def read_cell(frame, cal, pose=(0.0, 0.0, 0.0), ahead=1, tilt_deg=0.0):
     """Цвет клетки - всегда. tilt_deg - наклон робота по гироскопу (нос
     вверх +) от ровного пола. -> {'color', 'conf' 0..1, 'frac', 'visible',
     'n', 'votes', 'poly', 'why'}: why - почему conf не полный."""
-    res = {"color": "white", "conf": 0.0, "frac": 0.0, "visible": 0.0, "n": 0, "votes": {},
+    res = {"color": "unknown", "conf": 0.0, "frac": 0.0, "visible": 0.0, "n": 0, "votes": {},
            "poly": None, "why": ""}
     if abs(tilt_deg) >= RAMP_TILT_DEG:
-        res.update(conf=RAMP_CONF, why=f"на горке ({tilt_deg:+.0f}°): впереди обычная клетка")
+        res.update(why=f"наклон {tilt_deg:+.0f}°: плоскость пола неизвестна")
         return res
     h = (cal or {}).get("H")
+    if h is not None:
+        h = np.asarray(h, dtype=float)
+        if h.shape != (3, 3) or not np.isfinite(h).all() or abs(np.linalg.det(h)) < 1e-12:
+            res["why"] = "invalid camera calibration"
+            return res
     h = pitched_h(model_h() if h is None else h, tilt_deg)
     px, poly, visible = cell_pixels(frame, h, pose, ahead)
     res.update(poly=poly.tolist(), visible=round(visible, 2), n=len(px))
     if visible < MIN_VISIBLE or len(px) < MIN_PX:
-        res["why"] = "клетка почти вне кадра: считаю обычной, проверит датчик"
+        res["why"] = "недостаточно видимой площади клетки"
         return res
     samples = (cal or {}).get("samples")
     lab = classify_pixels(samples, features(px)) if samples else hsv_label(px)

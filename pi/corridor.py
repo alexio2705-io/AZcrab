@@ -57,7 +57,7 @@ def point_time(t_end, trev, x, y):
     return t_end - trev * (1.0 - ((deg - 180.0) % 360.0) / 360.0)
 
 
-def to_path_frame(pts, t_end, trev, travel_at, yaw_err_deg):
+def to_path_frame(pts, t_end, trev, travel_at, yaw_err_deg, yaw_at=None):
     """Точки оборота [(x вперёд, y вправо)] в системе робота -> [(X, Y)] в
     системе пути. travel_at(t) - путь в мм на момент t (история одометрии):
     за оборот робот на 55см/с проезжает 55мм, поэтому время - по точке.
@@ -66,7 +66,16 @@ def to_path_frame(pts, t_end, trev, travel_at, yaw_err_deg):
     c, s = math.cos(a), math.sin(a)
     out = []
     for x, y in pts:
-        tr = travel_at(point_time(t_end, trev, x, y))
+        point_t = point_time(t_end, trev, x, y)
+        tr = travel_at(point_t)
+        if tr is None:
+            continue
+        if yaw_at is not None:
+            yaw = yaw_at(point_t)
+            if yaw is None:
+                continue
+            a = math.radians(yaw)
+            c, s = math.cos(a), math.sin(a)
         out.append((tr + x * c - y * s, y * c + x * s))
     return out
 

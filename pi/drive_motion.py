@@ -9,9 +9,11 @@ import config
 import state
 import esp_link
 import turning
+from motion_guard import CenterFilter
+from continuous import stopping_speed
 
 
-SIDE_CENTER_MM = 140.0
+SIDE_CENTER_MM = config.SIDE_CENTER_MM
 
 # Разгон - ПО ВРЕМЕНИ, не по пройденному пути. Профиль "по пути" (было
 # ACCEL_MM=60) считает скорость от traveled_cm, а сам traveled_cm растёт тем
@@ -22,11 +24,11 @@ SIDE_CENTER_MM = 140.0
 # предсказуемый и заранее известный пик dv/dt - можно держать его безопасно
 # ниже MOTOR_ACCEL_DPS_S на ESP.
 RAMP_UP_S = 0.25
-OBSTACLE_STEER_A = 0.35
+OBSTACLE_STEER_A = 0.175
 TILT_CAP_CMS = 35.0            # ход, пока нос задран на препятствии/горке
 DESCENT_CAP_CMS = 28.0         # ход, пока нос опущен (съезд с препятствия)
-RAMP_TORQUE_A = 1.9
-RAMP_STEER_A = 0.55
+RAMP_TORQUE_A = 0.95
+RAMP_STEER_A = 0.275
 RAMP_WALL_KP_DEG = 0.08
 RAMP_WALL_MAX_DEG = 5.0
 MAX_STEER_CMS = 28.0   # рулёжка в см/с, растёт вместе с MOVE_MAX_CMS
@@ -97,6 +99,11 @@ def speed_profile(trip):
     tilt_step = config.BRAKE_DECEL_CMS2 * trip.loop_dt
     trip.tilt_lim = max(trip.tilt_lim - tilt_step, min(trip.tilt_lim + tilt_step, tilt_target))
     ramp_up = min(ramp_up, trip.tilt_lim)
+    # Until a decision is made, retain enough room for a stop at that center.
+    if trip.pending and trip.ramp_state != 'cand':
+        ramp_up = min(ramp_up, stopping_speed(max(trip.rem, trip.lead_cm),
+            config.STOP_LEAD_S + max(.02, trip.loop_dt), config.BRAKE_DECEL_CMS2))
+    ramp_up = min(ramp_up, getattr(trip, 'perception_cap', float('inf')))
 
     trip.braking = False
     if (trip.stopping or trip.mark_first) and trip.ramp_state != 'cand':
@@ -117,17 +124,40 @@ def wall_offset(trip):
     """Смещение от центра коридора по боковым стенам."""
     # ── Центровка: сдвигает цель курса, а не руль ─────────
     wl, wr = trip.walls["left"], trip.walls["right"]
+    if not hasattr(trip, "center_filter"):
+        trip.center_filter = CenterFilter()
+    scan_t = getattr(trip, "scan_t", state.telem.get("scan_t"))
+    # A stale scan must not keep steering; elevated stairs can hide all walls.
+    if (scan_t is None or not 0 <= time.monotonic() - scan_t < 0.25
+            or abs(trip.pitch_delta) >= config.RAMP_PITCH_DEG):
+        trip.wall_e = 0.0
+        trip.center_filter.update(None, None, None)
+        return
+    projection = math.cos(math.radians(turning.angle_err(esp_link.get_yaw(), trip.target_yaw)))
+    if projection < 0.94:  # >20 degrees: end faces and openings contaminate ranges
+        trip.wall_e = 0.0
+        trip.center_filter.update(None, None, None)
+        return
+    wl = wl * projection if wl is not None else None
+    wr = wr * projection if wr is not None else None
     wall_l = wl is not None and wl < WALL_CENTER_MM
     wall_r = wr is not None and wr < WALL_CENTER_MM
 
     if wall_l and wall_r:
-        trip.wall_e = (wr - wl) * 0.5        # >0: прижались к левой стене
+        # Reject two surfaces that cannot bound this one-tile corridor.
+        trip.wall_e = ((wr - wl) * 0.5 + config.SIDE_LIDAR_OFFSET_MM
+                       if abs(wr + wl - 2 * SIDE_CENTER_MM) <= 50 else 0.0)
     elif wall_l:
-        trip.wall_e = SIDE_CENTER_MM - wl
+        trip.wall_e = SIDE_CENTER_MM + config.SIDE_LIDAR_OFFSET_MM - wl
     elif wall_r:
-        trip.wall_e = wr - SIDE_CENTER_MM
+        trip.wall_e = wr - SIDE_CENTER_MM + config.SIDE_LIDAR_OFFSET_MM
     else:
         trip.wall_e = 0.0
+    mode = "both" if wall_l and wall_r else "left" if wall_l else "right" if wall_r else None
+    if wall_l and wall_r and abs(wr + wl - 2 * SIDE_CENTER_MM) > 50:
+        mode = None
+    trip.wall_e = trip.center_filter.update(getattr(trip, "scan_id", scan_t),
+                                            trip.wall_e if mode else None, mode)
     if abs(trip.wall_e) < WALL_DEADBAND_MM:
         trip.wall_e = 0.0
 
@@ -139,25 +169,27 @@ def steering(trip):
     on_ramp = abs(trip.pitch_delta) >= config.RAMP_PITCH_DEG
     wall_kp = RAMP_WALL_KP_DEG if on_ramp else WALL_KP_DEG
     wall_max = RAMP_WALL_MAX_DEG if on_ramp else WALL_MAX_DEG
-    # На длинной горке гироскоп не накапливает поперечную ошибку: боковые
-    # стены по лидару непрерывно сдвигают целевой курс к центру.
+    # Significant tilt suppresses wall_offset; retain the gyro heading there.
     trip.head_off = max(-wall_max, min(wall_max, trip.wall_e * wall_kp))
-    trip.head_off_f += (trip.head_off - trip.head_off_f) * HEAD_OFF_SMOOTH
+    alpha = 1.0 - math.exp(-max(0.0, trip.loop_dt) / 0.14)
+    trip.head_off_f += (trip.head_off - trip.head_off_f) * alpha
     heading = (trip.target_yaw + trip.head_off_f) % 360
 
     # ── Руль: один быстрый контур по гироскопу ────────────
     # P по ошибке курса, D по ИЗМЕРЕННОЙ угловой скорости (не по разности
-    # углов) - см. GYRO_KD_RATE. Фильтр производной больше не нужен:
+    # углов) - см. DRIVE_YAW_KD_RATE. Фильтр производной больше не нужен:
     # фильтровать было нечего, кроме шума собственного дифференцирования.
     yaw_e = turning.angle_err(trip.yaw, heading)
-    trip.steer = -(yaw_e * config.GYRO_KP + yaw_rate * config.GYRO_KD_RATE)
+    # Lower bandwidth prevents the delayed actuator chasing alternating
+    # saturated corrections. Do not add another lag with a low slew limiter.
+    trip.steer = -(yaw_e * config.DRIVE_YAW_KP + yaw_rate * config.DRIVE_YAW_KD_RATE)
     trip.steer = max(-MAX_STEER_CMS, min(MAX_STEER_CMS, trip.steer))
     # Та же кривая, что и у fwd: без этого при fwd≈0 и заметной ошибке
     # курса (например, сразу после поворота) команда получалась вида
     # (+20,-20) - робот резко крутился на месте вместо старта с места.
     trip.steer *= trip.ss
     # Ограничение рывка: срезает только скачки команды, в норме не влияет.
-    d_max = STEER_SLEW_CMS_S * 0.010
+    d_max = STEER_SLEW_CMS_S * trip.loop_dt
     trip.steer = max(trip.last_steer - d_max, min(trip.last_steer + d_max, trip.steer))
     trip.last_steer = trip.steer
 
@@ -194,6 +226,12 @@ def report_status(trip):
         state.drive_live = {"cell": trip.cells + 1, "rem_mm": round(trip.rem * 10), "spd": round(trip.fwd, 1),
                        "steer": round(trip.steer, 1), "wall_e": round(trip.wall_e),
                        "head_off": round(trip.head_off, 1), "mode": trip.assist_mode,
+                       "travel_mm": round(trip.traveled_cm * 10, 1),
+                       "origin": list(trip.cell) if trip.cell is not None else None,
+                       "hdg": trip.hdg, "slip": trip.slip_guard.evidence,
+                       "range_fusion": trip.range_fusion.evidence,
+                       "raw_travel_mm": round(trip.raw_traveled_cm * 10, 1),
+                       "vision_cap_cms": round(trip.perception_cap, 1) if math.isfinite(trip.perception_cap) else None,
                        "t": trip.last_status_t}
         sys.stdout.write(f"\r    кл.{trip.cells + 1} ост.{trip.rem*10:4.0f}мм  "
                          f"yaw={trip.yaw:.1f}°(e={trip.axis_e:+.1f})  "

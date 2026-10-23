@@ -6,6 +6,19 @@ import struct
 
 # ── Геометрия ────────────────────────────────────────────────
 CELL_MM = 300
+ROBOT_LENGTH_MM = 193.0
+ROBOT_WIDTH_MM = 137.0
+WHEELBASE_MM = 98.0
+TRACK_MM = 125.0
+# Measured sensor-to-wall distance at tile center; calibrate on actual field.
+SIDE_CENTER_MM = 140.0
+SIDE_LIDAR_OFFSET_MM = 0.0  # positive: sensor is right of chassis center
+ALIGN_MIN_CORRECTION_MM = 20.0
+BLUE_WAIT_S = 5.2  # at least five consecutive seconds, plus clock/settling margin
+ROUTE_CELL_S = 2.0
+ROUTE_QUARTER_TURN_S = 0.6
+# Strategy weight, not an official seconds-to-points conversion.
+ROUTE_BLUE_REVISIT_PENALTY_S = 8.0
 # Замерено на роботе, стоящем в центре клетки: лидар сидит чуть позади
 # геометрического центра, поэтому вперёд он видит 145мм, а назад 135мм
 # (в сумме 280мм - клетка 300 минус толщина двух стенок).
@@ -45,7 +58,7 @@ ODO_PROGRESS_CM = 0.5
 # every request to 3 A.
 OBSTACLE_PITCH_DEG = 3.0
 OBSTACLE_REARM_DEG = 1.2
-OBSTACLE_TORQUE_A = 2.5
+OBSTACLE_TORQUE_A = 1.25  # MF units; approximately retains old raw CAN command
 
 # Почему робот слетал с препятствия: 0xA1 - это ТОК, а не скорость. Пока
 # бордюр держит - ток толкает, но как только нос перевалил или колесо повисло,
@@ -113,6 +126,11 @@ TURN_TOL_DEG = 1.5
 GYRO_KP = 4.2          # см/с на градус ошибки курса
 GYRO_KD_RATE = 0.07    # см/с на (градус/с) - демпфирование по угловой скорости
 
+# Continuous travel has a delayed wheel-speed loop. Keep its bandwidth lower
+# than the short-creep controller above; validated with 20..80 ms model delay.
+DRIVE_YAW_KP = 2.0          # cm/s per degree
+DRIVE_YAW_KD_RATE = 0.035   # cm/s per degree/s
+
 # ── Доводка вдоль движения у стены ───────────────────────────
 # После клетки (и после каждого поворота) робот смотрит на переднюю стену, а
 # если её нет - на заднюю, и доезжает/отъезжает до центра клетки по одометрии.
@@ -139,10 +157,7 @@ WALL_VOTE_SCANS = 3
 SIDE_ORDER = {"right": (1, 0, 3, 2), "left": (3, 0, 1, 2)}
 
 
-MAGIC = b"\xAA\x55"
-FMT = "<BBfffffffBHHHHffBBBHHH"
-BODY_SIZE = struct.calcsize(FMT)          # 56
-PKT_SIZE = len(MAGIC) + BODY_SIZE         # 58
+from protocol import MAGIC, FMT, BODY_SIZE, PKT_SIZE
 
 COLORS = {0: "?", 1: "WHITE", 2: "BLUE", 3: "BLACK", 4: "MIRROR", 5: "RED"}
 
@@ -221,3 +236,9 @@ MARK_READ_TRIES = 3
 
 
 DIR_DELTA = {0: 0, 1: 90, 2: 180, 3: -90}   # (d - hdg) % 4 -> градусы для turn()
+
+# 2026 game: 480 seconds including calibration. Default leaves 60 seconds
+# for pre-run preparation. Set --run-seconds=... to the actual remaining time
+# BEFORE starting the scoring run. The robot cannot read the referee's clock.
+RUN_BUDGET_S = 420.0
+RETURN_RESERVE_S = 35.0  # final 10+ s signal plus uncertainty in the next step

@@ -24,8 +24,7 @@ MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c (и с nav.py).
 # ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
 # status flags z_cnt boot_id cmd_err crc16
-TELEM_VER = 3
-FMT = "<BBfffffffBHHHHffBBBHHH"
+from protocol import TELEM_VER, FMT
 PKT_SIZE = len(MAGIC) + struct.calcsize(FMT)
 
 COLORS = {0: "?", 1: "WHITE", 2: "BLUE", 3: "BLACK", 4: "MIRROR", 5: "RED"}
@@ -83,7 +82,7 @@ def main():
                 del buf[:PKT_SIZE]
                 (_v, seq, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
                  cr, cg, cb, cc, lcm, rcm, status, fl,
-                 z_cnt, boot_id, cmd_err, _c) = struct.unpack(FMT, body)
+                 z_cnt, boot_id, cmd_err, *health_crc) = struct.unpack(FMT, body)
                 if boot is not None and boot_id != boot:
                     print(f">>> ESP ПЕРЕЗАГРУЗИЛСЯ: boot_id {boot:04X} -> {boot_id:04X}",
                           flush=True)
@@ -118,6 +117,7 @@ def main():
                           f"цвет={COLORS.get(color, color):6} "
                           f"rgbc=({cr},{cg},{cb},{cc}) "
                           f"L={lcm:7.1f} R={rcm:7.1f}см Z#{z_cnt} "
+                          f"motor_V={[v / 10 if v else None for v in health_crc[:4]]} "
                           f"err={cmd_err}  {flags_str(fl)}",
                           flush=True)
     except KeyboardInterrupt:

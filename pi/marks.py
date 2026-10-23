@@ -8,14 +8,16 @@
     всего к перпендикуляру, и чтение стоя (шаги - в её докстринге);
   - перёд не читается: _front_reread() - отъехать, довернуть корпус к метке,
     прочитать ещё раз.
-Не прочиталась целиком - решаем по надёжным кольцам (_decide_unread): робот
-не остаётся с «не знаю».
+Неполные чтения объединяются по надёжным кольцам (_decide_unread).
+Неизвестное кольцо остаётся неизвестным: выдумывать его цвет нельзя.
 """
 from __future__ import annotations
 
 import time
 
 import watch_logic
+from motion_estimate import ProjectedOdometry, MotionDiscontinuity, rebase
+from continuous import observation_speed
 from victim_detect import CONF_FAST, MIN_BOX_PX, RING_SCORE, SUM_TO_TYPE
 from walls import SIDE_THRESH
 
@@ -40,6 +42,7 @@ def watch_marks_while_driving(trip):
     if trip.watcher is not None:
         if trip.watcher.dead:
             trip.watcher, trip.watch_armed = None, False
+            trip.perception_cap = float('inf')   # дальше без наблюдателя
         else:
             sides = trip.side_hold.update(trip.now_m, {
                 "right": lidar_walls.wall_present(trip.walls["right"], SIDE_THRESH),
@@ -47,6 +50,10 @@ def watch_marks_while_driving(trip):
             flat = watch_logic.watch_allowed(trip.ramp_state, trip.bump_on, trip.assist_mode,
                                              trip.pitch_delta, config.OBSTACLE_REARM_DEG, trip.wall_forced)
             trip.watch_armed = trip.watcher.arm(sides if flat and trip.vmark is None else set())
+            gap = trip.watcher.coverage_gap(sides) if flat and sides and trip.vmark is None else .05
+            # Камеры отстают - едем медленнее, но не встаём: не ниже MOVE_MIN_CMS.
+            trip.perception_cap = (max(config.MOVE_MIN_CMS, observation_speed(gap))
+                                   if flat and sides else float('inf'))
             for b in trip.watcher.poll():
                 if not trip.side_hold.frame_ok(b.side, b.t_frame):
                     # Кадр снят, когда стены с этой стороны не было:
@@ -54,8 +61,19 @@ def watch_marks_while_driving(trip):
                     print(f"\n    [W] {b.side} {b.cls} {b.conf:.2f} - в момент кадра "
                           f"стены нет, не беру  {b.image or ''}")
                     continue
-                m = _watch_decide(b, trip.cell, trip.hdg, trip.odo_t, trip.vmark is not None)
+                m = _watch_decide(b, trip.cell, trip.hdg, trip.odo_t, False)
                 if m is not None:
+                    if trip.vmark is not None:
+                        queue = getattr(trip, 'mark_queue', [])
+                        if not any(q['side'] == m['side'] and abs(q['pos_mm']-m['pos_mm']) < 50
+                                   for q in [trip.vmark, *queue]):
+                            if len(queue) < 8:
+                                queue.append(m)
+                            else:
+                                print(f"\n    [WARN] очередь меток полна - {m['side']} "
+                                      f"{m['pos_mm']:.0f}мм не беру")
+                        trip.mark_queue = queue
+                        continue
                     # Тормозим К МЕТКЕ: встать с ней в центре кадра, тем
                     # же профилем. Не успеваем - как можно раньше и
                     # подъезд назад (см. watch_logic.brake_target_cm).
@@ -65,6 +83,14 @@ def watch_marks_while_driving(trip):
                     trip.watch_armed = trip.watcher.arm(set())
                     print(f"    метка на ходу: торможу {'(поздно) ' if late else 'к метке '}"
                           f"через {(m['stop_cm'] - trip.traveled_cm) * 10:.0f}мм")
+            queued = getattr(trip, 'mark_queue', [])
+            if queued:
+                candidates = ([trip.vmark] if trip.vmark is not None else []) + queued
+                candidates.sort(key=lambda m: m['pos_mm'])
+                m, trip.mark_queue = candidates[0], candidates[1:]
+                m['stop_cm'], _ = watch_logic.brake_target_cm(m['pos_mm'], trip.traveled_cm,
+                    trip.fwd, config.MARK_BRAKE_DECEL_CMS2, config.STOP_LEAD_S)
+                trip.vmark = m
 
 
 def _interrupt_reason():
@@ -76,6 +102,8 @@ def _interrupt_reason():
         return "paused"
     if not esp_link.telem_fresh():
         return "link_lost"
+    if not esp_link.gyro_fresh():
+        return "link_lost"          # ждём в finish_trip вместе со связью
     return None
 
 
@@ -85,7 +113,9 @@ def _watch_decide(b, cell, hdg, odo_t, busy):
     порог, лишняя остановка стоит ~2с."""
     x1, y1, x2, y2 = b.xyxy
     side_px = max(x2 - x1, y2 - y1)
-    t_cm = odo_t.at(b.t_frame) or 0.0
+    t_cm = odo_t.at_checked(b.t_frame)
+    if t_cm is None:
+        return None  # stale inference result has no supported world position
     off = watch_logic.px_to_mm(watch_logic.mark_center_y(b.xyxy))
     pos = watch_logic.mark_pos_mm(t_cm * 10.0, off)
     key, along = watch_logic.world_along(cell, hdg, watch_logic.wall_of(hdg, b.side),
@@ -105,7 +135,7 @@ def _reject_mark(cell, hdg, side, pos_mm):
 
 
 @timing._timed("камеры")
-def _mark_stop(m, cell, hdg, target_yaw, base_cm):
+def _mark_stop(m, cell, hdg, target_yaw, base_cm, motion_start=None):
     """Остановка на метку, замеченную на ходу (см. drive_cells): найти её стоя,
     подъехать так, чтобы была целиком в кадре, прочитать read_wall() и
     приписать клетке. Робот уже затормозил профилем; одометрия не обнулялась,
@@ -113,11 +143,28 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     поездку ('paused'/'lifted'/'link_lost') или None - ехать дальше."""
     side = m["side"]
     det = state.victim_r if side == "right" else state.victim_l
-    l0, r0 = esp_link.get_odo()
+    try:
+        odometry = ProjectedOdometry(motion_start or esp_link.motion_snapshot(), target_yaw)
+    except MotionDiscontinuity:
+        return "link_lost"          # одометрии нет - finish_trip подождёт её
+    position_cm = base_cm
 
     def trav_mm():
-        cl, cr = esp_link.get_odo()
-        return (base_cm + ((cl - l0) + (cr - r0)) / 2.0) * 10.0
+        """Путь от центра исходной клетки, мм. Разрыв истории не прерывает
+        чтение метки: motion_estimate.rebase."""
+        nonlocal position_cm, odometry
+        try:
+            samples = esp_link.motion_since(odometry.last.seq)
+        except MotionDiscontinuity:
+            samples = [esp_link.motion_snapshot()]
+        for sample in samples:
+            try:
+                position_cm += odometry.update(sample)
+            except MotionDiscontinuity as error:
+                odometry, gap = rebase(odometry, sample)
+                position_cm += gap
+                print(f"    [WARN] метка: разрыв одометрии ({error}) - по колёсам {gap:+.1f}см")
+        return position_cm * 10.0
 
     esp_link.settle_brake(0.06)
     if state.watcher is not None:
@@ -136,7 +183,8 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm):
     # 1. Где метка сейчас. Обычно робот проехал её на тормозном пути и в
     # кадре её уже нет - тогда подъезд по координате, запомненной на ходу.
     found = look()
-    est = m["pos_mm"] - watch_logic.mark_pos_mm(trav_mm(), 0.0)
+    trav = trav_mm()
+    est = m["pos_mm"] - watch_logic.mark_pos_mm(trav, 0.0)
     creep, src = watch_logic.creep_to_mark(None if found is None else found[2], est,
                                            config.ALIGN_TOL_MM)
     if creep is None:
@@ -263,8 +311,9 @@ def _reread_aligned(det, cell, wall_dir, yaw, est_mm, what, tries, expect=True):
         creep = max(-MARK_ALIGN_MAX_MM, min(MARK_ALIGN_MAX_MM, moved + creep)) - moved
         if abs(creep) >= 1.0:
             print(f"    {what}: не прочиталась - подравниваюсь по метке {creep:+.0f}мм ({src})")
-            driving.creep_soft(creep, yaw)
-            moved += creep
+            moved += driving.creep_soft(creep, yaw)
+            if _interrupt_reason():
+                break
         result = _read_wall(det, cell, wall_dir, what, expect=expect)
         if result is not None:
             return result, None, moved
@@ -296,8 +345,9 @@ def _front_reread(det, cell, wall_dir, unread):
         step = victims._front_back_step(FRONT_BACK_MM)
         if step >= 1.0:
             print(f"    перёд: метка не читается - назад {step:.0f}мм")
-            driving.creep_soft(-step, g)
-            backed += step
+            backed -= driving.creep_soft(-step, g)
+            if _interrupt_reason():
+                break
         else:
             print("    перёд: метка не читается, сзади стена - назад некуда")
         try:
@@ -326,13 +376,14 @@ def _reset_unread(det):
 
 
 def _decide_unread(det, unread):
-    """Мишень в кадре, а кольца так и не прочитались ни разу целиком -
-    решение всё равно нужно (робот не остаётся с «не знаю»): каждое кольцо
-    - из самого надёжного из чтений этой серии (watch_logic.guess_rings).
-    Формат - как у прочитанной метки, плюс 'guessed'."""
+    """Объединить надёжные частичные чтения. Неполный итог -> None.
+    Полный итог имеет формат обычной метки и флаг 'guessed'."""
     hist = list(getattr(det, "unread_hist", None) or []) or [unread]
     rings = watch_logic.guess_rings(hist)
-    checksum = sum(RING_SCORE.get(c) or 0 for c in rings)
+    if len(rings) != 5 or any(c not in RING_SCORE for c in rings):
+        print(f"    кольца не подтверждены: {rings} — без индикации и комплектов")
+        return None
+    checksum = sum(RING_SCORE[c] for c in rings)
     vtype = SUM_TO_TYPE.get(checksum, "fake")
     print(f"    кольца так и не прочитались ({len(hist)} чтен.) - по надёжным: "
           f"{rings} = {checksum:+d} → {vtype}")

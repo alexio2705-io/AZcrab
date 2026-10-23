@@ -29,6 +29,8 @@ void motor_can_init(void);
 // Logs bus state, error counters, and our own TX success/fail count - see
 // the comment above its definition in motor.c for how to read it.
 void motor_can_log_status(void);
+// LK legacy 0x9A status1. Zero voltage / -128 temperature means no fresh reply.
+void motor_get_health(uint8_t id, uint16_t *decivolts, int8_t *temp, uint8_t *error);
 
 void motor_wake(uint8_t id);     // 0x88: wake the motor out of a stopped state
 void motor_stop(uint8_t id);     // 0x81: stop, keeps running state (silent coast)

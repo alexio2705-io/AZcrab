@@ -105,9 +105,11 @@ def _store_scan(msg, w):
                                  "right": w["right_still_n"],
                                  "left": w["left_still_n"],
                                  "back": w["back_n"]}
+        state.telem["scan_t"] = msg.get("t")
+        state.telem["scan_period"] = msg.get("trev", 0.1)
+        state.telem['timed_back'] = msg.get('timed_back', (None, None))
+        state.scan_cnt += 1
     state.lidar_dropped = msg.get("dropped", 0)
-    state.telem["scan_t"] = msg.get("t")   # monotonic конца оборота (шов сзади)
-    state.scan_cnt += 1
     pts = msg.get("pts")
     if pts is not None:
         state.scan_pts.append((state.scan_cnt, msg.get("t"), msg.get("trev", 0.1), pts))
@@ -128,6 +130,18 @@ def get_walls():
     'right', 'left', 'back': мм или None}."""
     with state.lock:
         return dict(state.telem["wall"])
+
+
+def get_wall_snapshot():
+    """Sequence, end time, ranges and revolution duration from one scan."""
+    with state.lock:
+        return (state.scan_cnt, state.telem.get("scan_t"), dict(state.telem["wall"]),
+                state.telem.get("scan_period", 0.1))
+
+
+def get_timed_back(seq):
+    with state.lock:
+        return state.telem.get('timed_back', (None, None)) if seq == state.scan_cnt else (None, None)
 
 
 def get_walls_still():
@@ -151,13 +165,30 @@ def wall_present(d, thresh):
 def wait_scan(n=2, timeout=3.0):
     """False - свежих сканов нет (лидар молчит): get_walls*() отдаст старое."""
     start = state.scan_cnt
-    t0 = time.time()
+    t0 = time.monotonic()
     while state.scan_cnt - start < n:
-        if time.time() - t0 > timeout:
+        if time.monotonic() - t0 > timeout:
             print(f"\n  [WARN] лидар молчит {timeout:.0f}с - стены могут быть устаревшими")
             return False
         time.sleep(0.04)
     return True
+
+
+def wait_lidar_back():
+    """Лидар молчит - это не конец заезда. Тормоз, ждём новые сканы сколько
+    угодно, на пульте и дисплее фаза wait_lidar. Старые стены в карту не идут:
+    замер после ожидания берётся с нового скана."""
+    import dash_live            # здесь, а не наверху: dash_live импортирует нас
+    esp_link.brake()
+    phase = state.live.get("phase")
+    print("\n  [WAIT] лидар молчит - жду, заезд продолжится")
+    dash_live._note_phase("wait_lidar")
+    t0 = time.monotonic()
+    start = state.scan_cnt
+    while state.scan_cnt - start < 3:
+        time.sleep(0.1)
+    dash_live._note_phase(phase)
+    print(f"  лидар снова в порядке (ждали {time.monotonic() - t0:.1f}с)")
 
 
 # Последний замер стоя - для повторного использования, пока робот не сдвинулся.
@@ -176,6 +207,7 @@ def _walls_cached(n):
     t, cn, (l0, r0), yaw0, w = state.walls_cache
     l, r = esp_link.get_odo()
     if (cn >= n and time.monotonic() - t <= WALLS_REUSE_S
+            and 0 <= time.monotonic() - (state.telem.get("scan_t") or 0) < 0.25
             and abs(l - l0) <= WALLS_REUSE_CM and abs(r - r0) <= WALLS_REUSE_CM
             and abs(turning.angle_err(esp_link.get_yaw(), yaw0)) <= WALLS_REUSE_DEG):
         return dict(w)
@@ -201,9 +233,10 @@ def measure_walls(n=config.WALL_VOTE_SCANS, fresh=False):
     FAR = 9999.0
     odo0, yaw0 = esp_link.get_odo(), esp_link.get_yaw()
     samples = {"front": [], "right": [], "left": [], "back": []}
-    fresh_ok = True
     for _ in range(max(1, n)):
-        fresh_ok &= wait_scan(1)
+        if not wait_scan(1):
+            state.walls_cache = None
+            wait_lidar_back()
         w = get_walls_still()
         for k in samples:
             samples[k].append(w[k] if w[k] is not None else FAR)
@@ -213,8 +246,7 @@ def measure_walls(n=config.WALL_VOTE_SCANS, fresh=False):
         out[k] = None if m >= FAR else m
     # Положение - на НАЧАЛО замера: если робот сдвинулся во время него, то
     # следующая проверка это увидит и замер не переиспользует.
-    if fresh_ok:     # устаревший замер не кладём в кеш
-        state.walls_cache = (time.monotonic(), max(1, n), odo0, yaw0, dict(out))
+    state.walls_cache = (time.monotonic(), max(1, n), odo0, yaw0, dict(out))
     return out
 
 
@@ -233,7 +265,8 @@ def measure_front_confirmed(n=config.WALL_VOTE_SCANS, retries=3):
     for _ in range(retries):
         if w["front"] is not None:
             break
-        wait_scan(2)
+        if not wait_scan(2):
+            wait_lidar_back()
         w = measure_walls(n, fresh=True)   # переспрос - это всегда новый замер
     return w
 

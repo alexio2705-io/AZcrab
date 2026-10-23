@@ -39,7 +39,10 @@ systemd (maze-oled.service рядом, установка - в нём): на э�
 """
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # web dashboard and screen renderer also run on Windows
+    fcntl = None
 import json
 import os
 import socket
@@ -217,6 +220,8 @@ class Ssd1306:
         os.write(self.fd, bytes((0x00,) + c))
 
     def _open(self):
+        if fcntl is None:
+            raise OSError("I2C display requires Linux")
         fd = os.open(self.dev, os.O_RDWR)
         try:
             for a in ADDRS:
@@ -387,13 +392,14 @@ PHASE = {
     "time": "ВРЕМЯ: ДОМОЙ", "returning": "ДОМОЙ", "at_start": "НА СТАРТЕ",
     "sleep": "ПАУЗА ESP", "blinking": "ФИНИШ", "done": "ГОТОВО", "fatal": "АВАРИЯ",
     "wait_link": "НЕТ СВЯЗИ С ESP", "wait_motors": "МОТОРЫ ВЫКЛ",
-    "wait_lidar": "ЛИДАР МОЛЧИТ",
+    "wait_lidar": "ЛИДАР МОЛЧИТ", "wait_gyro": "НЕТ КУРСА BNO",
 }
 # Ждём человека: шапка мигает, ниже - что сделать (переносится по словам).
 WAIT_HINT = {
     "wait_link": "проверь ESP и провод к Pi - заезд продолжится сам",
     "wait_motors": "включи питание моторов - заезд продолжится сам",
     "wait_lidar": "проверь кабель и питание лидара",
+    "wait_gyro": "проверь BNO085 и его провод к ESP",
     "fatal": "смотри лог nav.py",
 }
 ALERT_TAGS = ("[WARN]", "[FATAL]", "[WAIT]", "[!]")
@@ -850,6 +856,9 @@ def scr_run(cv, st):
         bottom_bar(cv, "пауза ESP: рестарт с чекпоинта", t)
     elif a:
         bottom_bar(cv, a, t)
+    else:
+        volts = [v for v in (snap.get("motors") or {}).get("voltage", []) if v is not None]
+        cv.text(35, 53, f"4S {min(volts):.1f}V" if volts else "4S --.-V")
 
 
 # ── прочитанная метка - на весь экран ────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 
 import runplan
+from continuous import floor_stop_target
 import tile_classify
 import tile_rules
 
@@ -60,7 +61,7 @@ BLACK_FRACTION = 0.15
 PITCH_COLOR_GUARD_DEG = 3.0
 COLOR_RECOVER_S = 0.35
 
-BLUE_STOP_S = 6.0          # стоянка на синей плитке
+BLUE_STOP_S = config.BLUE_WAIT_S
 
 # ── Чекпоинт: красная плитка ─────────────────────────────────
 # Красный проверяется ПЕРЕД чёрным, и это не косметика: красная плитка
@@ -103,6 +104,10 @@ def tile_color():
 
 def _tile_color():
     if not state.USE_COLOR_SENSOR:
+        return config.TILE_UNKNOWN
+    with state.lock:
+        color_fresh = state.telem.get("color_fresh", False)
+    if not color_fresh or not esp_link.telem_fresh():
         return config.TILE_UNKNOWN
     now = time.monotonic()
     if abs(esp_link.get_pitch() - state.pitch_level) > PITCH_COLOR_GUARD_DEG:
@@ -158,13 +163,14 @@ def blue_stop(cell):
     иначе потихоньку поедет.
     """
     state.blue_cells.add(cell)
+    state.blue_visits[cell] = state.blue_visits.get(cell, 0) + 1
     print(f"  ■ СИНЯЯ {cell}: стоим {BLUE_STOP_S:.0f}с")
-    end = time.time() + BLUE_STOP_S
-    while time.time() < end:
+    end = time.monotonic() + BLUE_STOP_S
+    while time.monotonic() < end:
         if esp_link.interrupted():
             return
         esp_link.brake()
-        time.sleep(min(0.5, max(0.0, end - time.time())))
+        time.sleep(min(0.5, max(0.0, end - time.monotonic())))
 
 
 def load_tile_calib():
@@ -248,13 +254,20 @@ def check_floor_while_driving(trip):
         k_under = trip.cells + 1 if trip.traveled_cm >= trip.boundary_cm - trip.cell_cm / 2.0 + 1.5 else trip.cells
         trip.tiles.setdefault(k_under, set()).add(tile)
         tile_rules.remember(trip.plan.cell(k_under), tile)
-        if (tile_rules.role(tile) == tile_rules.STOP and k_under == trip.cells >= 1 and not trip.stopping
-                and trip.traveled_cm < trip.boundary_cm - trip.cell_cm - 3.0):
-            # Синюю заметили уже после решения "прямо": её центр ещё
-            # впереди - встаём там (правила: стоянка на синей).
-            trip.boundary_cm -= trip.cell_cm
+        if tile_rules.role(tile) == tile_rules.STOP and k_under >= 1:
+            # Undo the decision to pass this tile. If its center is already
+            # behind us, brake now rather than continuing through a stop tile.
+            center = floor_stop_target(trip.boundary_cm, trip.cells, k_under, trip.cell_cm)
+            changed = not trip.stopping or center < trip.boundary_cm - .1
+            trip.boundary_cm = min(trip.boundary_cm, center)
+            if hasattr(trip, 'passages'):
+                trip.passages.cancel_from(k_under)
+            trip.cells = min(trip.cells, k_under - 1)
             trip.stopping, trip.pending, trip.reason = True, False, "stop"
-            print(f"\n    → кл.{trip.cells}: синяя после решения - стоп в её центре")
-        if tile_rules.role(tile) == tile_rules.CHECKPOINT and 1 <= k_under <= trip.cells and k_under not in trip.cp_done:
+            if changed:
+                print(f"\n    → кл.{k_under}: плитка-стоп — торможу")
+        if (tile_rules.role(tile) == tile_rules.CHECKPOINT and 1 <= k_under <= trip.cells
+                and k_under not in trip.cp_done
+                and trip.traveled_cm >= floor_stop_target(trip.boundary_cm, trip.cells, k_under, trip.cell_cm)):
             trip.cp_done.add(k_under)
             trip.plan.checkpoint(k_under)

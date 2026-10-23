@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "driver/uart.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -31,7 +32,7 @@ static const char *TAG = "LINK";
 
 // 200 Hz. The encoders are polled at half that (ENC_POLL_HZ = 100 in motor.c),
 // so odometry repeats in every other packet. See robot_link.h on why the
-// packet size is irrelevant to this choice (9% of the link at 200 Hz).
+// packet size is modest (16% of the link at 200 Hz with v4).
 #define TELEM_HZ        200
 #define COLOR_POLL_HZ   30
 #define CMD_TIMEOUT_US  500000   // no "M:" for this long while moving -> brake
@@ -106,6 +107,25 @@ static uint16_t             g_boot_id;
 // g_motors_stopped в motor.c правился из обеих задач вперемешку. Под этим
 // замком - g_run_state и любой вызов robot_*() после старта задач.
 static SemaphoreHandle_t g_motor_lock;
+static QueueHandle_t g_servo_queue;
+static portMUX_TYPE g_color_lock = portMUX_INITIALIZER_UNLOCKED;
+// Protected by g_motor_lock. Contact stays visible until a deliberate reverse
+// or a brake acknowledgement after release; queued forward commands cannot restart.
+static bool g_forward;
+static uint8_t g_bumper_hits;
+
+static bool forward_translation(float left, float right)
+{
+    // Counter-rotating wheels are an in-place turn: the user explicitly
+    // excludes these from bumper stopping. Reverse also remains available.
+    return left >= 0 && right >= 0 && (left > 0 || right > 0);
+}
+
+static uint8_t bumper_now(void)
+{
+    return (button_pressed(CLICKER_1) ? 1 : 0) |
+           (button_pressed(CLICKER_2) ? 2 : 0);
+}
 
 static void motor_lock(void)   { xSemaphoreTake(g_motor_lock, portMAX_DELAY); }
 static void motor_unlock(void) { xSemaphoreGive(g_motor_lock); }
@@ -128,9 +148,12 @@ typedef struct __attribute__((packed)) {
     uint8_t  z_cnt;     // g_z_cnt
     uint16_t boot_id;   // g_boot_id
     uint16_t cmd_err;   // g_cmd_err
+    uint16_t motor_dv[4]; // IDs 1,5,2,3; 0 = unavailable
+    int8_t motor_temp[4]; // -128 = unavailable
+    uint8_t motor_error[4];
     uint16_t crc;       // CRC-16/CCITT-FALSE по байтам [2 .. crc)
 } telem_t;
-_Static_assert(sizeof(telem_t) == 58, "telem_t: раскладка разошлась с robot_link.h и FMT на RPi");
+_Static_assert(sizeof(telem_t) == 74, "telem_t must match RPi v4 layout");
 
 // CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, без отражений и xorout.
 // На RPi это binascii.crc_hqx(data, 0xFFFF).
@@ -184,9 +207,11 @@ static void color_task(void *arg)
         if (apds9960_is_data_ready(APDS9960_I2C_PORT)) {
             uint16_t r, g, b, c;
             if (apds9960_read_color_data(APDS9960_I2C_PORT, &r, &g, &b, &c) == ESP_OK) {
+                portENTER_CRITICAL(&g_color_lock);
                 g_cr = r; g_cg = g; g_cb = b; g_cc = c;
                 g_color = apds9960_detect_color(r, g, b, c);
                 g_color_ok_us = esp_timer_get_time();
+                portEXIT_CRITICAL(&g_color_lock);
             }
         }
         vTaskDelayUntil(&last, pdMS_TO_TICKS(1000 / COLOR_POLL_HZ));
@@ -213,7 +238,10 @@ static void telem_task(void *arg)
             gyro_t = now;
         }
         bool gyro_fresh  = gyro_t && now - gyro_t < GYRO_FRESH_US;
+        portENTER_CRITICAL(&g_color_lock);
         bool color_fresh = g_color_ok_us && now - g_color_ok_us < COLOR_FRESH_US;
+        pkt.color = g_color; pkt.cr = g_cr; pkt.cg = g_cg; pkt.cb = g_cb; pkt.cc = g_cc;
+        portEXIT_CRITICAL(&g_color_lock);
         float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
         gyro_get_angles(&yaw, &pitch, &roll);
 
@@ -236,22 +264,25 @@ static void telem_task(void *arg)
         pkt.ax = lax;
         pkt.ay = lay;
         pkt.az = laz;
-        pkt.color    = g_color;
-        pkt.cr       = g_cr;
-        pkt.cg       = g_cg;
-        pkt.cb       = g_cb;
-        pkt.cc       = g_cc;
         pkt.left_cm  = isnan(lmm) ? 0.0f : lmm * 0.1f;
         pkt.right_cm = isnan(rmm) ? 0.0f : rmm * 0.1f;
         pkt.status   = (uint8_t)g_run_state;
-        pkt.flags    = (button_pressed(CLICKER_1) ? 1 : 0)
-                     | (button_pressed(CLICKER_2) ? 2 : 0)
+        motor_lock();
+        uint8_t hits = bumper_now() | g_bumper_hits;
+        motor_unlock();
+        pkt.flags    = hits
                      | (isnan(lmm) ? 0 : 4)
                      | (isnan(rmm) ? 0 : 8)
                      | (button_pressed(BTN_1) ? 16 : 0)
                      | (gyro_fresh  ? 32 : 0)
                      | (color_fresh ? 64 : 0);
         pkt.cmd_err  = g_cmd_err;
+        const uint8_t ids[] = {MOTOR_LEFT_1, MOTOR_LEFT_2, MOTOR_RIGHT_1, MOTOR_RIGHT_2};
+        for (int i = 0; i < 4; ++i) {
+            uint16_t dv; int8_t temp; uint8_t error;
+            motor_get_health(ids[i], &dv, &temp, &error);
+            pkt.motor_dv[i] = dv; pkt.motor_temp[i] = temp; pkt.motor_error[i] = error;
+        }
         pkt.crc      = crc16_ccitt((const uint8_t *)&pkt + 2, sizeof(pkt) - 4);
 
         uart_write_bytes(LINK_PORT, (const char *)&pkt, sizeof(pkt));
@@ -264,6 +295,7 @@ static void cmd_task(void *arg)
 {
     char    line[64];
     int     len = 0;
+    bool discard = false;
     int64_t last_cmd_us  = esp_timer_get_time();
     int64_t hold_until_us = 0;   // keep re-asserting the 0 dps hold until then
     int64_t last_hold_us  = 0;
@@ -272,11 +304,41 @@ static void cmd_task(void *arg)
 
     for (;;) {
         esp_task_wdt_reset();
+        // Check before parsing. A continuous oversized/invalid UART stream
+        // must not bypass the motion watchdog through parser continue paths.
+        motor_lock();
+        int64_t watchdog_now = esp_timer_get_time();
+        if (g_run_state == RUN_PAUSED) {
+            g_forward = moving = false;
+            hold_until_us = 0;
+        }
+        if (hold_until_us) {
+            if (watchdog_now >= hold_until_us) {
+                robot_stop_all();
+                hold_until_us = 0;
+            } else if (watchdog_now - last_hold_us >= BRAKE_HOLD_PERIOD_US) {
+                robot_brake();
+                last_hold_us = watchdog_now;
+            }
+        }
+        if (moving && watchdog_now - last_cmd_us > CMD_TIMEOUT_US) {
+            g_forward = false;
+            if (g_run_state == RUN_RUNNING) {
+                robot_brake();
+                hold_until_us = watchdog_now + BRAKE_HOLD_US;
+                last_hold_us = watchdog_now;
+            }
+            moving = false;
+            ESP_LOGW(TAG, "failsafe: motion command expired");
+        }
+        motor_unlock();
         uint8_t byte;
         if (uart_read_bytes(LINK_PORT, &byte, 1, pdMS_TO_TICKS(20)) > 0) {
             if (byte == '\n' || byte == '\r') {
+                if (discard) { discard = false; len = 0; continue; }
                 line[len] = '\0';
                 float l = 0.0f, r = 0.0f, cap = 0.0f;
+                int command_end = 0, short_end = 0;
                 // Без CRC или с неверной - в счётчик, а дальше по цепочке как
                 // пустая строка (её, "\r\n", ошибкой не считаем).
                 if (len > 0 && !cmd_crc_ok(line)) {
@@ -288,12 +350,25 @@ static void cmd_task(void *arg)
                 bool motor_cmd = strncmp(line, "K:", 2) != 0;
                 if (motor_cmd) motor_lock();
 
-                if (sscanf(line, "M:%f,%f", &l, &r) == 2
+                if (sscanf(line, "M:%f,%f%n", &l, &r, &command_end) == 2 && line[command_end] == '\0'
                     && isfinite(l) && isfinite(r)) {
                     l = clamp_abs(l, LINK_MAX_CMS);
                     r = clamp_abs(r, LINK_MAX_CMS);
                     last_cmd_us = esp_timer_get_time();
                     hold_until_us = 0;              // driving again, drop the hold
+                    if (l <= 0 && r <= 0 && (l < 0 || r < 0)) g_bumper_hits = 0;
+                    g_forward = forward_translation(l, r);
+                    if (g_forward && (bumper_now() || g_bumper_hits)) {
+                        g_bumper_hits |= bumper_now();
+                        robot_brake();
+                        g_forward = moving = false;
+                        l = r = 0;
+                        hold_until_us = last_cmd_us + BRAKE_HOLD_US;
+                        last_hold_us = last_cmd_us;
+                        motor_unlock();
+                        len = 0;
+                        continue;
+                    }
                     if (g_run_state == RUN_RUNNING && (l != 0.0f || r != 0.0f)) {
                         robot_set_side_speed_cms(l, r);
                         moving = true;
@@ -304,8 +379,11 @@ static void cmd_task(void *arg)
                         moving = false;
                     }
                 } else if (strncmp(line, "T:", 2) == 0
-                           && sscanf(line, "T:%f,%f,%f", &l, &r, &cap) >= 2
-                           && isfinite(l) && isfinite(r)) {
+                           && ((sscanf(line, "T:%f,%f,%f%n", &l, &r, &cap, &command_end) == 3
+                                && line[command_end] == '\0')
+                               || (sscanf(line, "T:%f,%f%n", &l, &r, &short_end) == 2
+                                   && line[short_end] == '\0'))
+                           && isfinite(l) && isfinite(r) && isfinite(cap)) {
                     // Третье поле (потолок скорости) необязательно: старый
                     // nav.py его не шлёт, и тогда действует ASSIST_CAP_CMS.
                     // Ток ограничивает motor.c (MOTOR_TORQUE_CMD_MAX_A).
@@ -313,6 +391,18 @@ static void cmd_task(void *arg)
                     if (cap > LINK_MAX_CMS) cap = LINK_MAX_CMS;
                     last_cmd_us = esp_timer_get_time();
                     hold_until_us = 0;
+                    if (l <= 0 && r <= 0 && (l < 0 || r < 0)) g_bumper_hits = 0;
+                    g_forward = forward_translation(l, r);
+                    if (g_forward && (bumper_now() || g_bumper_hits)) {
+                        g_bumper_hits |= bumper_now();
+                        robot_brake();
+                        g_forward = moving = false;
+                        hold_until_us = last_cmd_us + BRAKE_HOLD_US;
+                        last_hold_us = last_cmd_us;
+                        motor_unlock();
+                        len = 0;
+                        continue;
+                    }
                     if (g_run_state == RUN_RUNNING && (l != 0.0f || r != 0.0f)) {
                         robot_set_side_torque_amps(l, r, cap);
                         moving = true;
@@ -320,7 +410,9 @@ static void cmd_task(void *arg)
                         robot_stop_all();
                         moving = false;
                     }
-                } else if (line[0] == 'B') {
+                } else if (strcmp(line, "B") == 0) {
+                    g_forward = false;
+                    if (!bumper_now()) g_bumper_hits = 0;
                     last_cmd_us = esp_timer_get_time();
                     moving = false;
                     if (g_run_state == RUN_RUNNING) {
@@ -332,73 +424,39 @@ static void cmd_task(void *arg)
                         // держит 0 dps - молчим, как на "M:" в паузе.
                         robot_stop_all();
                     }
-                } else if (line[0] == 'Z') {
-                    last_cmd_us = esp_timer_get_time();
+                } else if (strcmp(line, "Z") == 0) {
                     motor_zero_encoders();
                     g_z_cnt++;     // строго после обнуления - см. telem_task
-                } else if (line[0] == 'R') {
+                } else if (strcmp(line, "R") == 0) {
                     // Снять паузу BTN_1 - см. btn_task().
-                    last_cmd_us = esp_timer_get_time();
                     if (g_run_state == RUN_PAUSED) {
                         g_run_state = RUN_RUNNING;
                         ESP_LOGI(TAG, "RPi: RESUME");
                     }
                 } else if (strncmp(line, "K:", 2) == 0) {
-                    // Дозатор дёргается только пока робот стоит (RPi шлёт это
-                    // после остановки на жертве), поэтому блокировать cmd_task
-                    // на время хода серво (~1с) безопасно - "M:" в этот момент
-                    // всё равно не идут.
-                    last_cmd_us = esp_timer_get_time();
-                    if (line[2] == 'L') servo_dispense_left();
-                    else if (line[2] == 'R') servo_dispense_right();
+                    // Queue dispensing without blocking parsing or the watchdog.
+                    // Host keeps normal 1.4 s spacing between kit commands.
+                    if (g_run_state == RUN_RUNNING && !moving &&
+                            (strcmp(line, "K:L") == 0 || strcmp(line, "K:R") == 0)) {
+                        char side = line[2];
+                        if (xQueueSend(g_servo_queue, &side, 0) != pdTRUE) g_cmd_err++;
+                    } else g_cmd_err++;
                 } else if (line[0] != '\0') {
                     g_cmd_err++;   // CRC сошлась, но команда не разобралась (или NaN)
                 }
                 if (motor_cmd) motor_unlock();
                 len = 0;
+            } else if (discard) {
+                continue;
             } else if (len < (int)sizeof(line) - 1) {
                 line[len++] = (char)byte;
             } else {
                 len = 0;   // overlong line, resync on the next newline
+                discard = true;
                 g_cmd_err++;
             }
         }
 
-        motor_lock();
-        int64_t now = esp_timer_get_time();
-
-        // На паузе моторы заглушил btn_task. Ни удержание тормоза, ни
-        // failsafe не должны их снова будить - иначе робот в руках держит
-        // 0 dps до BRAKE_HOLD_US.
-        if (g_run_state == RUN_PAUSED) {
-            hold_until_us = 0;
-            moving = false;
-        }
-
-        // A closed-loop speed command has to keep arriving or the motor falls
-        // out of closed loop (see motor.h) - a single 0 dps frame is a brake
-        // that quietly lets go a moment later. The RPi can be silent for a few
-        // hundred ms after a stop (it is measuring walls), so re-assert the
-        // hold here instead of relying on it to do so.
-        if (hold_until_us) {
-            if (now >= hold_until_us) {
-                robot_stop_all();     // long enough - go silent, don't cook the motors
-                hold_until_us = 0;
-            } else if (now - last_hold_us >= BRAKE_HOLD_PERIOD_US) {
-                robot_brake();
-                last_hold_us = now;
-            }
-        }
-
-        if (moving && (now - last_cmd_us) > CMD_TIMEOUT_US) {
-            robot_brake();
-            moving = false;
-            hold_until_us = now + BRAKE_HOLD_US;
-            last_hold_us  = now;
-            ESP_LOGW(TAG, "failsafe: no command for %d ms, braking",
-                     (int)(CMD_TIMEOUT_US / 1000));
-        }
-        motor_unlock();
     }
 }
 
@@ -407,6 +465,43 @@ static void cmd_task(void *arg)
 // "R" - после того как робота поставили на чекпоинт и нажали GPIO25 на
 // малине (nav.py, handle_lift). Раньше BTN_1 переключал пауза/ход, и второе
 // нажатие запускало бы робота, пока RPi ещё ждёт свою кнопку.
+static void bumper_task(void *arg)
+{
+    int64_t last_brake = 0;
+    bool was_hit = false;
+    for (;;) {
+        motor_lock();
+        uint8_t hits = bumper_now();
+        bool hit = g_run_state == RUN_RUNNING && g_forward && (hits || g_bumper_hits);
+        int64_t now = esp_timer_get_time();
+        if (hit && (!was_hit || now - last_brake >= BRAKE_HOLD_PERIOD_US)) {
+            g_bumper_hits |= hits;
+            robot_brake();
+            last_brake = now;
+            // Keep braking while the previous request was forward, including
+            // during a blocking servo move. A reverse request releases this.
+        }
+        was_hit = hit;
+        motor_unlock();
+        vTaskDelay(1);
+    }
+}
+
+static void servo_task(void *arg)
+{
+    char side;
+    for (;;) {
+        if (xQueueReceive(g_servo_queue, &side, portMAX_DELAY) == pdTRUE) {
+            motor_lock();
+            bool allowed = g_run_state == RUN_RUNNING;
+            motor_unlock();
+            if (!allowed) continue;
+            if (side == 'L') servo_dispense_left();
+            else servo_dispense_right();
+        }
+    }
+}
+
 static void btn_task(void *arg)
 {
     for (;;) {
@@ -415,6 +510,7 @@ static void btn_task(void *arg)
             bool pause = g_run_state == RUN_RUNNING;
             if (pause) {
                 g_run_state = RUN_PAUSED;
+                g_forward = false;
                 robot_brake();
             }
             motor_unlock();
@@ -472,6 +568,8 @@ void robot_link_run(void)
     servo_init();
     g_motor_lock = xSemaphoreCreateMutex();
     configASSERT(g_motor_lock);
+    g_servo_queue = xQueueCreate(1, sizeof(char));
+    configASSERT(g_servo_queue);
     g_boot_id = (uint16_t)esp_random();
 
     robot_wake_all();
@@ -488,6 +586,8 @@ void robot_link_run(void)
     xTaskCreate(cmd_task,   "cmd",   3072, NULL, 11, NULL);
     xTaskCreate(color_task, "color", 3072, NULL, 5,  NULL);
     xTaskCreate(btn_task,   "btn",   2560, NULL, 7,  NULL);
+    xTaskCreate(bumper_task,"bumper",2560, NULL, 12, NULL);
+    xTaskCreate(servo_task, "dispense",3072, NULL, 4, NULL);
     xTaskCreate(debug_task, "debug", 3072, NULL, 2,  NULL);
 
     ESP_LOGI(TAG, "link up: TX=%d RX=%d @ %d, accel=%d dps/s, telem v%d %d bytes, boot_id=%04X. "

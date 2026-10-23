@@ -84,7 +84,9 @@ def _scan_front(cx, cy, hdg):
     turning.turn_to(g, label="по сетке")
     step = _front_back_step(FRONT_VIEW_BACK_MM)
     if step >= 1.0:
-        driving.creep_soft(-step, g)
+        step = -driving.creep_soft(-step, g)
+        if esp_link.interrupted():
+            return hdg
     marks._reset_unread(det)
     try:
         result = det.scan(cx, cy, wall_dir)
@@ -217,6 +219,8 @@ def scan_sides(cx, cy, hdg, walls_rel=None):
                 result = marks._decide_unread(det, unread)
             if abs(moved) >= 1.0:
                 driving.creep_soft(-moved, g)       # обратно в центр клетки
+        if result is None:
+            continue  # incomplete cognitive target remains unconfirmed
         # Та же метка могла быть прочитана на ходу из соседней клетки (или
         # с другой стороны стыка) - второй раз не репортим.
         key, along = marks._mark_world(result, (cx, cy), hdg, wall_dir, moved)
@@ -249,7 +253,7 @@ def scan_cell(cx, cy, hdg, walls_rel=None):
     клетки - их тоже надо проверить. Каждая стена сканируется один раз
     (_scanned_walls), поэтому цикл конечен. Возвращает итоговый курс."""
     h = scan_sides(cx, cy, hdg, walls_rel)
-    while h != hdg and not esp_link.get_esp_paused():
+    while h != hdg and not esp_link.interrupted():
         hdg = h
         h = scan_sides(cx, cy, hdg)
     return h
@@ -265,7 +269,7 @@ def _blink_victim(result, side):
     print(f"    ▓ {result['label']} ({result['type']}, {side}): индикация "
           f"{VICTIM_STOP_S + MARGIN_S:.1f}с, аптечек={n_kits}{short}")
     if state.leds is not None:
-        esp_link.hold_while(blink_pink, state.leds, stop=esp_link.get_esp_paused)
+        esp_link.hold_while(blink_pink, state.leds, stop=esp_link.interrupted)
     return n_kits
 
 
@@ -288,7 +292,7 @@ def report_victim(result, side, wall_dir, hdg):
     Возвращает курс после выдачи.
     """
     n_kits = _blink_victim(result, side)
-    if esp_link.get_esp_paused():
+    if esp_link.interrupted():
         return hdg
 
     if n_kits == 0:
@@ -305,7 +309,7 @@ def give_kits(n_kits, wall_dir=None, hdg=0):
         if not ok:
             return hdg
     for _ in range(n_kits):
-        if esp_link.get_esp_paused():
+        if esp_link.interrupted():
             return hdg
         dispense_kit()
     return hdg

@@ -73,7 +73,7 @@ def handle_lift(resume_hdg):
     resume_hdg - заодно это поглощает неточность установки рукой, ведь
     snap_target() всё равно округляет к сетке 90°.
     """
-    print("\n  ✋ РОБОТА СНЯЛИ С ПОЛЯ - моторы выключены")
+    print("\n  ✋ ТРЕБУЕТСЯ ВОССТАНОВЛЕНИЕ ПОЗИЦИИ - моторы выключены")
     esp_link.stop()
     dash_live.leds_lifted(True)
     print(f"  Поставьте робота на чекпоинт курсом {config._DIR_NAME[resume_hdg]} "
@@ -102,6 +102,7 @@ def handle_lift(resume_hdg):
         # На полу |a| не превышает 0.06, а сразу после установки, пока
         # человек ещё рядом, доходит до 0.25 - LIFT_STEADY_MS2 между ними.
         level = (esp_link.telem_fresh()
+                 and esp_link.gyro_fresh()
                  and abs(esp_link.get_roll() - state.roll_level) < LIFT_SETTLE_ROLL_DEG
                  and abs(esp_link.get_yaw_rate()) < LIFT_SETTLE_RATE_DPS
                  and esp_link.get_accel() < LIFT_STEADY_MS2)
@@ -218,6 +219,15 @@ def restart_from_checkpoint(checkpoint):
     return cx, cy, hdg
 
 
+LIDAR_STALE_S = 1.0     # нет оборота дольше - лидар молчит
+
+
+def _lidar_fresh():
+    with state.lock:
+        scan_t = state.telem.get("scan_t")
+    return scan_t is not None and time.monotonic() - scan_t < LIDAR_STALE_S
+
+
 def wait_for_robot(cx, cy, hdg, checkpoint, phase):
     """Нет связи с ESP или моторы молчат (энкодеры не отвечают по CAN) - это
     не конец заезда: моторы просто выключили (или отошёл провод), их включат.
@@ -225,7 +235,9 @@ def wait_for_robot(cx, cy, hdg, checkpoint, phase):
     фаза снова phase. True - ждали (вызывающему стоит заново оценить, где он)."""
     def why():
         return ("wait_link" if not esp_link.telem_fresh() else
-                "wait_motors" if not esp_link.encoders_online() else None)
+                "wait_gyro" if not esp_link.gyro_fresh() else
+                "wait_motors" if not esp_link.encoders_online() else
+                "wait_lidar" if not _lidar_fresh() else None)
     w = why()
     if w is None:
         return False
@@ -235,11 +247,13 @@ def wait_for_robot(cx, cy, hdg, checkpoint, phase):
         if w != shown:
             shown = w
             print("  [WAIT] " + ("нет связи с ESP" if w == "wait_link" else
+                                 "нет свежего курса BNO085" if w == "wait_gyro" else
+                                 "лидар молчит" if w == "wait_lidar" else
                                  "моторы не отвечают (выключены?)") + " - жду, заезд продолжится")
             dash_live._write_state(cx, cy, hdg, checkpoint, w)
         time.sleep(0.2)
         w = why()
-    print(f"  связь и моторы снова в порядке (ждали {time.monotonic() - t0:.1f}с)")
+    print(f"  связь, датчики и моторы снова в порядке (ждали {time.monotonic() - t0:.1f}с)")
     time.sleep(0.5)          # пакеты и одометрия успокоились
     dash_live._write_state(cx, cy, hdg, checkpoint, phase)
     return True

@@ -44,15 +44,6 @@ static esp_err_t apds9960_read8(i2c_port_t i2c_port, uint8_t reg, uint8_t *value
     return i2c_master_write_read_device(i2c_port, APDS9960_I2C_ADDR, &reg, 1, value, 1, APDS9960_I2C_TIMEOUT_MS / portTICK_PERIOD_MS);
 }
 
-static esp_err_t apds9960_read16(i2c_port_t i2c_port, uint8_t reg_l, uint16_t *value) {
-    uint8_t buf[2];
-    esp_err_t err = i2c_master_write_read_device(i2c_port, APDS9960_I2C_ADDR, &reg_l, 1, buf, 2, APDS9960_I2C_TIMEOUT_MS / portTICK_PERIOD_MS);
-    if (err == ESP_OK) {
-        *value = ((uint16_t)buf[1] << 8) | buf[0];
-    }
-    return err;
-}
-
 static esp_err_t apds9960_set_again(i2c_port_t i2c_port, uint8_t gain) {
     uint8_t control = 0;
     esp_err_t err = apds9960_read8(i2c_port, APDS9960_REG_CONTROL, &control);
@@ -105,11 +96,16 @@ bool apds9960_is_data_ready(i2c_port_t i2c_port) {
 }
 
 esp_err_t apds9960_read_color_data(i2c_port_t i2c_port, uint16_t *r, uint16_t *g, uint16_t *b, uint16_t *c) {
-    esp_err_t err;
-    if ((err = apds9960_read16(i2c_port, APDS9960_REG_RDATAL, r)) != ESP_OK) return err;
-    if ((err = apds9960_read16(i2c_port, APDS9960_REG_GDATAL, g)) != ESP_OK) return err;
-    if ((err = apds9960_read16(i2c_port, APDS9960_REG_BDATAL, b)) != ESP_OK) return err;
-    return apds9960_read16(i2c_port, APDS9960_REG_CDATAL, c);
+    // One auto-increment burst: C,R,G,B registers 0x94..0x9B.
+    uint8_t reg = APDS9960_REG_CDATAL, raw[8];
+    esp_err_t err = i2c_master_write_read_device(i2c_port, APDS9960_I2C_ADDR,
+        &reg, 1, raw, sizeof(raw), pdMS_TO_TICKS(APDS9960_I2C_TIMEOUT_MS));
+    if (err != ESP_OK) return err;
+    *c = (uint16_t)raw[0] | ((uint16_t)raw[1] << 8);
+    *r = (uint16_t)raw[2] | ((uint16_t)raw[3] << 8);
+    *g = (uint16_t)raw[4] | ((uint16_t)raw[5] << 8);
+    *b = (uint16_t)raw[6] | ((uint16_t)raw[7] << 8);
+    return ESP_OK;
 }
 
 // Colour byte for the telemetry and the ESP console ONLY - nav.py does not use

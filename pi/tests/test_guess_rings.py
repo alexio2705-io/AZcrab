@@ -1,4 +1,5 @@
-"""watch_logic.guess_rings: решение по нескольким неполным чтениям мишени."""
+"""watch_logic.guess_rings: объединение нескольких неполных чтений мишени.
+Невидимое или спорное кольцо остаётся «?» - цвет не выдумывается."""
 import os
 import sys
 import unittest
@@ -23,21 +24,26 @@ class TestGuessRings(unittest.TestCase):
                       [True] * 4 + [False], [1, 1, 1, 1, 0.5])]
         self.assertEqual(wl.guess_rings(rs), ['yellow', 'red', 'green', 'red', 'black'])
 
-    def test_no_reliable_reading_votes_by_agreement(self):
+    def test_unreliable_ring_stays_unknown(self):
         rs = [reading(['yellow', 'red', 'green', 'red', 'black'], [True] * 4 + [False],
                       [1, 1, 1, 1, 0.55]),
               reading(['yellow', 'red', 'green', 'red', 'green'], [True] * 4 + [False],
                       [1, 1, 1, 1, 0.3])]
-        self.assertEqual(wl.guess_rings(rs)[4], 'black')
+        self.assertEqual(wl.guess_rings(rs)[4], '?')
 
-    def test_unseen_ring_counts_as_zero(self):
+    def test_unseen_ring_is_not_yellow(self):
         rs = [reading(['yellow', 'red', 'green', 'red', '?'], [True] * 4 + [False],
                       [1, 1, 1, 1, 0.0])]
-        self.assertEqual(wl.guess_rings(rs)[4], 'yellow')
+        self.assertEqual(wl.guess_rings(rs)[4], '?')
+
+    def test_conflicting_reliable_readings_stay_unknown(self):
+        rs = [reading(['yellow'] * 4 + ['black'], [True] * 5, [1] * 5),
+              reading(['yellow'] * 4 + ['blue'], [True] * 5, [1] * 5)]
+        self.assertEqual(wl.guess_rings(rs)[4], '?')
 
     def test_old_readings_without_reliability(self):
         self.assertEqual(wl.guess_rings([{'rings': ['black', 'blue', 'yellow', 'yellow', 'blue']}]),
-                         ['black', 'blue', 'yellow', 'yellow', 'blue'])
+                         ['?'] * 5)
 
 
 if __name__ == '__main__':

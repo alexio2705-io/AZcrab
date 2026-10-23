@@ -15,12 +15,10 @@ import config
 # мешает повороту, всё равно остановит корпус и попадёт в застревание выше.
 turn_ff = config.TURN_FF_INIT     # текущая (подстроенная) подача, живёт между поворотами
 
-# По умолчанию робот тормозит на каждой клетке: решение о повороте тогда
-# принимается стоя и по голосованию трёх сканов лидара. Непрерывный проезд
-# (--nonstop) быстрее, но решать приходится по одиночному замеру на ходу -
-# при 10Гц лидаре и 55см/с на клетку приходится всего ~6 сканов, и на практике
-# это давало пропущенные повороты и удары в стену.
-PER_CELL_STOP = True
+# Straight sections are continuous by default. Turns, stop tiles, targets
+# and insufficient observations still stop the trip. Diagnostic override:
+# --stop-each-cell. Centering controls lateral position while moving.
+PER_CELL_STOP = False
 
 # ══════════════════════════════════════════════════════════════
 #  Состояние
@@ -86,6 +84,7 @@ pitch_level = 0.0         # pitch на ровном полу, замеряетс
 roll_level = 0.0          # roll там же: угол на старте - это ноль, как бы ни стоял датчик
 color_ignore_until = 0.0  # гистерезис после съезда с препятствия
 blue_cells = set()        # клетки, хоть раз распознанные как синие - помним навсегда
+blue_visits = {}          # cell -> arrivals; retained across checkpoint recovery
 # Карта цветов (tile_rules.py): клетка -> последний известный цвет плитки;
 # клетка -> цвет, по которому на ней уже была реакция (помним навсегда, как
 # blue_cells); цвет последней плитки-стены, от которой откатились.
@@ -185,11 +184,13 @@ YAW_ORIGIN = 0.0
 telem_seq = 0
 telem_t = 0.0
 telem_evt = threading.Event()
+motion_history = deque(maxlen=4096)  # ~20 s at 200 Hz; bounded across camera pauses
 
 # Робота сняли с поля. Ставится сторожевым потоком, снимается handle_lift().
 lifted = threading.Event()
 
 link = None
+link_stop = threading.Event()  # deliberate shutdown must cancel reconnects
 write_lock = threading.Lock()
 
 # Детекторы жертв (YOLO, по одному на камеру) и лента индикации - все

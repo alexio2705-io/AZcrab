@@ -51,9 +51,23 @@ def track_front_wall(trip):
     # точки. Сбрасываем якорь только когда лидар явно говорит "далеко"
     # (валидное f_now >= FRONT_TRACK_MM) или когда экстраполяция от него
     # зашла дальше ANCHOR_STALE_CM - тогда старой точке верить рискованно.
-    seq = state.scan_cnt
-    trip.walls = lidar_walls.get_walls()      # один снимок стен на весь тик
+    seq, trip.scan_t, trip.walls, period = lidar_walls.get_wall_snapshot()
+    trip.scan_id = seq
+    trip.back_observation = lidar_walls.get_timed_back(seq)
+    if trip.scan_t is None or time.monotonic() - trip.scan_t >= 0.5:
+        trip.reason = "lidar_lost"      # finish_trip ждёт лидар и встаёт в центр клетки
+        esp_link.brake()
+        return "stop"
+    if trip.scan_t is None or not 0 <= time.monotonic() - trip.scan_t < 0.25:
+        trip.walls = dict.fromkeys(trip.walls)  # no steering/stopping from stale geometry
     f_now = trip.walls["front"]
+    # LD19 revolutions have their seam at the rear: front samples are near
+    # half a revolution before the end, not at the time Python receives them.
+    front_t = trip.scan_t - period * 0.5
+    front_odo = trip.odo_t.at_checked(front_t)
+    trip.front_scan_t, trip.front_scan_cm = front_t, front_odo
+    if front_odo is None:
+        f_now = None
     if trip.on_slope_now or trip.p_abs >= config.RAMP_MAP_DEG:
         # Перед лидара на склоне - это пол или небо. Стоя у подножия, он
         # вообще видит саму горку как стену в ~40см (130мм/tg25..30° + 15см),
@@ -64,11 +78,16 @@ def track_front_wall(trip):
         trip.last_seq = seq
         if f_now is not None:
             if f_now < FRONT_TRACK_MM:
-                trip.f_anchor, trip.f_anchor_cm = f_now, trip.traveled_cm
+                trip.f_anchor, trip.f_anchor_cm = f_now, front_odo
+                trip.f_anchor_t = front_t
             else:
                 trip.f_anchor = None
         elif trip.f_anchor is not None and trip.traveled_cm - trip.f_anchor_cm > ANCHOR_STALE_CM:
             trip.f_anchor = None
+    # A raised stair landing can lose the front wall while remaining level.
+    # Do not keep extrapolating the old wall indefinitely if wheels slip.
+    if trip.f_anchor is not None and time.monotonic() - trip.f_anchor_t > 0.25:
+        trip.f_anchor = None
     trip.f_est = None if trip.f_anchor is None else \
         trip.f_anchor - (trip.traveled_cm - trip.f_anchor_cm) * 10.0
 
@@ -87,17 +106,24 @@ def collect_cell_walls(trip):
             yaw_err = turning.angle_err(esp_link.get_yaw(), trip.target_yaw)
             for cnt, t_end, trev, pts in lidar_walls._new_scans(trip.scan_mark):
                 trip.scan_mark = cnt
+                def travel_at(t):
+                    value = trip.odo_t.at_checked(t)
+                    return None if value is None else value * 10.0
+                x_robot = travel_at(t_end - trev / 2.0)
+                if x_robot is None:
+                    continue
                 path_pts = corridor.to_path_frame(
-                    pts, t_end, trev, lambda t: (trip.odo_t.at(t) or 0.0) * 10.0, yaw_err)
-                x_robot = (trip.odo_t.at(t_end - trev / 2.0) or 0.0) * 10.0
+                    pts, t_end, trev, travel_at, yaw_err, trip.yaw_t.at_checked)
                 trip.kN, cN = trip.cells + 1, trip.boundary_cm * 10.0
                 trip.cell_sides.add_scan(path_pts, x_robot,
                                     [(trip.kN, cN), (trip.kN + 1, cN + corridor.CELL_MM)])
                 trip.cell_sides.prune(x_robot - corridor.CELL_MM)
-                to_n = (trip.boundary_cm - trip.traveled_cm) * 10.0
+                to_n = trip.boundary_cm * 10.0 - x_robot
                 # Нет переднего замера (мало точек в окне) - не голос
                 # "прохода": это не то же, что "впереди пусто".
-                if 0.0 < to_n <= corridor.CELL_MM and trip.walls["front"] is not None:
+                # Only this snapshot's range belongs to this revolution.
+                # Replaying a backlog must not vote the newest wall repeatedly.
+                if cnt == trip.scan_id and 0.0 < to_n <= corridor.CELL_MM and trip.walls["front"] is not None:
                     f_c = trip.walls["front"] - to_n
                     trip.front_votes[0 if lidar_walls.wall_present(f_c, WALL_THRESH) else 1] += 1
                 border = cN - corridor.HALF_CELL_MM
@@ -192,12 +218,12 @@ def decide_at_boundary(trip):
             else:
                 go, walls_rel = trip.plan.decide(trip.kN, res, (f_wall, fv, fn))
             if go:
+                trip.passages.schedule(trip.kN, trip.boundary_cm, walls_rel)
                 trip.cells += 1
                 trip.boundary_cm += trip.cell_cm
                 trip.rem += trip.cell_cm
                 trip.pending = True
                 trip.t_cell = time.monotonic()
-                trip.plan.passed(trip.kN, walls_rel)
                 for s in ("right", "left"):
                     trip.side_known[(trip.kN, s)] = walls_rel.get(s)
                 trip.front_votes = [0, 0]
@@ -208,12 +234,13 @@ def decide_at_boundary(trip):
         else:
             # Прямая продолжается - не тормозим вообще, просто отодвигаем
             # цель на клетку вперёд и едем дальше на крейсерской.
+            trip.passages.schedule(trip.cells + 1, trip.boundary_cm, {})
             trip.cells += 1
             trip.boundary_cm += trip.cell_cm
             trip.rem += trip.cell_cm
             trip.pending = True
             trip.t_cell = time.monotonic()
-            sys.stdout.write(f"\r    клетка {trip.cells} пройдена с ходу      \n")
+            sys.stdout.write(f"\r    клетка {trip.cells}: продолжаю без остановки      \n")
 
         if trip.stopping:
             brake_dist = trip.fwd * trip.fwd / (2.0 * config.BRAKE_DECEL_CMS2)

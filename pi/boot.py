@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import math
 import signal
 import subprocess
 import sys
@@ -64,23 +65,46 @@ def _on_hangup(_signum, _frame):
 class Run:
     """Что запуск отдаёт сценарию и уборке."""
 
-    def __init__(self, cells, map_web_proc, t_run):
+    def __init__(self, cells, map_web_proc, t_run, run_seconds=config.RUN_BUDGET_S):
         self.cells = cells                  # потолок клеток (аргумент N)
         self.map_web_proc = map_web_proc    # процесс веб-карты или None
         self.t_run = t_run                  # time.monotonic() старта заезда
+        self.run_seconds = run_seconds
 
 
 def start(args=None, cameras=True):
+    """Initialize hardware with cleanup even when startup fails midway."""
+    context = Run(0, None, time.monotonic())
+    state.link_stop.clear()
+    state.lidar_stop.clear()
+    try:
+        return _start(args, cameras, context)
+    except BaseException:
+        stop(context)
+        raise
+
+
+def _configure_motion(args):
+    if "--stop-each-cell" in args and "--nonstop" in args:
+        raise ValueError("choose --stop-each-cell or --nonstop, not both")
+    state.PER_CELL_STOP = "--stop-each-cell" in args
+
+
+def _start(args, cameras, context):
     """Запуск железа до первого шага заезда. args - флаги и N (по умолчанию
     sys.argv[1:]); cameras=False - без камер и YOLO, лента остаётся."""
     signal.signal(signal.SIGHUP, _on_hangup)
 
 
     args = list(sys.argv[1:] if args is None else args)
-    # Робот всегда останавливается в центре каждой клетки.
-    # Флаг --nonstop больше не меняет поведение; жёсткая гарантия —
-    # прямой вызов drive_cells(1) в flood_fill_run()/return_to_start().
-    state.PER_CELL_STOP = True
+    for arg in args:
+        if arg.startswith("--run-seconds="):
+            context.run_seconds = float(arg.split("=", 1)[1])
+            if not math.isfinite(context.run_seconds) or context.run_seconds <= config.RETURN_RESERVE_S:
+                raise ValueError("--run-seconds must exceed the return reserve")
+    _configure_motion(args)
+    print("Движение: " + ("остановка на каждой клетке (диагностика)" if state.PER_CELL_STOP
+                         else "прямые участки без остановок"))
     use_vision = "--no-vision" not in args
     use_web = "--no-web" not in args
     if "--no-color" in args:
@@ -103,6 +127,7 @@ def start(args=None, cameras=True):
     # остального boot'а. --no-web выключает совсем (например, при
     # тестовых заездах без сети).
     map_web_proc = dash_live.start_map_web() if use_web else None
+    context.map_web_proc = map_web_proc
     # Пульт: поток снимков поднимается всегда (без клиента он ничего не
     # делает), сама страница - только с вебом.
     dash_live.start_live()
@@ -114,7 +139,7 @@ def start(args=None, cameras=True):
     oled.ensure_daemon()
 
     try:
-        state.link = serial.Serial(LINK_PORT, LINK_BAUD, timeout=0.1)
+        state.link = serial.Serial(LINK_PORT, LINK_BAUD, timeout=0.1, write_timeout=0.2)
     except serial.SerialException as e:
         print(f"[FATAL] Порт {LINK_PORT}: {e}")
         sys.exit(1)
@@ -208,6 +233,7 @@ def start(args=None, cameras=True):
     # пока не нажата, лидар не проверяем и никуда не едем.
     dash_live._note_phase("wait_button")
     recovery.wait_start_button()
+    context.t_run = time.monotonic()  # count post-button calibration as well
     dash_live._note_phase("calib")
     if state.watcher is not None and not state.watcher.ready.is_set():
         print("  [WARN] наблюдатель меток ещё грузится - включится, когда будет готов")
@@ -216,6 +242,14 @@ def start(args=None, cameras=True):
     # в руках), в систему отсчёта не попадает. Если робота тронут во время
     # отсчёта ниже - гироскоп это поворот, он его учтёт.
     time.sleep(config.RESTART_SETTLE_S)
+    if not esp_link.gyro_fresh():
+        # Не выход: ждём гироскоп сколько угодно, на пульте - wait_gyro.
+        print("  [WAIT] нет свежего курса BNO085 - жду, заезд начнётся сам")
+        dash_live._note_phase("wait_gyro")
+        while not esp_link.gyro_fresh():
+            time.sleep(0.2)
+        dash_live._note_phase("calib")
+        time.sleep(config.RESTART_SETTLE_S)
     state.YAW_ORIGIN = esp_link.get_yaw()
     print(f"  YAW_ORIGIN={state.YAW_ORIGIN:.1f}° (по кнопке)")
     # Пауза BTN_1 живёт на ESP до команды "R" и переживает перезапуск
@@ -226,8 +260,7 @@ def start(args=None, cameras=True):
         esp_link.resume_esp()
 
     print("Ожидание лидара...")
-    lidar_walls.wait_scan(3, timeout=5.0)
-    if state.scan_cnt == 0:
+    if not lidar_walls.wait_scan(3, timeout=5.0):
         print("[FATAL] Лидар молчит")
         sys.exit(1)
     w0 = lidar_walls.get_walls()
@@ -252,7 +285,8 @@ def start(args=None, cameras=True):
     state.lifted.clear()
 
     state.t_run = time.monotonic()
-    return Run(cells, map_web_proc, state.t_run)
+    context.cells = cells
+    return context
 
 
 def stop(run):
@@ -261,38 +295,52 @@ def stop(run):
     print(timing.tick_report())
     # Ошибка порта не должна обрывать остальную уборку ниже.
     try:
-        esp_link.brake()
-        time.sleep(0.1)
-        esp_link.stop()
-        if state.link is not None:     # start() мог не дойти до порта
+        if state.link is not None and state.link.is_open:
+            esp_link.brake()
+            time.sleep(0.1)
+            esp_link.stop()
             state.link.flush()     # последний stop() - на провод до закрытия
-            state.link.close()
     except (serial.SerialException, OSError) as e:
         print(f"  [WARN] порт ESP при выходе: {e}")
+    finally:
+        state.link_stop.set()
+        if state.link is not None:
+            try:
+                state.link.close()
+            except (serial.SerialException, OSError):
+                pass
     state.lidar_stop.set()
-    if state.lidar_proc is not None and state.lidar_proc.poll() is None:
-        state.lidar_proc.terminate()
     print(f"  лидар: неполных оборотов отброшено {state.lidar_dropped}, "
           f"перезапусков процесса {state.lidar_restarts}")
     print("  линк ESP: " + esp_link.link_errors())
     # Карта не критична для самого заезда, поэтому без долгого ожидания:
     # если процесс не отвечает на SIGTERM за секунду, просто оставляем
     # его - следующий запуск лишь получит [WARN] про занятый порт.
-    if run.map_web_proc is not None:
-        run.map_web_proc.terminate()
+    for name, proc in (("lidar", state.lidar_proc), ("map", run.map_web_proc)):
+        if proc is None:
+            continue
         try:
-            run.map_web_proc.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            pass
-    if state.watcher is not None:
-        state.watcher.close()
-    if state.victim_r is not None:
-        state.victim_r.close()
-    if state.victim_l is not None:
-        state.victim_l.close()
-    if state.leds is not None:
-        state.leds.close()
-    GPIO.cleanup()
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"  [WARN] cleanup {name}: {e}")
+    for name, resource in (("watcher", state.watcher), ("right camera", state.victim_r),
+                           ("left camera", state.victim_l), ("front camera", state.victim_f),
+                           ("LEDs", state.leds)):
+        if resource is not None:
+            try:
+                resource.close()
+            except Exception as e:
+                print(f"  [WARN] cleanup {name}: {e}")
+    try:
+        GPIO.cleanup()
+    except Exception as e:
+        print(f"  [WARN] GPIO cleanup: {e}")
 
 
 def run(scenario, args=None, cameras=True):

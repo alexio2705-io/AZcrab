@@ -77,8 +77,11 @@ def on_arrive(cell, live):
     сделать то, что велит правило. Клетка, где реакция уже была, реагирует и
     тогда, когда датчик сейчас читает другое: однажды подтверждённому факту
     доверяем больше, чем одному живому замеру (как с синей, см. blue_stop)."""
+    known = state.tile_map.get(cell)
     remember(cell, live)
     color = live if _reacts(live) else state.react_cells.get(cell)
+    if color is None and _reacts(known):
+        color = known  # Seen on approach, possibly no longer under the floor sensor.
     rule = None if color is None else RULES.get(color)
     if rule is None or rule.react is None:
         return

@@ -15,12 +15,16 @@ class FakeWalk:
         return self.cx, self.cy
 
 
+def next_cell(x, y, d):
+    return x + (0, 1, 0, -1)[d], y + (1, 0, -1, 0)[d]
+
+
 class ActionsTest(unittest.TestCase):
     def setUp(self):
         self.st = fake_module("state", tile_map={}, react_cells={}, tacc={},
-                              victim_log=[], CHECKPOINT_TILE=config.TILE_SILVER)
+                              victim_log=[], blue_cells=set(), CHECKPOINT_TILE=config.TILE_SILVER)
         self.paths = {}
-        mm = fake_module("maze_map", find_path_bfs=self.fake_bfs)
+        mm = fake_module("maze_map", find_path_bfs=self.fake_bfs, _next_cell=next_cell)
         tr = import_with("tile_rules", state=self.st)
         self.act = import_with("actions", state=self.st, maze_map=mm, tile_rules=tr,
                                leds=fake_module("leds"), dash_live=fake_module("dash_live"),

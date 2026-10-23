@@ -175,18 +175,17 @@ void set_motor_speed(uint8_t id, float dps)
     send_frame(MOTOR_BASE_ID + id, data);
 }
 
-// 0xA1 maps -2000..2000 to -32..32 A of torque-producing IQ current.
-// Unlike speed mode, this command bypasses Max Torque Current in LK Motor
-// Tool, so never pass an unchecked value through to the motor. 3 A is below
-// the MG4005-i10's short peak region and is only used for a bounded boost.
-#define MOTOR_TORQUE_CMD_MAX_A 3.0f
+// MF4010 V2 / legacy V2.35: 0xA1 +/-2048 = +/-16.5 A IQ (MG differs).
+// Retain roughly the previous physical ceiling, now in correct MF units.
+// IQ is not the battery current. Recalibrate on the actual motor firmware.
+#define MOTOR_TORQUE_CMD_MAX_A 1.5f
 
 void set_motor_torque_amps(uint8_t id, float amps)
 {
     if (!isfinite(amps)) amps = 0.0f;   // NaN проходит мимо сравнений ниже
     if (amps >  MOTOR_TORQUE_CMD_MAX_A) amps =  MOTOR_TORQUE_CMD_MAX_A;
     if (amps < -MOTOR_TORQUE_CMD_MAX_A) amps = -MOTOR_TORQUE_CMD_MAX_A;
-    int16_t raw = (int16_t)lroundf(amps * (2000.0f / 32.0f));
+    int16_t raw = (int16_t)lroundf(amps * (2048.0f / 16.5f));
     uint8_t data[8] = {
         0xA1,
         0x00, 0x00, 0x00,
@@ -199,7 +198,7 @@ void set_motor_torque_amps(uint8_t id, float amps)
 
 #define WHEEL_DIAM_MM 86.0f   // measured
 #define WHEEL_DIAM_CM (WHEEL_DIAM_MM * 0.1f)
-#define TRACK_CM      20.0f   // guess; only robot_drive() uses it, see motor.h
+#define TRACK_CM      12.5f   // contact track; skid-turn effective track needs calibration
 #define WHEEL_CIRC_CM (WHEEL_DIAM_CM * (float)M_PI)
 
 // The right pair is mirror-mounted, so its own positive direction is the
@@ -370,6 +369,20 @@ static float         g_enc_zero[MF_MAX_ID + 1];
 // а до тех пор он в одометрии не участвует. Всё под g_enc_mux.
 static bool          g_enc_zero_pending[MF_MAX_ID + 1];
 static const uint8_t ENC_IDS[] = {ENC_LEFT_ID_1, ENC_LEFT_ID_2, ENC_RIGHT_ID_1, ENC_RIGHT_ID_2};
+typedef struct { uint16_t dv; int8_t temp; uint8_t error; int64_t t; } health_t;
+static health_t g_health[MF_MAX_ID + 1];
+
+void motor_get_health(uint8_t id, uint16_t *dv, int8_t *temp, uint8_t *error)
+{
+    *dv = 0; *temp = -128; *error = 0;
+    if (id > MF_MAX_ID) return;
+    portENTER_CRITICAL(&g_enc_mux);
+    health_t h = g_health[id];
+    portEXIT_CRITICAL(&g_enc_mux);
+    if (h.t && esp_timer_get_time() - h.t < 2000000) {
+        *dv = h.dv; *temp = h.temp; *error = h.error;
+    }
+}
 
 static bool enc_online(uint8_t id)
 {
@@ -382,10 +395,19 @@ static void enc_rx_task(void *arg)
     twai_message_t rx;
     for (;;) {
         if (twai_receive(&rx, portMAX_DELAY) != ESP_OK) continue;
+        if (rx.extd || rx.rtr || rx.data_length_code != 8) continue;
         if (rx.identifier <= MOTOR_BASE_ID || rx.identifier > MOTOR_BASE_ID + MF_MAX_ID)
             continue;
         uint8_t id = rx.identifier - MOTOR_BASE_ID;
         const uint8_t *d = rx.data;
+        if (d[0] == 0x9A) {
+            // Legacy LK MF CAN protocol status1, not the newer MyActuator layout.
+            portENTER_CRITICAL(&g_enc_mux);
+            g_health[id] = (health_t){.dv = (uint16_t)d[3] | ((uint16_t)d[4] << 8),
+                .temp = (int8_t)d[1], .error = d[7], .t = esp_timer_get_time()};
+            portEXIT_CRITICAL(&g_enc_mux);
+            continue;
+        }
         if (d[0] != MF_CMD_GET_POS) continue; // only care about position replies here
 
         int64_t raw = 0;
@@ -430,9 +452,15 @@ static void enc_poll_task(void *arg)
     TickType_t last = xTaskGetTickCount();
     uint8_t data[8] = {MF_CMD_GET_POS, 0, 0, 0, 0, 0, 0, 0};
     esp_task_wdt_add(NULL);   // см. robot_link_run() про TWDT
+    unsigned health_tick = 0;
     for (;;) {
         esp_task_wdt_reset();
         for (int i = 0; i < n; i++) send_frame(MOTOR_BASE_ID + ENC_IDS[i], data);
+        // One extra read each 100 ms, round-robin: 2.5 Hz per motor.
+        if (++health_tick % 10 == 0) {
+            uint8_t status[8] = {0x9A};
+            send_frame(MOTOR_BASE_ID + ENC_IDS[(health_tick / 10 - 1) % n], status);
+        }
         vTaskDelayUntil(&last, period);
     }
 }

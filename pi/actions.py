@@ -148,8 +148,10 @@ def go_to_nearest(w, cells, arrive=None):
     if not cells:
         return None
     cell = nearest(w, cells)
+    if cell is None:
+        return None
     go_to_cell(w, cell, arrive)
-    return cell
+    return cell if w.cell == cell else None
 
 
 def visit_targets(w, targets, work, done, stop):
@@ -159,15 +161,30 @@ def visit_targets(w, targets, work, done, stop):
     while not done() and not stop():
         cells = targets()
         if cells:
-            go_to_nearest(w, cells)
-            work(w.cell)
-        elif not explore_until(w, lambda: bool(targets()) or stop()):
+            reached = go_to_nearest(w, cells)
+            if reached is None:
+                return False
+            work(reached)
+        elif not explore_until(w, lambda: done() or bool(targets()) or stop()):
             return
 
 
 def nearest(w, cells):
-    """Ближайшая по пути (path_cells) из клеток cells."""
-    return min(cells, key=lambda c: path_cells(w, c))
+    """Reachable target with the lowest route cost, including blue visits.
+
+    One multi-goal search replaces a separate search for every candidate.
+    An unreachable target must not win by its straight-line distance.
+    """
+    targets = set(cells)
+    if not targets:
+        return None
+    path = maze_map.find_path_bfs(w.cell, targets.__contains__, w.hdg)
+    if path is None:
+        return None
+    cell = w.cell
+    for direction in path:
+        cell = maze_map._next_cell(*cell, direction)
+    return cell
 
 
 # ══════════════════════════════════════════════════════════════
@@ -215,7 +232,20 @@ class Timer:
 
     def trip_s(self, w, cell):
         """Оценка дороги до клетки, с: клеток пути × среднее на клетку × запас."""
-        return path_cells(w, cell) * sec_per_cell(w.total, state.tacc) * TRIP_MARGIN
+        import config
+        path = maze_map.find_path_bfs(w.cell, lambda c: c == cell, w.hdg)
+        # A disconnected route has no credible time estimate. Return immediately
+        # rather than pretending the Manhattan distance is a drivable route.
+        if path is None:
+            return float("inf")
+        estimate = len(path) * sec_per_cell(w.total, state.tacc) * TRIP_MARGIN
+        if path is not None and tile_rules.role(config.TILE_BLUE) == tile_rules.STOP:
+            pos = w.cell
+            for d in path:
+                pos = maze_map._next_cell(*pos, d)
+                if pos in state.blue_cells or state.tile_map.get(pos) == config.TILE_BLUE:
+                    estimate += config.BLUE_WAIT_S
+        return estimate
 
     def time_to_go(self, w, cell, extra_s=0.0):
         """Пора ехать в cell: времени осталось только на дорогу и extra_s

@@ -6,6 +6,9 @@ from collections import deque
 
 import corridor
 import watch_logic
+from motion_guard import SlipGuard
+from motion_estimate import ProjectedOdometry
+from continuous import PassageLedger, RangeFusion
 from walls import MASKS as _WALLS_MASKS
 
 import config
@@ -50,6 +53,24 @@ class Trip:
     start_trip(): там же комментарий к каждому."""
 
 
+def _zero_odometry():
+    """Ноль одометрии с подтверждением ESP (z_cnt сменился). Раньше - sleep(0.04)
+    вслепую: пакет с одометрией ДО "Z" брался за базу, и защита от скачка
+    (только >=100см) пропускала лишнюю клетку. Не подтвердил - это не конец
+    заезда: тормоз и повтор "Z", пока ESP не ответит."""
+    warned = False
+    while True:
+        z0 = esp_link.get_z_cnt()
+        esp_link.zero_odo()
+        if esp_link.wait_odo_zeroed(z0):
+            return
+        esp_link.brake()
+        if not warned:
+            print("    [WAIT] ESP не подтвердил сброс одометрии - повторяю 'Z'")
+            warned = True
+        time.sleep(0.2)
+
+
 def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     """Подготовка поездки: ноль одометрии, курс, все поля trip с начальными значениями."""
     trip = Trip()
@@ -58,12 +79,7 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     trip.cell = cell
     trip.hdg = hdg
     trip.plan = plan
-    z0 = esp_link.get_z_cnt()
-    esp_link.zero_odo()
-    # Раньше - sleep(0.04) вслепую: пакет с одометрией ДО "Z" брался за базу,
-    # и защита от скачка (только >=100см) пропускала лишнюю клетку.
-    if not esp_link.wait_odo_zeroed(z0):
-        print("    [WARN] ESP не подтвердил 'Z' за 0.2с - база одометрии без гарантии")
+    _zero_odometry()
 
     trip.target_yaw = turning.snap_target()
     # Ноль наклона - стоя в начале поездки: робот всегда выезжает из центра
@@ -74,7 +90,14 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     trip.pitch_start = esp_link.get_pitch()
 
     trip.last_l, trip.last_r = esp_link.get_odo()
+    initial_motion = esp_link.motion_snapshot()
+    trip.odometry = ProjectedOdometry(initial_motion, trip.target_yaw)
+    trip.last_l, trip.last_r = initial_motion.left, initial_motion.right
     trip.traveled_cm = 0.0
+    trip.slip_guard = SlipGuard()
+    trip.range_fusion = RangeFusion()
+    trip.passages = PassageLedger()
+    trip.perception_cap = float('inf')
     trip.head_off_f = 0.0
     trip.last_steer = 0.0
     trip.cell_cm = config.CELL_MM / 10.0
@@ -144,6 +167,7 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
 
     # Опора для оценки дистанции до передней стены между сканами лидара
     trip.f_anchor = None        # мм, последнее показание лидара
+    trip.f_anchor_t = 0.0
     trip.f_anchor_cm = 0.0      # одометрия в момент этого показания
     trip.last_seq = state.scan_cnt
     trip.wall_forced = False    # цель уже перенесена к внезапно близкой стене
@@ -157,6 +181,12 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
                else None)
     trip.side_hold = watch_logic.SideHold()
     trip.odo_t = watch_logic.OdoHistory()
+    trip.odo_t.add(initial_motion.t, 0.0)
+    trip.raw_odo_t = watch_logic.OdoHistory()
+    trip.raw_odo_t.add(initial_motion.t, 0.0)
+    trip.raw_traveled_cm = 0.0
+    trip.yaw_t = watch_logic.OdoHistory()
+    trip.yaw_t.add(initial_motion.t, (initial_motion.yaw - trip.target_yaw + 180) % 360 - 180)
     trip.vmark = None
 
     # Проезд без остановок по плану (flood_fill_run/return_to_start): стены

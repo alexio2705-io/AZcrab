@@ -24,11 +24,13 @@ const PHASE = {
   returning: ['возврат на старт', 'on'], at_start: ['на старте', 'on'], blinking: ['финиш', 'att'],
   done: ['готово', 'att'], fatal: ['авария', 'err'],
   wait_motors: ['моторы выключены — жду', 'err'], wait_link: ['нет связи с ESP — жду', 'err'],
+  wait_gyro: ['нет свежего курса BNO085 — жду', 'err'],
   wait_lidar: ['лидар молчит — жду', 'err'],
 };
 // Что делать человеку, пока робот ждёт - крупно в строке статуса.
 const WAIT_HINT = {wait_motors: 'Включите питание моторов - заезд продолжится сам',
                    wait_link: 'Проверьте ESP и провод к Pi - заезд продолжится сам',
+                   wait_gyro: 'Проверьте BNO085 и его соединение с ESP',
                    wait_lidar: 'Проверьте кабель и питание лидара'};
 const MODE = {ramp: 'горка', kick: 'толчок через препятствие'};
 const VNAME = {damaged: 'Повреждён', stable: 'Стабилен', unharmed: 'Не повреждён', fake: 'Фейк', unread: 'Кольца не прочитаны', cognetive: 'Когнитивная цель'};
@@ -80,8 +82,8 @@ function pushSnap(s) {
   rates.telem.push(s.t, s.telem_n);
   rates.scan.push(s.t, s.scan_n);
   const c = s.cams || {};
-  rates.camL.push(s.t, c.left?.fid);
-  rates.camR.push(s.t, c.right?.fid);
+  rates.camL.push(s.t, c.left?.preview_fid ?? c.left?.fid);
+  rates.camR.push(s.t, c.right?.preview_fid ?? c.right?.fid);
 }
 
 function pushLog(lines) {
@@ -265,6 +267,7 @@ function renderHero() {
 
 // ── камеры ──────────────────────────────────────────────
 const camState = {left: {fid: -1, loading: false}, right: {fid: -1, loading: false}};
+let frontPending = false, frontRequested = 0, frontLoaded = 0;
 
 function boxColor(cls) {
   const k = Object.keys(VCOLOR).find(k => String(cls).toLowerCase().startsWith(k.slice(0, 4)));
@@ -272,6 +275,18 @@ function boxColor(cls) {
 }
 
 function renderCams() {
+  const frontFrame = $('cam-front').querySelector('.frame');
+  const frontImage = $('frontImg'), stamp = performance.now();
+  if (mode === 'live' && LINK?.nav && !frontPending && stamp - frontRequested > 200) {
+    frontPending = true; frontRequested = stamp;
+    frontImage.onload = () => { frontPending = false; frontLoaded = performance.now(); dirty = true; };
+    frontImage.onerror = () => { frontPending = false; frontLoaded = 0; dirty = true; };
+    frontImage.src = `/cam/front.jpg?t=${Math.round(stamp)}`;
+  }
+  if (frontPending && stamp - frontRequested > 1500) frontPending = false;
+  const frontLive = mode === 'live' && LINK?.nav && frontLoaded > 0 && stamp - frontLoaded < 1200;
+  frontFrame.classList.toggle('live', !!frontLive);
+  $('frontMeta').textContent = frontLive ? 'live · 5 fps max' : 'no fresh frame';
   for (const side of ['left', 'right']) {
     const card = $('cam-' + side);
     const fr = card.querySelector('.frame'), img = fr.querySelector('img'), svg = fr.querySelector('svg'), ph = fr.querySelector('.ph');
@@ -284,12 +299,17 @@ function renderCams() {
       else if (info.failed) note = 'камера отказала';
       else if (!info.ready) note = 'YOLO загружается…';
       else if (!info.armed) note = 'камера смотрит только на ходу вдоль стены';
-      live = info.armed && mode === 'live' && info.fid > 0;
-      meta = info.armed ? `${fmt(hz, 0)} к/с` : 'выкл';
-      if (live && info.fid !== st.fid && !st.loading) {
-        st.loading = true; st.fid = info.fid;
-        img.onload = img.onerror = () => { st.loading = false; };
-        img.src = `/cam/${side}.jpg?f=${info.fid}`;
+      const fid = info.preview_fid ?? info.fid;
+      const age = S.t - (info.preview_t ?? info.t ?? -1e9);
+      live = !info.dead && !info.failed && mode === 'live' && fid > 0 && age < 1 && !!LINK?.nav;
+      meta = `${fmt(hz, 0)} к/с · ${Math.max(0, Math.round(age * 1000))} мс · ${info.armed ? 'распознавание' : 'обзор'}`;
+      if (age >= 1) note = 'кадр устарел';
+      if (st.loading && performance.now() - st.started > 1500) st.loading = false;
+      if (live && fid !== st.fid && !st.loading) {
+        st.loading = true; st.fid = fid; st.started = performance.now();
+        img.onload = () => { st.loading = false; dirty = true; };
+        img.onerror = () => { st.loading = false; st.fid = -1; dirty = true; };
+        img.src = `/cam/${side}.jpg?f=${fid}`;
       }
     }
     if (mode === 'replay' && info) { note = 'кадры в запись не попадают - только рамки'; }
@@ -345,7 +365,7 @@ function renderRadar() {
     ctx.fillText(r, cx + 3, cy - r * k + 11);
   }
   // робот
-  const L = 193, Wr = 125;
+  const L = 193, Wr = 137;
   const [rx, ry] = P(L / 2, -Wr / 2);
   ctx.fillStyle = 'rgba(242,169,0,.14)'; ctx.strokeStyle = css('--acc'); ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.rect(rx, ry, Wr * k, L * k); ctx.fill(); ctx.stroke();
@@ -500,6 +520,11 @@ function renderMap() {
   if (!pose || !mapGeo) return;
   let [x, y] = mapGeo.center(pose.cx, pose.cy);
   const d = s && s.drive;
+  if (d && d.origin && d.hdg != null && d.travel_mm != null) {
+    [x, y] = mapGeo.center(d.origin[0], d.origin[1]);
+    x += DX[d.hdg] * d.travel_mm / 300 * CELL;
+    y -= DY[d.hdg] * d.travel_mm / 300 * CELL;
+  } else
   if (d && d.cell != null && d.rem_mm != null) {
     const along = Math.max(0, d.cell * 300 - d.rem_mm) / 300 * CELL;
     x += DX[pose.hdg] * along; y -= DY[pose.hdg] * along;
@@ -527,6 +552,7 @@ const SENS = [
   ['Лидар', [['front', 'Спереди'], ['back', 'Сзади'], ['left', 'Слева'], ['right', 'Справа']]],
   ['Гироскоп', [['yaw', 'Курс'], ['pitch', 'Тангаж'], ['roll', 'Крен'], ['rate', 'Скор. поворота']]],
   ['Колёса', [['odoL', 'Путь L'], ['odoR', 'Путь R'], ['spd', 'Скорость'], ['steer', 'Руление']]],
+  ['Моторы · 4S', [['motorV', 'Напряжения 1/5/2/3'], ['motorT', 'Температуры'], ['motorE', 'Ошибки'], ['slip', 'Контроль движения']]],
   ['Плитка', [['tile', 'Цвет'], ['rgbc', 'R G B C'], ['bump', 'Бампер L/R'], ['kits', 'Комплекты']]],
   ['Связь с ESP', [['esp', 'Состояние'], ['age', 'Возраст пакета'], ['enc', 'Энкодеры'], ['fresh', 'Гиро / цвет']]],
   ['Курс по стенам', [['wall_e', 'Ошибка стен'], ['head_off', 'Поправка'], ['level', 'Этаж'], ['cp', 'Чекпоинт']]],
@@ -551,6 +577,13 @@ function renderSensors() {
   for (const [k, , v, cls] of sysRows()) setv(k, esc(v), cls);
   const s = S;
   if (!s) return;
+  $('liveHealth').textContent = LINK?.nav
+    ? `ESP ${s.telem_age_ms ?? '—'} мс · LD19 ${s.lidar?.age_ms ?? '—'} мс` : 'нет свежих данных';
+  const ft = s.front_floor;
+  $('floorNext').textContent = ft && s.t - ft.t < 0.5
+    ? `${ft.color} · ${Math.round(ft.conf * 100)}%` : 'нет наблюдения';
+  const bv = (s.motors?.voltage || []).filter(v => v != null);
+  $('batteryNow').textContent = bv.length ? `4S · ${Math.min(...bv).toFixed(1)} V` : 'нет ответа моторов';
   const w = s.walls || {}, thr = s.thr || [260, 210, 260];
   const wv = (d, t) => [d == null ? '—' : fmt(d, 0, ' мм'), d == null ? 'mut' : d < t ? 'ok' : ''];
   setv('front', ...wv(w.front, thr[0])); setv('back', ...wv(w.back, thr[2]));
@@ -559,6 +592,11 @@ function renderSensors() {
   setv('yaw', fmt(i.yaw, 1, '°')); setv('pitch', fmt(i.pitch, 1, '°'), Math.abs(i.pitch) > 10 ? 'warn' : '');
   setv('roll', fmt(i.roll, 1, '°'), Math.abs(i.roll) > 10 ? 'warn' : ''); setv('rate', fmt(i.rate, 0, '°/с'));
   const o = s.odo || [], d = s.drive || {};
+  const mh = s.motors || {};
+  setv('motorV', (mh.voltage || []).map(v => fmt(v, 1, ' V')).join(' / ') || '—');
+  setv('motorT', (mh.temp || []).map(v => fmt(v, 0, '°')).join(' / ') || '—');
+  setv('motorE', (mh.error || []).join(' / ') || '—', (mh.error || []).some(Boolean) ? 'err' : '');
+  setv('slip', ({unobservable: 'нет наблюдения', observing: 'контроль', scene_changed: 'смена сцены', slip: 'пробуксовка'})[d.slip] || '—');
   setv('odoL', fmt(o[0], 1, ' см')); setv('odoR', fmt(o[1], 1, ' см'));
   const vv = withVel(HIST.slice(-4)).map(r => r[H.vel]).filter(v => v != null);
   const vel = vv.length ? vv.reduce((a, b) => a + b, 0) / vv.length : null;

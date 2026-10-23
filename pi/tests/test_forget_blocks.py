@@ -8,7 +8,8 @@ from fakes import fake_module, import_with
 
 def fresh_state():
     return fake_module("state", maze={}, blocked=set(), soft_closed=set(),
-                       black_cells=set(), wall_votes={}, edge_fixed={}, ramps={},
+                       black_cells=set(), blue_cells=set(), blue_visits={},
+                       tile_map={}, wall_votes={}, edge_fixed={}, ramps={},
                        side_pref="right")
 
 

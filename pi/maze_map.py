@@ -8,6 +8,7 @@ import config
 import state
 import bumper
 import lidar_walls
+import tile_rules
 
 
 # Пороги стены для КАРТЫ - замер стоя в центре клетки. Своя стена ребра
@@ -103,6 +104,8 @@ def vote_wall(cx, cy, d, present):
     Итог - знак суммы голосов; при равенстве остаётся прежнее значение.
     Рёбра из _edge_fixed голосами не меняются. Смену уже известного
     значения печатает - по логу видно, где лидар ошибался."""
+    if present is None:
+        return  # Unknown is not a vote for an open passage.
     key = _edge_key(cx, cy, d)
     if key in state.edge_fixed:
         return
@@ -184,10 +187,12 @@ def open_dirs(cx, cy):
 
 
 def find_path_bfs(start, goal_test, hdg=0):
-    """Кратчайший (по числу клеток) путь от start по уже известным открытым
+    """Путь с наименьшей стоимостью от start по уже известным открытым
     рёбрам карты до ближайшей клетки, для которой goal_test() верно.
 
-    Из равных по длине путей выигрывает тот, что раньше сворачивает в
+    Стоимость учитывает ход, повороты и синие плитки. Историческое имя
+    сохранено для совместимости. Из равных по стоимости путей выигрывает
+    тот, что раньше сворачивает в
     приоритетную сторону (_side_pref): соседи каждой клетки перебираются
     по SIDE_ORDER относительно курса, которым в неё въехали (для start -
     hdg, текущий курс робота).
@@ -195,8 +200,20 @@ def find_path_bfs(start, goal_test, hdg=0):
     Возвращает список направлений (0..3, по одному на клетку пути; первый
     шаг - первый элемент) или None, если ни одна подходящая клетка не
     достижима по разведанной части лабиринта."""
-    return runplan.bfs_path(start, hdg, open_dirs, _next_cell, goal_test,
-                            config.SIDE_ORDER[state.side_pref])
+    return runplan.weighted_path(start, hdg, open_dirs, _next_cell, goal_test,
+                                 config.SIDE_ORDER[state.side_pref], route_step_cost)
+
+
+def route_step_cost(src, dst, heading, direction):
+    turn = abs((direction - heading + 2) % 4 - 2)
+    cost = config.ROUTE_CELL_S + config.ROUTE_QUARTER_TURN_S * turn
+    # Challenges can explicitly make blue ordinary; then no standard penalty.
+    if tile_rules.role(config.TILE_BLUE) == tile_rules.STOP and (
+            dst in state.blue_cells or state.tile_map.get(dst) == config.TILE_BLUE):
+        cost += config.BLUE_WAIT_S
+        if state.blue_visits.get(dst, 0):
+            cost += config.ROUTE_BLUE_REVISIT_PENALTY_S
+    return cost
 
 
 def find_frontier_path(cx, cy, hdg=0):

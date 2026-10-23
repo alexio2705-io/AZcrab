@@ -100,7 +100,7 @@ class SysStats:
         except (OSError, ValueError, IndexError):
             try:
                 d["load"] = round(os.getloadavg()[0], 2)
-            except OSError:
+            except (OSError, AttributeError):
                 pass
         try:
             with open("/sys/class/thermal/thermal_zone0/temp") as f:
@@ -342,9 +342,15 @@ def sys_loop(hub):
 
 # ── картинки с камер ───────────────────────────────────────────
 _shm_cache = {}
+_shm_lock = threading.Lock()
 
 
 def camera_jpeg(info):
+    with _shm_lock:
+        return _camera_jpeg_locked(info)
+
+
+def _camera_jpeg_locked(info):
     """JPEG последнего кадра стороны из общей памяти наблюдателя или None."""
     try:
         import numpy as np
@@ -358,7 +364,8 @@ def camera_jpeg(info):
     shm = _shm_cache.get(name)
     if shm is None:
         try:
-            shm = shared_memory.SharedMemory(name=name)
+            shm = (shared_memory.SharedMemory(name=name, track=False) if sys.version_info >= (3, 13)
+                   else shared_memory.SharedMemory(name=name))
             if sys.version_info < (3, 13):
                 # не отдавать чужой сегмент своему resource_tracker (см. victim_watch.attach_shm)
                 from multiprocessing import resource_tracker
@@ -366,7 +373,16 @@ def camera_jpeg(info):
         except (OSError, ValueError):
             return None
         _shm_cache[name] = shm
-    frame = np.ndarray((320, 320, 3), np.uint8, buffer=shm.buf).copy()
+        while len(_shm_cache) > 6:
+            old = next(iter(_shm_cache))
+            _shm_cache.pop(old).close()
+    offset = 8 if info.get("preview") else 0
+    before = int.from_bytes(shm.buf[:8], "little") if offset else 0
+    if offset and (not before or before & 1):
+        return None
+    frame = np.ndarray((320, 320, 3), np.uint8, buffer=shm.buf, offset=offset).copy()
+    if offset and before != int.from_bytes(shm.buf[:8], "little"):
+        return None
     ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
     return buf.tobytes() if ok else None
 
@@ -442,6 +458,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"s": h.snap, "map": h.map, "link": h.link(),
                                        "log": list(h.log)[-500:], "hist": list(h.hist),
                                    "oled": h.oled})
+            if path == "/cam/front.jpg":
+                preview = "/dev/shm/maze_front.jpg"
+                try:
+                    if not self.hub.link()["nav"] or time.time() - os.stat(preview).st_mtime > 1:
+                        return self._send(404, b"stale frame", "text/plain")
+                    return self._file(preview)
+                except OSError:
+                    return self._send(404, b"no front frame", "text/plain")
             m = re.match(r"^/cam/(left|right)\.jpg$", path)
             if m:
                 return self._camera(m.group(1))
@@ -478,6 +502,9 @@ class Handler(BaseHTTPRequestHandler):
     def _camera(self, side):
         snap = self.hub.snap or {}
         info = (snap.get("cams") or {}).get(side)
+        if (not self.hub.link()["nav"] or not info or info.get("dead") or
+                info.get("preview_t") is None or snap.get("t", 0) - info["preview_t"] > 1):
+            return self._send(404, b"stale frame", "text/plain")
         jpg = camera_jpeg(info) if info else None
         if jpg is None:
             return self._send(404, b"no frame", "text/plain")
@@ -501,9 +528,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, "application/x-ndjson; charset=utf-8")
 
     def _events(self):
+        self.connection.settimeout(2.0)  # disconnect slow clients, do not queue old states
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         h = self.hub

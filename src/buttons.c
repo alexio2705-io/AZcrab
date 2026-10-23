@@ -21,8 +21,8 @@ static const struct {
     [CLICKER_2] = {GPIO_NUM_4, false, "CLICKER_2"},
 };
 
-#define POLL_MS      5
-#define DEBOUNCE_CNT 6 // 6 * 5ms = 30ms of agreement before a state change
+#define POLL_MS      1
+#define DEBOUNCE_CNT 30 // panel/release: 30 ms; bumper press: first sample
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_pressed[BUTTON_COUNT];
@@ -47,6 +47,7 @@ static void buttons_task(void *arg)
 
     for (;;) {
         for (int i = 0; i < BUTTON_COUNT; i++) {
+            const uint8_t press_count = i == BTN_1 ? DEBOUNCE_CNT : 1;
             // Raw edge tally, before debounce and before polarity: sampled
             // every 5ms and never cleared, so a press of any length leaves a
             // permanent mark even if its log line scrolls away.
@@ -62,7 +63,7 @@ static void buttons_task(void *arg)
                 up[i] = 0;
                 // Clamped, so the transition fires exactly once per press no
                 // matter how long the button is held.
-                if (down[i] < DEBOUNCE_CNT && ++down[i] == DEBOUNCE_CNT) {
+                if (down[i] < press_count && ++down[i] == press_count) {
                     portENTER_CRITICAL(&s_lock);
                     s_pressed[i] = true;
                     s_click[i] = true;
@@ -83,7 +84,7 @@ static void buttons_task(void *arg)
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS) > 0 ? pdMS_TO_TICKS(POLL_MS) : 1);
     }
 }
 

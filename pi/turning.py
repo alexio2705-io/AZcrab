@@ -155,7 +155,9 @@ def turn_to(target, label=None, seen=None, walls=None):
             # обрезанную краем до полоски, стоя не прочитать
             if (b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
                     and y2 - y1 >= watch_logic.FRAME_PX * 0.125):
-                seen.append((b.side, yaw_hist.at(b.t_frame) % 360.0, b.xyxy, b.conf, b.cls))
+                frame_yaw = yaw_hist.at_checked(b.t_frame)
+                if frame_yaw is not None:
+                    seen.append((b.side, frame_yaw % 360.0, b.xyxy, b.conf, b.cls))
     tag = label if label is not None else f"{target:.1f}°"
 
     print(f"    поворот {tag}  цель={target:.1f}°  yaw={esp_link.get_yaw():.1f}°")
@@ -300,7 +302,18 @@ def align_at_wall(target_yaw):
     """Доводка вдоль движения: встать в центр клетки по передней стене, а
     если её нет (например, после разворота) - по задней."""
     on_slope = abs(esp_link.get_pitch() - state.pitch_level) > SLOPE_BACK_GUARD_DEG
-    for it in range(ALIGN_TRIES):
+    # Inspect an already available fresh scan first; no three-scan pause at
+    # every tile and no repeated forward/back corrections for small errors.
+    scan_t = state.telem.get("scan_t")
+    if scan_t is None or not 0 <= time.monotonic() - scan_t < 0.25 or on_slope:
+        return
+    w0 = lidar_walls.get_walls()
+    f0, b0 = w0["front"], w0["back"]
+    need0 = (f0 - config.FRONT_CENTER_MM if f0 is not None and f0 < WALL_THRESH else
+             BACK_CENTER_MM - b0 if b0 is not None and b0 < BACK_THRESH else None)
+    if need0 is None or abs(need0) < config.ALIGN_MIN_CORRECTION_MM:
+        return
+    for it in range(1):
         if esp_link.interrupted():
             return
         # Было measure_walls(2) - медиана из 2 это фактически БОЛЬШЕЕ из двух
@@ -324,7 +337,7 @@ def align_at_wall(target_yaw):
                 print(f"    [выр] B={b:.0f}мм на наклоне - игнорирую")
             return                               # не по чему выравниваться
 
-        if abs(need) < config.ALIGN_TOL_MM:
+        if abs(need) < max(config.ALIGN_TOL_MM, config.ALIGN_MIN_CORRECTION_MM):
             if it:
                 print(f"    [выр] ок, {src}мм")
             return

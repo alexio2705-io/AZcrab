@@ -2,16 +2,16 @@
    страница отдаётся с Pi без интернета - только системные шрифты. */
 :root {
   color-scheme: dark;
-  --bg: #111110;
-  --card: #1a1a19;
-  --card2: #222220;
-  --chip: #0c0c0b;
+  --bg: #0b111b;
+  --card: #121d2b;
+  --card2: #1a293b;
+  --chip: #080f19;
   --line: rgba(255, 255, 255, .07);
   --line2: rgba(255, 255, 255, .16);
   --fg: #f2f2ee;
   --fg2: #c3c2b7;
   --mut: #85847c;
-  --acc: #f2a900;          /* робот, чекпоинт, внимание */
+  --acc: #56d8c6;          /* робот, чекпоинт, внимание */
   --ok: #3fb27f;
   --warn: #e5a53b;
   --err: #e5534b;
@@ -22,7 +22,7 @@
   --damaged: #e5534b; --stable: #c7d84b; --unharmed: #3fb27f; --cog: #9085e9;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --r: 8px;
+  --r: 14px;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -112,14 +112,26 @@ h2 .meta { margin-left: auto; text-transform: none; letter-spacing: 0; font-weig
 .grid {
   display: grid; gap: 12px; margin: 12px 16px; grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-template-areas:
-    "camL camL camL camR camR camR radar radar radar model model model"
-    "map map map map map sens sens sens sens vict vict vict"
-    "map map map map map chart chart chart chart chart chart chart"
+    "map map map map map map camL camL camL camR camR camR"
+    "map map map map map map radar radar radar model model model"
+    "front front front front sens sens sens sens sens sens sens sens"
+    "vict vict vict vict vict vict chart chart chart chart chart chart"
     "log log log log log log log log log log log log";
 }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; min-width: 0; }
+.healthbar { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 12px 16px;
+  padding: 12px 18px; border: 1px solid var(--line2); border-radius: var(--r);
+  background: var(--chip); color: var(--mut); font: 10px var(--mono); }
+.healthbar b { margin-left: 10px; color: var(--fg); font-size: 12px; }
+.card.map .map-wrap { min-height: 460px; }
+.top { border-bottom: 1px solid var(--line2); }
+.card { box-shadow: 0 5px 18px #0002; }
+@media (max-width: 680px) { .card.map .map-wrap { min-height: 300px; } }
 #cam-left { grid-area: camL; } #cam-right { grid-area: camR; }
 .radar { grid-area: radar; } .model { grid-area: model; }
+.front-preview { grid-area: front; }
+.front-preview .frame { aspect-ratio: 540 / 730; max-height: 320px; }
+.front-preview img { object-fit: contain; }
 .map { grid-area: map; } .sensors { grid-area: sens; } .victims { grid-area: vict; }
 .charts { grid-area: chart; } .log { grid-area: log; }
 
@@ -211,7 +223,7 @@ dialog h3 { margin: 0 0 12px; font-size: 15px; }
 /* ── узкие экраны ─────────────────────────────────── */
 @media (max-width: 1180px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-areas: "camL camR" "radar model" "map map" "sens vict" "chart chart" "log log"; }
+    grid-template-areas: "map map" "camL camR" "front radar" "sens model" "vict vict" "chart chart" "log log"; }
   .hero { grid-template-columns: auto 1fr auto; } .counts { grid-column: 1 / -1; grid-template-columns: repeat(6, auto); justify-content: start; }
   .oled { grid-column: 3; grid-row: 1; }
 }
@@ -220,7 +232,7 @@ dialog h3 { margin: 0 0 12px; font-size: 15px; }
   .frame { max-height: 260px; }
   .chips { order: 3; width: 100%; }
   .grid { grid-template-columns: minmax(0, 1fr); margin: 12px 16px;
-    grid-template-areas: "camL" "camR" "radar" "model" "map" "sens" "vict" "chart" "log"; }
+    grid-template-areas: "map" "camL" "camR" "front" "radar" "model" "sens" "vict" "chart" "log"; }
   .hero { grid-template-columns: minmax(0, 1fr); margin: 12px 16px 0; padding: 12px; gap: 12px; }
   .timer .big { font-size: 36px; } .status .line { font-size: 17px; white-space: normal; }
   .counts { grid-template-columns: repeat(3, auto); }

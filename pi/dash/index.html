@@ -39,6 +39,11 @@
   </figure>
 </section>
 
+<aside class="healthbar" aria-label="Свежесть данных">
+  <span>КАНАЛЫ <b id="liveHealth">ожидание данных</b></span>
+  <span>ПЛИТКА ВПЕРЕДИ <b id="floorNext">неизвестно</b></span>
+  <span>ПИТАНИЕ <b id="batteryNow">—</b></span>
+</aside>
 <main class="grid">
   <section class="card cam" id="cam-left">
     <h2>Левая камера <span class="meta num"></span></h2>
@@ -51,6 +56,10 @@
   <section class="card radar">
     <h2>Лидар <span class="meta num" id="radarMeta"></span></h2>
     <div class="cv"><canvas id="radar"></canvas></div>
+  </section>
+  <section class="card cam front-preview" id="cam-front">
+    <h2>Front camera <span class="meta" id="frontMeta">no frame</span></h2>
+    <div class="frame"><img id="frontImg" alt="Front camera preview"><div class="ph">No fresh frame</div></div>
   </section>
   <section class="card model">
     <h2>Робот <span class="meta num" id="modelMeta"></span></h2>

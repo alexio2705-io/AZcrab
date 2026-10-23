@@ -74,8 +74,8 @@ def bumper_side():
     if not c1 and not c2:
         return "none"
     first = "left" if c1 else "right"
-    t0 = time.time()
-    while time.time() - t0 < BUMPER_CONFIRM_S:
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < BUMPER_CONFIRM_S:
         with state.lock:
             c1, c2 = state.telem["clicker1"], state.telem["clicker2"]
         if c1 and c2:
@@ -89,6 +89,8 @@ def check_bumper_while_driving(trip):
     клетку."""
     if not get_bumper():
         return None
+    # Stop before the 50 ms side-classification window, even on old firmware.
+    esp_link.brake()
     side = bumper_side()
     if side == "left":
         trip.reason = "bumper_left"

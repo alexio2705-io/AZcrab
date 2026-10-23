@@ -33,6 +33,7 @@ import time
 
 from ld19 import DEFAULT_PORT, BAUDRATE, LD19
 from corridor import corridor_points
+from continuous import timed_rear
 from walls import filtered, measure, SIDE_THRESH
 
 # Шаг между соседними точками ~0.8°, пакет из 12 точек - ~10°. Дыра больше
@@ -79,6 +80,11 @@ def main() -> None:
     prev_t = None           # конец прошлого оборота - отсюда длительность оборота
     with LD19(port, baud) as lidar:
         for rev in lidar.revolutions(SILENCE_S):
+            # Timestamp reception before filtering/serialization. Count even
+            # rejected revolutions so a dropped scan cannot double the period.
+            now = time.monotonic()
+            trev = now - prev_t if prev_t is not None and 0.04 < now - prev_t < 0.2 else 0.1
+            prev_t = now
             n = len(rev)
             if n == 0:
                 continue
@@ -103,13 +109,11 @@ def main() -> None:
 
             filt = filtered(rev)
             w = measure(rev, filt)
-            now = time.monotonic()
             # Длительность оборота - чтобы nav.py знал время каждой точки
             # (corridor.point_time): за оборот робот проезжает до 55мм.
-            trev = now - prev_t if prev_t is not None and now - prev_t < 0.2 else 0.1
-            prev_t = now
             msg = {"w": w, "npts": n, "dropped": dropped, "t": now,
                    "trev": round(trev, 4), "pts": corridor_points(filt[0])}
+            msg['timed_back'] = timed_rear(filt[1], now, trev)
 
             wr = w["right"] is not None and w["right"] < SIDE_THRESH
             wl = w["left"] is not None and w["left"] < SIDE_THRESH

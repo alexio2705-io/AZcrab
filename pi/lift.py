@@ -42,10 +42,7 @@ MAGIC = b"\xAA\x55"
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
 # ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
 # status flags z_cnt boot_id cmd_err crc16
-TELEM_VER = 3
-FMT = "<BBfffffffBHHHHffBBBHHH"
-BODY_SIZE = struct.calcsize(FMT)          # 56
-PKT_SIZE = len(MAGIC) + BODY_SIZE         # 58
+from protocol import TELEM_VER, FMT, BODY_SIZE, PKT_SIZE
 
 # ── ЗЕРКАЛО порогов из nav.py ────────────────────────────────
 # Держать в согласии с nav.py вручную.

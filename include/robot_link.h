@@ -5,7 +5,7 @@
 // sends each side's speed. One UART, full duplex - TX=GPIO3 RX=GPIO9 @ 921600,
 // which on the Pi is the stock /dev/serial0 (Pi GPIO15/GPIO14).
 //
-// ESP -> RPi   binary, 58 bytes, little-endian, 200 Hz:
+// ESP -> RPi   binary, 74 bytes, little-endian, 200 Hz (v4):
 //    [0-1]    magic    0xAA 0x55
 //    [2]      ver      uint8    TELEM_VER - ПОДНИМАТЬ ПРИ ЛЮБОМ ИЗМЕНЕНИИ
 //                               РАСКЛАДКИ НИЖЕ. Он здесь не для красоты:
@@ -69,14 +69,17 @@
 //    [52-53]  boot_id  uint16   случайное при старте ESP - смена = ребут
 //    [54-55]  cmd_err  uint16   сколько строк от RPi ESP отверг (нет/не та
 //                               CRC, не разобралась, NaN/inf, длиннее 63)
-//    [56-57]  crc      uint16   CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF)
-//                               по байтам [2..55]; на RPi -
-//                               binascii.crc_hqx(pkt[2:56], 0xFFFF). Была XOR
+//    [56-63]  motor_dv uint16[4] bus voltage, 0.1 V/LSB, 0 = stale
+//    [64-67]  motor_temp int8[4] Celsius, -128 = stale
+//    [68-71]  motor_error uint8[4] raw status faults; order IDs 1,5,2,3
+//    [72-73]  crc      uint16   CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF)
+//                               по байтам [2..71]; на RPi -
+//                               binascii.crc_hqx(pkt[2:72], 0xFFFF). Была XOR
 //                               в 1 байт - пропускала ~1 мусорный кадр из 300.
 //
-// On the packet size and rate: 58 bytes at 200 Hz is 11600 B/s against the
-// 92160 B/s this link carries, i.e. 13% - and one packet occupies the wire for
-// 0.63 ms. The payload has never been what makes telemetry feel slow, so
+// On the packet size and rate: 74 bytes at 200 Hz is 14800 B/s against the
+// 92160 B/s this link carries, i.e. 16% - and one packet occupies the wire for
+// 0.80 ms. The payload has never been what makes telemetry feel slow, so
 // widening the packet to carry roll and acceleration costs nothing, and the
 // rate went 100 -> 200 Hz because the RPi's control loop closes on this
 // odometry (ENC_POLL_HZ in motor.c moved with it). What actually costs
@@ -118,6 +121,8 @@
 // Bump on every change to the telemetry layout above. Both readers on the RPi
 // (nav.py, color.py) refuse a packet whose version is not this one and say so
 // instead of quietly printing nonsense.
-#define TELEM_VER 3
+// v4: append 4*u16 decivolts, 4*i8 temperatures, 4*u8 faults before CRC.
+// Motor order 1,5,2,3; packet length 74. Update Raspberry Pi at the same time.
+#define TELEM_VER 4
 
 void robot_link_run(void);

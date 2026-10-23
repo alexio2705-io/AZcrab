@@ -12,6 +12,7 @@ import serial
 import config
 import state
 import ramps
+from motion_estimate import MotionSample, MotionDiscontinuity
 
 
 TILT_RELEASE_MAX_DEG = 20.0   # круче - это уже горка/обрыв, держим тормоз
@@ -19,7 +20,7 @@ TILT_BRAKE_S = 0.25           # тормоз до полной остановк�
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
 # ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
 # status flags z_cnt boot_id cmd_err crc16
-TELEM_VER = 3
+from protocol import TELEM_VER
 
 
 def crc16(data):
@@ -77,17 +78,17 @@ TELEM_WAIT_S = 0.05
 def _link_reopen():
     """Ошибка порта на ходу (не закрытие на выходе): переоткрываем, пока не
     получится. False - порт закрыт нарочно, поток должен выйти."""
-    if not state.link.is_open:
+    if state.link_stop.is_set() or not state.link.is_open:
         return False
     print("\n  [WARN] ошибка порта ESP - переподключаюсь")
-    while True:
-        time.sleep(0.5)
+    while not state.link_stop.wait(0.5):
         try:
             state.link.close()
             state.link.open()
             return True
         except (serial.SerialException, OSError):
             pass
+    return False
 
 
 def _telem_thread():
@@ -97,7 +98,7 @@ def _telem_thread():
     last_seq = None      # seq прошлого пакета - для счёта пропусков
     boot_id = None       # boot_id ESP - его смена значит ребут
     gyro_was = color_was = True   # чтобы сказать о пропаже свежести один раз
-    while True:
+    while not state.link_stop.is_set():
         try:
             # 4096, а не 256: при TELEM_HZ=200 в 256 байт влезает всего
             # 6 пакетов, и если поток на мгновение не получил процессор
@@ -144,12 +145,16 @@ def _telem_thread():
             del buf[:config.PKT_SIZE]
             (_ver, seq, yaw, yaw_rate, pitch, roll, ax, ay, az, color,
              cr, cg, cb, cc, lcm, rcm, status, flags,
-             z_cnt, esp_boot, cmd_err, _crc) = struct.unpack(config.FMT, body)
-            # Пока только в лог: реакции на поле на эти флаги нет.
+             z_cnt, esp_boot, cmd_err, *health_crc) = struct.unpack(config.FMT, body)
+            if not all(math.isfinite(v) for v in (yaw, yaw_rate, pitch, roll, ax, ay, az, lcm, rcm)):
+                # CRC proves transport integrity, not valid sensor arithmetic.
+                # Do not refresh the age of an unusable control observation.
+                continue
             if boot_id is not None and esp_boot != boot_id:
                 print(f"\n  [WARN] ESP ПЕРЕЗАГРУЗИЛСЯ (boot_id {boot_id:04X} -> "
                       f"{esp_boot:04X}): одометрия и пауза на ESP сброшены")
                 last_seq = None       # seq тоже начат заново - не пропуск
+                state.lifted.set()    # yaw/odometry origin is no longer valid
             boot_id = esp_boot
             if last_seq is not None:
                 state.seq_lost += (seq - last_seq - 1) & 0xFF
@@ -164,6 +169,9 @@ def _telem_thread():
                       if not color_fresh else "\n  датчик цвета ESP снова читается")
                 color_was = color_fresh
             with state.lock:
+                state.telem["motor_voltage"] = [v / 10 if v else None for v in health_crc[:4]]
+                state.telem["motor_temp"] = [v if v != -128 else None for v in health_crc[4:8]]
+                state.telem["motor_error"] = health_crc[8:12]
                 state.telem["yaw"] = float(yaw)
                 state.telem["yaw_rate"] = float(yaw_rate)
                 state.telem["pitch"] = float(pitch)
@@ -188,10 +196,10 @@ def _telem_thread():
                 state.telem["color_fresh"] = color_fresh
                 state.telem["esp_cmd_err"] = int(cmd_err)
                 state.telem["telem_ok"] = True
-            # Вне _lock: у этих двух свой смысл (такт петли и здоровье
-            # линка), и читаются они без блокировки, атомарно по GIL.
-            state.telem_t = time.monotonic()
-            state.telem_seq += 1
+                state.telem_t = time.monotonic()
+                state.telem_seq += 1
+                state.motion_history.append(MotionSample(state.telem_seq, state.telem_t,
+                    float(lcm), float(rcm), float(yaw), int(z_cnt), gyro_fresh and bool(flags & 4) and bool(flags & 8)))
             state.telem_evt.set()
             if status == 0:
                 state.esp_running.set()
@@ -247,6 +255,12 @@ def telem_fresh():
     return telem_age() < TELEM_STALE_S
 
 
+def gyro_fresh():
+    """A live UART packet does not imply a live BNO085 report."""
+    with state.lock:
+        return telem_fresh() and state.telem.get("gyro_fresh", False)
+
+
 def wait_telem(last_seq, timeout=TELEM_WAIT_S):
     """Ждёт пакет новее last_seq, возвращает новый номер.
 
@@ -266,6 +280,27 @@ def wait_telem(last_seq, timeout=TELEM_WAIT_S):
 
 def get_odo():
     with state.lock: return state.telem["lcm"], state.telem["rcm"]
+
+
+def motion_snapshot():
+    with state.lock:
+        if not state.motion_history:
+            raise MotionDiscontinuity("no motion observations")
+        return state.motion_history[-1]
+
+
+def motion_since(seq):
+    """Copy only unconsumed samples, normally one or two per controller tick."""
+    with state.lock:
+        result = []
+        for sample in reversed(state.motion_history):
+            if sample.seq <= seq:
+                break
+            result.append(sample)
+    result.reverse()
+    if result and result[0].seq != seq + 1:
+        raise MotionDiscontinuity("motion history overflowed during a pause")
+    return result
 
 
 def get_z_cnt():
@@ -331,7 +366,7 @@ def resume_esp(timeout=1.0):
 def interrupted():
     """Причина немедленно бросить текущий манёвр: пауза кнопкой на ESP,
     подъём робота с поля или пропавшая телеметрия."""
-    return get_esp_paused() or state.lifted.is_set() or not telem_fresh()
+    return get_esp_paused() or state.lifted.is_set() or not gyro_fresh()
 
 
 def _cmd(s):

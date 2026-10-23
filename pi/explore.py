@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import copy
 
 import runplan
 import watch_logic
@@ -57,9 +58,10 @@ class _DrivePlan:
     становится посещённой, цель ищется дальше). on_checkpoint(N) - под
     клеткой N серебряная плитка."""
 
-    def __init__(self, cell, hdg, goal_test, home=False, on_checkpoint=None):
+    def __init__(self, cell, hdg, goal_test, home=False, on_checkpoint=None, should_stop=None):
         self.cell0, self.hdg, self.goal_test, self.home = cell, hdg, goal_test, home
         self.on_checkpoint = on_checkpoint
+        self.should_stop = should_stop
         self._measured = {}     # k -> {сторона: замер лидара или None}
 
     def cell(self, k):
@@ -87,7 +89,15 @@ class _DrivePlan:
         if N in state.visited and known is not None:
             walls = {s: known[d] for s, d in rel.items()}   # стоя мерили - карте верим
         go, why = False, None
-        if (N[0], N[1], hdg) in state.ramps:
+        conflict = known is not None and any(measured[s] is not None and known[d] is not None
+            and measured[s] != known[d] for s, d in rel.items())
+        if conflict:
+            why = "свежие стены противоречат карте"
+        elif self.should_stop is not None and self.should_stop(self.cell(k - 1)):
+            why = "резерв времени на возврат"
+        elif tile_rules.must_stop((state.tile_map.get(N), state.react_cells.get(N))):
+            why = "плитка-стоп по карте"
+        elif (N[0], N[1], hdg) in state.ramps:
             why = "дальше горка"
         elif self.home and self.goal_test(N):
             why = "цель"
@@ -104,7 +114,8 @@ class _DrivePlan:
                         if abs_w[d] is False and maze_map._next_cell(cx, cy, d) not in state.blocked]
 
             goal = self.goal_test if self.home else (lambda c: c != N and self.goal_test(c))
-            go = runplan.go_straight(N, hdg, od, maze_map._next_cell, goal, config.SIDE_ORDER[state.side_pref])
+            go = runplan.go_straight(N, hdg, od, maze_map._next_cell, goal,
+                                     config.SIDE_ORDER[state.side_pref], maze_map.route_step_cost)
             why = "известна" if N in state.visited else "новая"
         r, l = sides_res["right"], sides_res["left"]
         print(f"\n    → кл.{N}: R={_WALL_TXT[walls['right']]}({r[1]}т,{r[2]:.0f}мм) "
@@ -189,6 +200,8 @@ def step(w, goal_test, home=False, arrive=None):
     path = maze_map.find_path_bfs(w.cell, goal_test, w.hdg)
     if path is None:
         return "no_path"
+    if not path:
+        return "goal"
     _print_step(w, path[0])
     if not _turn_toward(w, path[0]):
         return "step"
@@ -317,8 +330,8 @@ def _turn_once(w, turn_deg, last):
 
 
 def _drive(w, goal_test, home, arrive):
-    """Прямые - без остановок: drive_cells встанет сам там, где нужен
-    поворот, где не уверен в стенах или на синей (см. _DrivePlan). Веб-карта
+    """При PER_CELL_STOP поездка ограничена одной клеткой. Иначе план
+    разрешает проезд прямо через несколько клеток. Веб-карта
     обновится по приезде (arrive): файл состояния из петли управления не
     пишем. Возвращает (проехано клеток, причина остановки)."""
     def on_checkpoint(N, h=w.hdg):
@@ -326,10 +339,25 @@ def _drive(w, goal_test, home, arrive):
             w.checkpoint = (N[0], N[1], h)
             print(f"\n  ✓ ЧЕКПОИНТ ({N[0]},{N[1]}) курс={config._DIR_NAME[h]} (на ходу)")
 
-    plan = _DrivePlan(w.cell, w.hdg, goal_test, home=home, on_checkpoint=on_checkpoint)
-    n, reason = driving.drive_cells(max(1, w.max_cells - w.total),
+    def stop_due(previous_cell):
+        # The previous tile is already in the map; the approaching tile may
+        # not be yet. Recheck return budget on long continuous straights.
+        predicate = getattr(w, "should_return", None)
+        if predicate is None:
+            return False
+        probe = copy.copy(w)
+        probe.cx, probe.cy = previous_cell
+        return predicate(probe)
+
+    plan = _DrivePlan(w.cell, w.hdg, goal_test, home=home, on_checkpoint=on_checkpoint,
+                      should_stop=stop_due)
+    watcher = getattr(state, 'watcher', None)
+    count = 1 if state.PER_CELL_STOP or (watcher is not None and watcher.dead) else max(1, w.max_cells - w.total)
+    n, reason = driving.drive_cells(count,
                                     expect_ramp=(w.cx, w.cy, w.hdg) in state.ramps,
                                     cell=w.cell, hdg=w.hdg, plan=plan)
+    if state.lifted.is_set():
+        return n, reason  # Do not scan/map a cell from an uncertain physical pose.
     if n > 0:
         # Клетки до последней уже в карте (_DrivePlan.passed); последний
         # шаг - как раньше: проход по факту или горка, и замер стоя.
@@ -348,6 +376,8 @@ def _close_soft(w, whole_cell=True):
     state.soft_closed: если путь к цели пропадёт, такие рёбра забываются
     (maze_map.forget_soft_blocks). whole_cell=False - закрыть только ребро,
     в клетку можно попасть с другой стороны."""
+    if state.lifted.is_set():
+        return
     if whole_cell:
         maze_map.block_direction(w.cx, w.cy, w.hdg)
     else:
@@ -357,7 +387,7 @@ def _close_soft(w, whole_cell=True):
 
 def _handle_stop(w, n, reason):
     """Разбор причины, по которой drive_cells остановился."""
-    if reason in ("paused", "lifted", "link_lost"):
+    if state.lifted.is_set() or reason in ("paused", "lifted", "link_lost", "gyro_lost", "lidar_lost"):
         w.stalls = 0
         return      # разбирается в начале следующего шага
 
@@ -500,7 +530,7 @@ def arrive_explore(w, new_cell):
     w.show()
 
 
-def flood_fill_run(max_cells):
+def flood_fill_run(max_cells, should_return=None):
     """Разведка неизвестного лабиринта: на каждой клетке, где робот ещё не
     стоял, снимает все 4 стены одним замером (карта в _maze), затем BFS
     ищет кратчайший путь по известным открытым рёбрам до ближайшей ещё не
@@ -508,8 +538,12 @@ def flood_fill_run(max_cells):
     не остаётся - возвращает (cx, cy, hdg, checkpoint, status), status:
     'explored' (лабиринт разведан), 'cap' (упёрлись в max_cells)."""
     w = Walk(phase="exploring", max_cells=max_cells)
+    w.should_return = should_return
     arrive_explore(w, True)     # стартовая клетка
     while w.total < max_cells:
+        if should_return is not None and should_return(w):
+            print("  ⏱ Оставляю время на возврат и финишную индикацию")
+            return w.cx, w.cy, w.hdg, w.checkpoint, "time_return"
         if step(w, unvisited, arrive=arrive_explore) == "no_path":
             print("  ✓ Неразведанных клеток, достижимых по известной карте, "
                   "больше нет - разведка завершена")

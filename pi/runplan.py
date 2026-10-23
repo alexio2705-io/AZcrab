@@ -4,6 +4,46 @@
 from __future__ import annotations
 
 from collections import deque
+import heapq
+import itertools
+
+
+def weighted_path(start, hdg, open_dirs, next_cell, goal_test, side_order, cost):
+    """Dijkstra over (tile, heading); cost(tile_from, tile_to, heading, direction).
+
+    Heading is part of the state: arriving by another route can save a turn.
+    Stable queue order retains the configured side preference for equal costs.
+    """
+    first = (start, hdg)
+    serial = itertools.count()
+    queue = [(0.0, next(serial), first)]
+    dist, prev = {first: 0.0}, {}
+    while queue:
+        total, _, key = heapq.heappop(queue)
+        if total != dist[key]:
+            continue
+        cell, h = key
+        if goal_test(cell):
+            path = []
+            while key != first:
+                key, direction = prev[key]
+                path.append(direction)
+            return list(reversed(path))
+        dirs = open_dirs(*cell)
+        for k in side_order:
+            d = (h + k) % 4
+            if d not in dirs:
+                continue
+            nxt = next_cell(*cell, d)
+            step = float(cost(cell, nxt, h, d))
+            if not 0 < step < float('inf'):
+                raise ValueError('Route cost must be finite and positive')
+            node, candidate = (nxt, d), total + step
+            if candidate < dist.get(node, float('inf')):
+                dist[node] = candidate
+                prev[node] = (key, d)
+                heapq.heappush(queue, (candidate, next(serial), node))
+    return None
 
 
 def bfs_path(start, hdg, open_dirs, next_cell, goal_test, side_order):
@@ -46,10 +86,11 @@ def bfs_path(start, hdg, open_dirs, next_cell, goal_test, side_order):
     return None
 
 
-def go_straight(start, hdg, open_dirs, next_cell, goal_test, side_order):
+def go_straight(start, hdg, open_dirs, next_cell, goal_test, side_order, cost=None):
     """Ехать ли через клетку start дальше прямо, не останавливаясь: первый
     шаг маршрута совпадает с курсом. Цель уже здесь или маршрута нет - стоп."""
-    path = bfs_path(start, hdg, open_dirs, next_cell, goal_test, side_order)
+    path = (weighted_path(start, hdg, open_dirs, next_cell, goal_test, side_order, cost)
+            if cost is not None else bfs_path(start, hdg, open_dirs, next_cell, goal_test, side_order))
     return bool(path) and path[0] == hdg
 
 

@@ -10,6 +10,7 @@ import state
 import driving
 import esp_link
 import marks
+import drive_checks
 
 
 def aim_at_mark(trip):
@@ -35,7 +36,8 @@ def check_arrived(trip):
             # Стоим у метки (или в центре, если он был ближе): читаем её
             # здесь, потом - та же поездка дальше, без Z и без новой цели.
             t_stop = time.monotonic()
-            out = marks._mark_stop(trip.vmark, trip.cell, trip.hdg, trip.target_yaw, trip.traveled_cm)
+            out = marks._mark_stop(trip.vmark, trip.cell, trip.hdg, trip.target_yaw,
+                                   trip.traveled_cm, trip.odometry.last)
             trip.vmark = None
             if out in ("lifted", "paused"):
                 trip.reason = out
@@ -51,9 +53,7 @@ def check_arrived(trip):
                 (trip.t_cell, trip.last_progress_t, trip.assist_gap_until, trip.assist_t0, trip.assist_total_t0,
                  trip.assist_progress_t), pause_s)
             # Подъезд и развороты уже в энкодерах - добираем их в путь сразу.
-            trip.cl, trip.cr = esp_link.get_odo()
-            trip.traveled_cm += ((trip.cl - trip.last_l) + (trip.cr - trip.last_r)) / 2.0
-            trip.last_l, trip.last_r = trip.cl, trip.cr
+            drive_checks.integrate_motion(trip)
             trip.last_progress_cm = trip.traveled_cm
             trip.t0 = trip.last_loop_t = time.monotonic()     # новый плавный разгон с места
             trip.fwd = trip.last_steer = 0.0
@@ -64,12 +64,25 @@ def check_arrived(trip):
             # аптечкам - для стен впереди они не годятся.
             trip.scan_mark = state.scan_cnt
             trip.side_hold.reset()
+            queued = getattr(trip, 'mark_queue', [])
+            if queued and queued[0]['pos_mm'] <= trip.boundary_cm * 10 + config.ALIGN_TOL_MM:
+                # A second wall can have a mark at the same stopping point.
+                # Service it before ending this trip; do not cross a turn target.
+                trip.vmark = queued.pop(0)
+                trip.vmark['stop_cm'], _ = watch_logic.brake_target_cm(
+                    trip.vmark['pos_mm'], trip.traveled_cm, 0,
+                    config.MARK_BRAKE_DECEL_CMS2, config.STOP_LEAD_S)
+                trip.telem_seq = esp_link.wait_telem(trip.telem_seq)
+                return 'next_tick'
             left_cm = trip.boundary_cm - trip.traveled_cm
             print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
             if trip.stopping and left_cm * 10.0 < config.ALIGN_TOL_MM:
                 # Уже в центре или подъезд увёл за него - остаток доводкой.
                 if abs(left_cm) > 0.2:
                     driving.creep_mm(left_cm * 10.0, trip.target_yaw)
+                    if state.lifted.is_set():
+                        trip.reason = "pose_lost"
+                        return "stop"
                 trip.cells += 1
                 return "stop"
             trip.telem_seq = esp_link.wait_telem(trip.telem_seq)

@@ -165,7 +165,7 @@ TILE_BGR = {'white': (255, 255, 255), 'black': (40, 40, 40), 'blue': (255, 120, 
 
 def draw_tile(shown, tile):
     """Четырёхугольник следующей клетки и что в нём прочиталось."""
-    color = TILE_BGR[tile['color']]
+    color = TILE_BGR.get(tile['color'], (128, 128, 128))
     if tile.get('poly') is not None:
         pts = np.round(np.float32(tile['poly'])).astype(np.int32)
         cv2.polylines(shown, [pts], True, (0, 0, 0), 5)
