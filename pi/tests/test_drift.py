@@ -295,7 +295,8 @@ class RecoveryTests(unittest.TestCase):
         module._interrupt_reason = Mock(return_value=None)
         module._read_wall = Mock(return_value={'label': 'test'})
         module.driving.creep_soft.return_value = 4.0
-        det = SimpleNamespace(last_unread=None, best_fast=lambda: None)
+        # мишень видели, кольца не прочитались - сдвиг для другого блика
+        det = SimpleNamespace(last_unread={'rings': ['?'] * 5}, best_fast=lambda: None)
         result, unread, moved = module._reread_aligned(det, (0, 0), 0, 0, 0, 'test', 1)
         self.assertEqual(moved, 4)
         self.assertNotEqual(module.driving.creep_soft.call_args.args[0], 4)

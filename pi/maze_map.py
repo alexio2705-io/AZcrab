@@ -225,9 +225,12 @@ def find_frontier_path(cx, cy, hdg=0):
 
 def _walls_rel_map(w):
     """Замер стоя -> {'front','right','left','back': bool} по порогам карты
-    (FRONT_MAP_WALL_MM / BACK_MAP_WALL_MM)."""
+    (FRONT_MAP_WALL_MM / BACK_MAP_WALL_MM). Прижатые оба концевика - стена
+    впереди, даже если лидар её не видит (вплотную). Один - нет: заезд
+    24.10, робот задел правым угол стены, концевик ещё был прижат, и замер
+    записал стену поперёк прохода, хотя лидар видел впереди 340-390мм."""
     return {
-        "front": lidar_walls.wall_present(w["front"], FRONT_MAP_WALL_MM) or bumper.get_bumper(),
+        "front": lidar_walls.wall_present(w["front"], FRONT_MAP_WALL_MM) or bumper.both_pressed(),
         "right": lidar_walls.wall_present(w["right"], SIDE_THRESH),
         "left":  lidar_walls.wall_present(w["left"], SIDE_THRESH),
         "back":  lidar_walls.wall_present(w["back"], BACK_MAP_WALL_MM),

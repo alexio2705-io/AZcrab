@@ -304,7 +304,9 @@ def creep_to_mark(box_y, est_mm, tol_mm, max_mm=CREEP_MAX_MM):
         y1, y2 = box_y
         off = px_to_mm((y1 + y2) / 2.0)
         inside = y1 >= EDGE_MARGIN and y2 <= 1.0 - EDGE_MARGIN
-        mm, src = (0.0 if inside and abs(off) < tol_mm else off), "рамка"
+        # Целиком в кадре - читается и так: подъезд на 15-30мм к центру кадра
+        # был лишним движением туда-сюда у метки (заезд 24.10).
+        mm, src = (0.0 if inside else off), "рамка"
     else:
         mm, src = est_mm, "оценка"
     if abs(mm) > max_mm:

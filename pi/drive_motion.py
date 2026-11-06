@@ -10,7 +10,7 @@ import state
 import esp_link
 import turning
 from motion_guard import CenterFilter
-from continuous import stopping_speed
+from continuous import stopping_speed, stop_suspended
 
 
 SIDE_CENTER_MM = config.SIDE_CENTER_MM
@@ -57,14 +57,19 @@ STEER_SLEW_CMS_S = 3000.0
 # 0.12 даёт ~0.87с (~48см). Задержка контура ~0.3с (скан лидара 0.1с +
 # HEAD_OFF_SMOOTH 0.15с + гироконтур), запас по фазе около 70° - без
 # раскачки. Начнёт вилять - снижать WALL_KP_DEG, а не HEAD_OFF_SMOOTH.
-WALL_KP_DEG = 0.12      # градусов поправки курса на мм смещения
+# 24.10: 0.24/10° по ощущению на поле - слишком резко (поправка часто
+# упиралась в 10°). 0.16 - между прежним и удвоенным: ~0.7с (~35см).
+WALL_KP_DEG = 0.16      # градусов поправки курса на мм смещения
 WALL_MAX_DEG = 6.0      # предел поправки - больше этого робот едет боком
 # Было 12мм, и это неудачно совпадало с рабочей точкой: цель SIDE_CENTER_MM=140
 # при замеренном центре клетки в 128мм даёт постоянную ошибку ровно ~12мм, то
 # есть робот всё время сидел НА границе мёртвой зоны и коррекция щёлкала
 # включено/выключено. 5мм убирает это совпадение, оставаясь выше шума лидара.
 WALL_DEADBAND_MM = 5.0
-WALL_CENTER_MM = 240    # дальше этого - стены нет, центроваться не по чему
+# Дальше этого - стены нет, центроваться не по чему. Было 240: в коридоре
+# 280мм своя стена не дальше ~210мм, а 216-231мм - торец стены или стена
+# соседней клетки, по ним робот доворачивал на 10° в пустоту (заезд 24.10).
+WALL_CENTER_MM = 200
 
 # head_off берётся из wall_e, а тот меняется только раз в скан лидара
 # (~100мс) - без сглаживания цель курса прыгает скачком каждые 100мс, и
@@ -106,7 +111,7 @@ def speed_profile(trip):
     ramp_up = min(ramp_up, getattr(trip, 'perception_cap', float('inf')))
 
     trip.braking = False
-    if (trip.stopping or trip.mark_first) and trip.ramp_state != 'cand':
+    if (trip.stopping or trip.mark_first) and not stop_suspended(trip):
         # Постоянное замедление: пока запас пути велик, sqrt даёт больше
         # крейсерской и ничего не ограничивает - робот едет полным ходом.
         # Тормозить начинает сам, ровно когда пути остаётся в обрез.
@@ -182,7 +187,12 @@ def steering(trip):
     yaw_e = turning.angle_err(trip.yaw, heading)
     # Lower bandwidth prevents the delayed actuator chasing alternating
     # saturated corrections. Do not add another lag with a low slew limiter.
-    trip.steer = -(yaw_e * config.DRIVE_YAW_KP + yaw_rate * config.DRIVE_YAW_KD_RATE)
+    # Интеграл копится только на ровном ходу своим ходом (не ассист моментом,
+    # не горка, не разгон с места) - иначе накопит ошибку, которой нет.
+    if trip.assist_mode is None and not on_ramp and trip.fwd >= config.MOVE_MIN_CMS:
+        trip.yaw_i = max(-config.DRIVE_YAW_I_MAX, min(config.DRIVE_YAW_I_MAX,
+                         trip.yaw_i + yaw_e * config.DRIVE_YAW_KI * trip.loop_dt))
+    trip.steer = -(yaw_e * config.DRIVE_YAW_KP + yaw_rate * config.DRIVE_YAW_KD_RATE + trip.yaw_i)
     trip.steer = max(-MAX_STEER_CMS, min(MAX_STEER_CMS, trip.steer))
     # Та же кривая, что и у fwd: без этого при fwd≈0 и заметной ошибке
     # курса (например, сразу после поворота) команда получалась вида

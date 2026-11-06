@@ -11,6 +11,8 @@ import driving
 import esp_link
 import marks
 import drive_checks
+import lidar_walls
+from continuous import stop_suspended
 
 
 def aim_at_mark(trip):
@@ -28,9 +30,24 @@ def aim_at_mark(trip):
         trip.rem_eff = trip.rem - trip.fwd * config.STOP_LEAD_S
 
 
+def _left_to_center_cm(trip):
+    """Сколько до центра клетки после остановки у метки. Передняя стена,
+    видная стоя в пределах полклетки, точнее колёс - то же правило, что на
+    ходу (drive_front: расхождение не больше ALIGN_MAX_MM). Заезд 24.10:
+    правые колёса проскальзывали, по колёсам "за центром 122мм", по стене -
+    в центре; робот отъехал назад, и карта сдвинулась на клетку."""
+    left = trip.boundary_cm - trip.traveled_cm
+    f = lidar_walls.get_walls()["front"]       # свежий: робот стоит после подъезда
+    if f is not None and f < config.FRONT_CENTER_MM + config.CELL_MM / 2:
+        wall_left = (f - config.FRONT_CENTER_MM) / 10.0
+        if abs(wall_left - left) <= config.ALIGN_MAX_MM / 10.0:
+            return wall_left
+    return left
+
+
 def check_arrived(trip):
     """Доехали: стоп у метки (и дальше), в центре клетки или перед препятствием."""
-    if (trip.stopping or trip.mark_first) and trip.rem_eff <= 0.0 and trip.ramp_state != 'cand':
+    if (trip.stopping or trip.mark_first) and trip.rem_eff <= 0.0 and not stop_suspended(trip):
         if trip.vmark is not None and not (trip.wall_forced
                                       and trip.traveled_cm < trip.forced_from_cm + trip.cell_cm * 0.5):
             # Стоим у метки (или в центре, если он был ближе): читаем её
@@ -74,7 +91,7 @@ def check_arrived(trip):
                     config.MARK_BRAKE_DECEL_CMS2, config.STOP_LEAD_S)
                 trip.telem_seq = esp_link.wait_telem(trip.telem_seq)
                 return 'next_tick'
-            left_cm = trip.boundary_cm - trip.traveled_cm
+            left_cm = _left_to_center_cm(trip)
             print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
             if trip.stopping and left_cm * 10.0 < config.ALIGN_TOL_MM:
                 # Уже в центре или подъезд увёл за него - остаток доводкой.

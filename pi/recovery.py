@@ -12,6 +12,7 @@ import esp_link
 import lidar_walls
 import maze_map
 import ramps
+import remote_start
 import turning
 
 
@@ -44,20 +45,24 @@ def wait_start_button():
     GPIO.setup(LEFT_BTN_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     print(f"Нажмите GPIO{LEFT_BTN_GPIO} (левая рука) или "
           f"GPIO{START_BTN_GPIO} (правая рука) для старта...")
-    pin = None
-    while pin is None:
+    remote_start.clear()        # «Старт» с телефона, нажатый раньше, не в счёт
+    pin = side = None
+    while pin is None and side is None:
+        side = remote_start.take()
         for p in pins:
-            if GPIO.input(p) == GPIO.LOW:
+            if side is None and GPIO.input(p) == GPIO.LOW:
                 time.sleep(0.02)
                 if GPIO.input(p) == GPIO.LOW:
                     pin = p
                     break
         time.sleep(0.01)
-    while GPIO.input(pin) == GPIO.LOW:
-        time.sleep(0.01)
-    state.side_pref = pins[pin]
+    if pin is not None:
+        while GPIO.input(pin) == GPIO.LOW:
+            time.sleep(0.01)
+        side = pins[pin]
+    state.side_pref = side
     print(f"  приоритет: {'ЛЕВАЯ' if state.side_pref == 'left' else 'ПРАВАЯ'} рука "
-          f"(GPIO{pin})")
+          f"({f'GPIO{pin}' if pin is not None else 'с телефона'})")
 
 
 def handle_lift(resume_hdg):
@@ -228,6 +233,9 @@ def _lidar_fresh():
     return scan_t is not None and time.monotonic() - scan_t < LIDAR_STALE_S
 
 
+MOTORS_WAKE_EVERY_S = 1.0   # как часто повторять "W", пока моторы молчат
+
+
 def wait_for_robot(cx, cy, hdg, checkpoint, phase):
     """Нет связи с ESP или моторы молчат (энкодеры не отвечают по CAN) - это
     не конец заезда: моторы просто выключили (или отошёл провод), их включат.
@@ -242,6 +250,7 @@ def wait_for_robot(cx, cy, hdg, checkpoint, phase):
     if w is None:
         return False
     t0 = time.monotonic()
+    wake_t = 0.0
     shown = None
     while w is not None:
         if w != shown:
@@ -251,6 +260,10 @@ def wait_for_robot(cx, cy, hdg, checkpoint, phase):
                                  "лидар молчит" if w == "wait_lidar" else
                                  "моторы не отвечают (выключены?)") + " - жду, заезд продолжится")
             dash_live._write_state(cx, cy, hdg, checkpoint, w)
+        # W при старте мог потеряться - моторы так и остались бы выключенными
+        if w == "wait_motors" and time.monotonic() - wake_t >= MOTORS_WAKE_EVERY_S:
+            esp_link.motors_on()
+            wake_t = time.monotonic()
         time.sleep(0.2)
         w = why()
     print(f"  связь, датчики и моторы снова в порядке (ждали {time.monotonic() - t0:.1f}с)")

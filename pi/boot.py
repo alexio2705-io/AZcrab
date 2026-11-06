@@ -168,6 +168,7 @@ def _start(args, cameras, context):
     print(f"  OK  yaw={esp_link.get_yaw():.1f}°  телеметрия {hz:.0f} Гц "
           f"(ожидается ~200), возраст пакета {esp_link.telem_age()*1000:.0f}мс")
     print("  линк: " + esp_link.link_report())
+    esp_link.motors_on()       # после прошлого заезда они выключены (stop() ниже)
     if state.bad_ver or (state.magic_gaps and
                     max(state.magic_gaps.items(), key=lambda kv: kv[1])[0] != config.PKT_SIZE):
         print("[FATAL] Версии прошивки и nav.py разошлись - дальше ехать нельзя:\n"
@@ -299,7 +300,8 @@ def stop(run):
             esp_link.brake()
             time.sleep(0.1)
             esp_link.stop()
-            state.link.flush()     # последний stop() - на провод до закрытия
+            esp_link.motors_off()  # между заездами моторы выключены
+            state.link.flush()     # последние команды - на провод до закрытия
     except (serial.SerialException, OSError) as e:
         print(f"  [WARN] порт ESP при выходе: {e}")
     finally:

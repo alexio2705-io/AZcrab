@@ -54,6 +54,7 @@ def watch_marks_while_driving(trip):
             # Камеры отстают - едем медленнее, но не встаём: не ниже MOVE_MIN_CMS.
             trip.perception_cap = (max(config.MOVE_MIN_CMS, observation_speed(gap))
                                    if flat and sides else float('inf'))
+            _note_watched(trip, sides, gap)
             for b in trip.watcher.poll():
                 if not trip.side_hold.frame_ok(b.side, b.t_frame):
                     # Кадр снят, когда стены с этой стороны не было:
@@ -91,6 +92,23 @@ def watch_marks_while_driving(trip):
                 m['stop_cm'], _ = watch_logic.brake_target_cm(m['pos_mm'], trip.traveled_cm,
                     trip.fwd, config.MARK_BRAKE_DECEL_CMS2, config.STOP_LEAD_S)
                 trip.vmark = m
+
+
+# Стена у центра клетки просмотрена на подъезде: наблюдатель включён на этой
+# стороне, кадры идут не реже WATCH_COVER_GAP_S, робот ближе WATCH_COVER_CM к
+# центру. Камера стоя в центре видит те же ±62мм стены - скан стоя (~2с на
+# клетку) там повторял бы наблюдателя (заезд 24.10: 32с из 114 на камеры).
+WATCH_COVER_CM = 6.0
+WATCH_COVER_GAP_S = 0.3
+
+
+def _note_watched(trip, sides, gap):
+    if trip.boundary_cm != trip.watch_boundary:
+        trip.watch_boundary = trip.boundary_cm      # цель сменилась - заново
+        state.watched_sides.clear()
+    if (trip.watch_armed and gap <= WATCH_COVER_GAP_S
+            and abs(trip.boundary_cm - trip.traveled_cm) <= WATCH_COVER_CM):
+        state.watched_sides.update(sides)
 
 
 def _interrupt_reason():
@@ -191,6 +209,15 @@ def _mark_stop(m, cell, hdg, target_yaw, base_cm, motion_start=None):
         print(f"    метка: нужен подъезд {est:+.0f}мм ({src}) - не верю, отбраковываю")
         _reject_mark(cell, hdg, side, m["pos_mm"])
         return None
+    # Дальняя стена - до подъезда, а не после: заезд 24.10, подъезды
+    # туда-сюда там, где метки на этой стене нет (видна через проём).
+    tcell = maze_map._cell_at(cell, hdg, watch_logic.cell_index(trav + (creep or 0.0)))
+    no_wall = _no_wall_reason(tcell, watch_logic.wall_of(hdg, side), side)
+    if no_wall:
+        print(f"    метка: стены {config._DIR_NAME[watch_logic.wall_of(hdg, side)]} у {tcell} "
+              f"{no_wall} нет - это дальняя стена, не подъезжаю")
+        _reject_mark(cell, hdg, side, m["pos_mm"])
+        return _interrupt_reason()
     # 2. Подъезд
     if creep:
         print(f"    метка: подъезд {creep:+.0f}мм по {src}")
@@ -307,6 +334,13 @@ def _reread_aligned(det, cell, wall_dir, yaw, est_mm, what, tries, expect=True):
         creep, src = watch_logic.creep_to_mark(None if found is None else found[2],
                                                est_mm - moved, config.ALIGN_TOL_MM, max_mm=1e9)
         if creep is None or abs(creep) < config.ALIGN_TOL_MM:
+            if found is None and unread is None:
+                # Сдвиг - от блика на метке в кадре. Ни метки крупнее
+                # MIN_BOX_PX, ни нечитаемой мишени, ехать некуда - она на
+                # дальней стене (заезд 24.10: три подъезда туда-сюда, каждый
+                # раз "слишком мелкая").
+                print(f"    {what}: в кадре нет метки крупнее {MIN_BOX_PX}px - не подравниваюсь")
+                break
             creep, src = (MARK_NUDGE_MM if k % 2 == 0 else -MARK_NUDGE_MM), "сдвиг"
         creep = max(-MARK_ALIGN_MAX_MM, min(MARK_ALIGN_MAX_MM, moved + creep)) - moved
         if abs(creep) >= 1.0:
@@ -441,6 +475,13 @@ def _turn_mark_place(cx, cy, side, wall_dir, px, xyxy, h, phi, cls):
         print(f"    [W] на повороте: {side} {px:.0f}px у угла - уже прочитана "
               f"на соседней стене, пропускаю")
         return None
+    if (cx, cy, wall_dir) in state.scanned_walls:
+        # Эту стену клетки уже прочитали (на ходу или стоя). Заезд 24.10: та
+        # же Ψ на обратном пути - оценка места по кадру с поворота ушла на
+        # 15-20 см, дубль не узнался, и робот трижды подъезжал зря.
+        print(f"    [W] на повороте: {side} {px:.0f}px, стена {config._DIR_NAME[wall_dir]} "
+              f"уже прочитана, пропускаю")
+        return None
     known = state.maze.get((cx, cy))
     if known is None or known[wall_dir] is not True:
         # Стены с этой стороны клетки нет: камера смотрит в проём на
@@ -476,9 +517,11 @@ def _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along):
         g = turning.snap_target()
         print(f"    {what}: под углом не прочиталась - встаю по сетке и подравниваюсь")
         turning.turn_to(g, label="по сетке")
+        # столько же повторов, сколько у остальных чтений (заезд 24.10:
+        # три подъезда у нечитаемой мишени - лишние секунды у метки)
         result, unread2, moved = _reread_aligned(det, (cx, cy), wall_dir, g,
                                                  pos + watch_logic.CAM_BACK_MM,
-                                                 what, config.MARK_READ_TRIES)
+                                                 what, config.MARK_READ_TRIES - 1)
         unread = unread2 or unread
         src = result or unread2
         if src is not None:
@@ -506,6 +549,9 @@ def _record_turn_mark(det, cx, cy, side, wall_dir, h, key, along, result, unread
         print("    метка с поворота не подтвердилась")
         return False, None
     state.marks.add(key, along, "read", result.get("class"))
+    # Стена прочитана - скан стоя после поворота её не перечитывает (заезд
+    # 24.10: +2 выдана с поворота, потом скан той же стены - два подъезда).
+    state.scanned_walls.add((cx, cy, wall_dir))
     state.victim_log.append({**result, "side": side, "wall_dir": wall_dir,
                         "ts": time.strftime("%H:%M:%S")})
     print(f"    метка с поворота: {result['label']} → стена {config._DIR_NAME[wall_dir]} у ({cx},{cy})")

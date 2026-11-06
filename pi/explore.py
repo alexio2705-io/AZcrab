@@ -6,6 +6,7 @@ import copy
 
 import runplan
 import watch_logic
+from walls import WALL_THRESH
 
 import config
 import state
@@ -41,6 +42,9 @@ OBSTACLE_BACKOFF_MM = 45.0
 # Сколько шагов подряд без единого продвижения (по любой причине) прежде
 # чем считать, что застряли, и перезапускаться с чекпоинта.
 MAX_STALLS = 5
+# Сколько раз за разведку забывать рёбра, закрытые бампером/препятствием,
+# когда кроме них неразведанного нет. Больше - честно непроходимо.
+SOFT_FORGET_MAX = 2
 
 
 _WALL_TXT = {True: "есть", False: "нет", None: "?"}
@@ -203,7 +207,10 @@ def step(w, goal_test, home=False, arrive=None):
     if not path:
         return "goal"
     _print_step(w, path[0])
+    hdg0 = w.hdg
     if not _turn_toward(w, path[0]):
+        return "step"
+    if w.hdg != hdg0 and _wall_right_ahead(w):
         return "step"
     n, reason = _drive(w, goal_test, home, arrive)
     _handle_stop(w, n, reason)
@@ -269,6 +276,22 @@ def _print_step(w, d):
     print(f"─── ({w.cx},{w.cy}) {config._DIR_NAME[w.hdg]} → {config._DIR_NAME[d]}  {w.total}/{w.max_cells} ───")
 
 
+def _wall_right_ahead(w):
+    """После поворота стена ближе WALL_THRESH прямо впереди - это стена своей
+    клетки (следующей была бы не ближе ~440мм): не ехать, записать её и
+    перестроить маршрут. Заезд 24.10, (3,1): робот стоял смещённым, северная
+    стена в 210мм записалась проходом; после поворота видна в 227мм, но он
+    всё равно поехал, упёрся и развернулся."""
+    lidar_walls.wait_scan(1)
+    f = lidar_walls.get_walls()["front"]
+    if not lidar_walls.wall_present(f, WALL_THRESH):
+        return False
+    print(f"    после поворота впереди стена {f:.0f}мм - записываю, маршрут заново")
+    maze_map.close_edge(w.cx, w.cy, w.hdg)
+    w.show()
+    return True
+
+
 def _turn_toward(w, d):
     """Повернуть на курс d стоя. Разворот на 180 - двумя поворотами по 90
     со сканом между ними. Камеры смотрят только вбок, и разворот одним махом
@@ -312,7 +335,7 @@ def _turn_once(w, turn_deg, last):
     # него. Посередине разворота на 180° - не надо: робот никуда не ехал, а
     # через секунду ось опять сменится, и доводка была чистым простоем.
     if last:
-        turning.align_at_wall(turning.snap_target())
+        turning.align_at_wall(turning.snap_target(), move=False)
     w.hdg = (w.hdg + turn_deg // 90) % 4
     w.show()
     # Камеры смотрят теперь на другие стены той же клетки - сканируем их,
@@ -366,6 +389,12 @@ def _drive(w, goal_test, home, arrive):
             maze_map.open_edge(w.cx, w.cy, w.hdg)   # проехали - значит, проход (горку пишет record_ramp)
         w.cx, w.cy = _arrived_cell(w.cx, w.cy, w.hdg, reason)
         w.total += n
+        if reason in ("stop", "done"):
+            for side in state.watched_sides:
+                # наблюдатель смотрел эту стену у центра - скан стоя не нужен
+                state.scanned_walls.add((w.cx, w.cy, watch_logic.wall_of(w.hdg, side)))
+            if state.watched_sides:
+                print(f"    стены {'/'.join(sorted(state.watched_sides))} просмотрены на подъезде")
         if arrive is not None:
             arrive(w, w.cell not in state.visited)
     return n, reason
@@ -540,11 +569,22 @@ def flood_fill_run(max_cells, should_return=None):
     w = Walk(phase="exploring", max_cells=max_cells)
     w.should_return = should_return
     arrive_explore(w, True)     # стартовая клетка
+    soft_forgets = 0
     while w.total < max_cells:
         if should_return is not None and should_return(w):
             print("  ⏱ Оставляю время на возврат и финишную индикацию")
             return w.cx, w.cy, w.hdg, w.checkpoint, "time_return"
         if step(w, unvisited, arrive=arrive_explore) == "no_path":
+            if soft_forgets < SOFT_FORGET_MAX:
+                n = maze_map.forget_soft_blocks()
+                if n:
+                    # Бампер или препятствие могли закрыть единственный
+                    # проход (заезд 24.10: закрыл выход из старта, и
+                    # разведка кончилась на первой клетке) - пробуем снова.
+                    soft_forgets += 1
+                    print(f"  неразведанное есть только за рёбрами, закрытыми бампером/"
+                          f"препятствием - забыл их ({n}), разведка продолжается")
+                    continue
             print("  ✓ Неразведанных клеток, достижимых по известной карте, "
                   "больше нет - разведка завершена")
             w.show("explored")

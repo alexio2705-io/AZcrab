@@ -297,10 +297,20 @@ def turn_to(target, label=None, seen=None, walls=None):
     return done
 
 
+# После поворота (move=False): смещение меньше этого - учесть в поездке, больше
+# - одним подъездом встать в центр (сильно не по центру - видно глазом и
+# мешает замеру стен клетки).
+ALIGN_MOVE_FROM_MM = 50.0
+
+
 @timing._timed("доводка")
-def align_at_wall(target_yaw):
+def align_at_wall(target_yaw, move=True):
     """Доводка вдоль движения: встать в центр клетки по передней стене, а
-    если её нет (например, после разворота) - по задней."""
+    если её нет (например, после разворота) - по задней. move=False - не
+    подъезжать, а оставить поправку следующей поездке (state.start_offset):
+    после поворота подъезд туда-сюда перед стартом - лишнее время. Но если
+    смещение не меньше ALIGN_MOVE_FROM_MM - всё равно один подъезд."""
+    state.start_offset = None
     on_slope = abs(esp_link.get_pitch() - state.pitch_level) > SLOPE_BACK_GUARD_DEG
     # Inspect an already available fresh scan first; no three-scan pause at
     # every tile and no repeated forward/back corrections for small errors.
@@ -345,6 +355,10 @@ def align_at_wall(target_yaw):
             print(f"    [выр] {src}мм: {need:+.0f}мм - это не доводка, пропускаю")
             return
 
+        if not move and abs(need) < ALIGN_MOVE_FROM_MM:
+            state.start_offset = (need, target_yaw)
+            print(f"    [выр] {src}мм: до центра {need:+.0f}мм - учту в поездке")
+            return
         print(f"    [выр {it+1}] {src}мм  "
               f"{'вперёд' if need > 0 else 'назад'} {abs(need):.0f}мм")
         driving.creep_mm(need, target_yaw)

@@ -427,6 +427,17 @@ static void cmd_task(void *arg)
                 } else if (strcmp(line, "Z") == 0) {
                     motor_zero_encoders();
                     g_z_cnt++;     // строго после обнуления - см. telem_task
+                } else if (strcmp(line, "X") == 0) {
+                    // Моторы выключить между заездами (nav.py при выходе).
+                    g_forward = moving = false;
+                    hold_until_us = 0;
+                    robot_shutdown_all();
+                    ESP_LOGI(TAG, "RPi: motors off");
+                } else if (strcmp(line, "W") == 0) {
+                    // Включить перед заездом; ускорение - заново, его держит RAM.
+                    robot_wake_all();
+                    robot_set_accel(MOTOR_ACCEL_DPS_S);
+                    ESP_LOGI(TAG, "RPi: motors on");
                 } else if (strcmp(line, "R") == 0) {
                     // Снять паузу BTN_1 - см. btn_task().
                     if (g_run_state == RUN_PAUSED) {
@@ -575,7 +586,8 @@ void robot_link_run(void)
     robot_wake_all();
     robot_set_accel(MOTOR_ACCEL_DPS_S);
     motor_zero_encoders();
-    robot_stop_all();   // silent until the RPi's first drive command
+    robot_shutdown_all();   // 0x80, not 0x81: motors whine until "W" from the RPi
+    ESP_LOGI(TAG, "motors off until RPi sends W");
 
     // telem, cmd (здесь) и enc_poll (motor.c) подписаны на task watchdog:
     // failsafe живёт в самой cmd_task, и её зависания иначе не заметил бы

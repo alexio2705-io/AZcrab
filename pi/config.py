@@ -13,7 +13,8 @@ TRACK_MM = 125.0
 # Measured sensor-to-wall distance at tile center; calibrate on actual field.
 SIDE_CENTER_MM = 140.0
 SIDE_LIDAR_OFFSET_MM = 0.0  # positive: sensor is right of chassis center
-ALIGN_MIN_CORRECTION_MM = 20.0
+# Доводки меньше этого не делаем: подъезд на 20-30мм выглядит как дёрганье
+ALIGN_MIN_CORRECTION_MM = 35.0
 BLUE_WAIT_S = 5.2  # at least five consecutive seconds, plus clock/settling margin
 ROUTE_CELL_S = 2.0
 ROUTE_QUARTER_TURN_S = 0.6
@@ -126,10 +127,19 @@ TURN_TOL_DEG = 1.5
 GYRO_KP = 4.2          # см/с на градус ошибки курса
 GYRO_KD_RATE = 0.07    # см/с на (градус/с) - демпфирование по угловой скорости
 
-# Continuous travel has a delayed wheel-speed loop. Keep its bandwidth lower
-# than the short-creep controller above; validated with 20..80 ms model delay.
-DRIVE_YAW_KP = 2.0          # cm/s per degree
-DRIVE_YAW_KD_RATE = 0.035   # cm/s per degree/s
+# Руль при непрерывной езде. Архив 22.10 снизил до 2.0/0.035 по симулятору
+# медленного привода; на поле 24.10 средняя ошибка курса без стен выросла
+# с 1.6-1.9° до 2.5° (макс. 7°), робот снесло в угол. Вернули проверенные
+# на роботе значения, как у GYRO_KP/GYRO_KD_RATE.
+DRIVE_YAW_KP = 4.2          # см/с на градус
+DRIVE_YAW_KD_RATE = 0.07    # см/с на (градус/с)
+# Интеграл курса: пропорциональный руль на постоянной помехе (правые колёса
+# проскальзывают) держал остаток +2..4°, и на открытом месте без стен робота
+# сносило на 6-8см за 90см (заезд 24.10, (3,1): стена записалась проходом).
+DRIVE_YAW_KI = 3.0          # см/с на (градус*с)
+# 24.10: заднее правое колесо не крутится быстрее ~30 см/с (предел в самом
+# моторе, LK Motor Tool) - на 12 интеграл упирался, и остаток +2.5° держался.
+DRIVE_YAW_I_MAX = 24.0      # см/с, предел вклада интеграла
 
 # ── Доводка вдоль движения у стены ───────────────────────────
 # После клетки (и после каждого поворота) робот смотрит на переднюю стену, а

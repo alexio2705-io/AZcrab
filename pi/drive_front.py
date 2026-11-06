@@ -1,6 +1,7 @@
 """Шаги поездки: передняя стена, стены клеток впереди и решение у границы клетки."""
 from __future__ import annotations
 
+import math
 import sys
 import time
 
@@ -68,7 +69,8 @@ def track_front_wall(trip):
     trip.front_scan_t, trip.front_scan_cm = front_t, front_odo
     if front_odo is None:
         f_now = None
-    if trip.on_slope_now or trip.p_abs >= config.RAMP_MAP_DEG:
+    if ((trip.on_slope_now or trip.p_abs >= config.RAMP_MAP_DEG)
+            and (trip.ramp_state == 'on' or not wall_not_floor(f_now, trip.pitch_delta))):
         # Перед лидара на склоне - это пол или небо. Стоя у подножия, он
         # вообще видит саму горку как стену в ~40см (130мм/tg25..30° + 15см),
         # и без этого робот вставал бы "у стены" на первой плитке горки.
@@ -90,6 +92,19 @@ def track_front_wall(trip):
         trip.f_anchor = None
     trip.f_est = None if trip.f_anchor is None else \
         trip.f_anchor - (trip.traveled_cm - trip.f_anchor_cm) * 10.0
+
+
+LIDAR_H_MM = 130.0      # лидар над полом
+FLOOR_MARGIN = 0.7      # ближе этой доли расстояния до пола - точно не пол
+
+
+def wall_not_floor(f_mm, pitch_deg):
+    """Нос опущен на |pitch_deg|: луч лидара упирается в пол на
+    LIDAR_H_MM/tg(наклона) - при 12° это ~610мм. Замер заметно ближе - не
+    пол, а стена или препятствие, и выключать по нему перед нельзя."""
+    if f_mm is None or pitch_deg > -1.0:
+        return False
+    return f_mm < FLOOR_MARGIN * LIDAR_H_MM / math.tan(math.radians(-pitch_deg))
 
 
 def collect_cell_walls(trip):

@@ -134,7 +134,7 @@ class CenteringTests(unittest.TestCase):
     def test_smoothing_independent_of_tick_rate(self):
         def run(dt,n):
             t=SimpleNamespace(target_yaw=0,pitch_delta=0,wall_e=20,head_off_f=0,
-                              loop_dt=dt,last_steer=0,ss=1,fwd=20)
+                              loop_dt=dt,last_steer=0,ss=1,fwd=20,assist_mode=None,yaw_i=0.0)
             for _ in range(n): self.module.steering(t)
             return t.head_off_f
         self.assertAlmostEqual(run(.01,1),run(.005,2),places=10)

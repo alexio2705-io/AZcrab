@@ -95,6 +95,8 @@ float heading_hold_omega(float target_yaw_deg, float yaw_deg);
 // robot_stop_all() is 0x81: the motors go silent and the robot COASTS.
 void robot_stop_all(void);
 void robot_wake_all(void);
+// 0x80 to all four: motors off between runs (RPi "X"); robot_wake_all() - "W".
+void robot_shutdown_all(void);
 
 // Active brake: closed-loop 0 dps on all four wheels. Unlike robot_stop_all()
 // the motors fight the remaining inertia instead of coasting on, which is what

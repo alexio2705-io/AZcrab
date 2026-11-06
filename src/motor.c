@@ -293,6 +293,13 @@ void robot_stop_all(void)
     g_motors_stopped = true;
 }
 
+void robot_shutdown_all(void)
+{
+    motor_shutdown(MOTOR_LEFT_1); motor_shutdown(MOTOR_LEFT_2);
+    motor_shutdown(MOTOR_RIGHT_1); motor_shutdown(MOTOR_RIGHT_2);
+    g_motors_stopped = true;
+}
+
 void robot_wake_all(void)
 {
     motor_wake(MOTOR_LEFT_1); motor_wake(MOTOR_LEFT_2);

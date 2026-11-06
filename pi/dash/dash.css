@@ -141,6 +141,7 @@ h2 .meta { margin-left: auto; text-transform: none; letter-spacing: 0; font-weig
 .frame img { object-fit: cover; opacity: 0; transition: opacity .15s; }
 .frame.live img { opacity: 1; }
 .frame .ph { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; color: var(--mut); }
+.frame .ph.stack { display: flex; flex-direction: column; justify-content: center; }
 .frame.live .ph { display: none; }
 .frame .ph img { position: static; opacity: .55; width: 70%; height: auto; border-radius: 4px; display: block; margin: 0 auto 8px; }
 .box-lbl { font: 700 13px var(--mono); }

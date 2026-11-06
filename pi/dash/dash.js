@@ -333,7 +333,9 @@ function renderCams() {
         ph.dataset.k = key;
         ph.innerHTML = (last ? `<div><img src="/detections/${encodeURIComponent(last.image)}" alt=""><small>последняя метка: ${esc(VNAME[last.type] || last.type)}</small></div>` : '')
           + `<div>${esc(note)}</div>`;
-        if (last) ph.style.display = 'flex', ph.style.flexDirection = 'column', ph.style.justifyContent = 'center';
+        // классом, не style.display: встроенный стиль перебивал .frame.live .ph
+        // {display:none}, и старая метка висела поверх живых кадров
+        ph.classList.toggle('stack', !!last);
       }
     }
   }
@@ -806,8 +808,16 @@ const model = (() => {
 
   // робот: мультяшная модель AZcrab (robot3d.js); вперёд = -z, вверх = +y, мм
   const robot = new T.Group(); scene.add(robot);
-  const az3d = window.makeRobot3D ? window.makeRobot3D(T) : null;
+  let az3d = window.makeRobot3D ? window.makeRobot3D(T) : null;
   if (az3d) robot.add(az3d.group);
+  // настоящий робот из CAD (robot_glb.js): загрузится - встаёт вместо мультяшного
+  if (window.loadRobotGLB && T.GLTFLoader) {
+    window.loadRobotGLB(T, '/dash/vendor/robot.glb').then(real => {
+      if (az3d) robot.remove(az3d.group);
+      robot.add(real.group);
+      az3d = real;
+    }).catch(e => console.warn('robot.glb не загрузился, остаётся мультяшная модель:', e));
+  }
   // мягкая тень-пятно под роботом
   const sh = document.createElement('canvas'); sh.width = sh.height = 64;
   const sg = sh.getContext('2d'), rg = sg.createRadialGradient(32, 32, 4, 32, 32, 32);
@@ -846,7 +856,8 @@ const model = (() => {
       cur.yaw += angDiff(tgt.yaw, cur.yaw) * 0.25;
       cur.pitch += (tgt.pitch - cur.pitch) * 0.25;
       cur.roll += (tgt.roll - cur.roll) * 0.25;
-      robot.rotation.set(cur.pitch * Math.PI / 180, -cur.yaw * Math.PI / 180, -cur.roll * Math.PI / 180, 'YXZ');
+      // тангаж BNO085: плюс - нос вниз (проверено на роботе 23.10), а rotation.x плюс - нос вверх
+      robot.rotation.set(-cur.pitch * Math.PI / 180, -cur.yaw * Math.PI / 180, -cur.roll * Math.PI / 180, 'YXZ');
       renderer.render(scene, cam);
     },
   };

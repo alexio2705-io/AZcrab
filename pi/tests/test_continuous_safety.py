@@ -22,7 +22,7 @@ class EnvelopeTests(unittest.TestCase):
 
     def test_two_frames_fit_in_visibility_window(self):
         for gap in (.08,.17,.4):
-            self.assertLessEqual(observation_speed(gap)*2*gap,8.00001)
+            self.assertLessEqual(observation_speed(gap)*2*gap,12.40001)  # окно камеры ±62мм
 
     def test_decision_does_not_commit_arrival(self):
         ledger = PassageLedger()
@@ -108,7 +108,7 @@ class VisionTests(unittest.TestCase):
         self.assertEqual(watcher.coverage_gap({'left'}),math.inf)
 
     def module(self):
-        state=SimpleNamespace(lifted=threading.Event())
+        state=SimpleNamespace(lifted=threading.Event(),watched_sides=set())
         deps={n:Mock() for n in ('driving','esp_link','maze_map','turning','victims')}
         deps.update(state=state,timing=TIMING,walls=SimpleNamespace(SIDE_THRESH=200),
             lidar_walls=SimpleNamespace(wall_present=lambda d,threshold:d is not None and d<threshold),
@@ -132,7 +132,8 @@ class VisionTests(unittest.TestCase):
         hold=Mock()
         hold.update.return_value={'left'}
         t=SimpleNamespace(watcher=watcher,now_m=10,side_hold=hold,walls={'left':140,'right':None},
-            ramp_state=None,bump_on=False,assist_mode=None,pitch_delta=0,wall_forced=False,vmark=None)
+            ramp_state=None,bump_on=False,assist_mode=None,pitch_delta=0,wall_forced=False,vmark=None,
+            boundary_cm=30,traveled_cm=0,watch_boundary=None,watch_armed=False)
         with patch.object(module.watch_logic,'watch_allowed',return_value=True):
             self.assertIsNone(module.watch_marks_while_driving(t))
         self.assertEqual(t.perception_cap,module.config.MOVE_MIN_CMS)
@@ -149,7 +150,7 @@ class VisionTests(unittest.TestCase):
         hold.frame_ok.return_value=True
         t=SimpleNamespace(watcher=watcher,now_m=10,side_hold=hold,walls={'left':140,'right':140},
             ramp_state=None,bump_on=False,assist_mode=None,pitch_delta=0,wall_forced=False,vmark=None,
-            cell=(0,0),hdg=0,odo_t=Mock(),traveled_cm=20,fwd=30)
+            cell=(0,0),hdg=0,odo_t=Mock(),traveled_cm=20,fwd=30,boundary_cm=30,watch_boundary=None)
         module.watch_marks_while_driving(t)
         self.assertEqual(t.vmark['side'],'right')
         self.assertEqual([q['side'] for q in t.mark_queue],['left'])
@@ -182,8 +183,9 @@ class ControllerIntegrationTests(unittest.TestCase):
         state=SimpleNamespace(scan_cnt=10,lifted=threading.Event())
         checks=Mock();checks.integrate_motion.return_value=None
         marks=Mock();marks._mark_stop.return_value=None
+        lidar=Mock(); lidar.get_walls.return_value={'front':None}
         module=load('drive_stop',{'state':state,'esp_link':Mock(),'driving':Mock(),
-                                  'marks':marks,'drive_checks':checks})
+                                  'marks':marks,'drive_checks':checks,'lidar_walls':lidar})
         t=SimpleNamespace(stopping=True,mark_first=True,rem_eff=0,ramp_state=None,
             vmark={'side':'left','pos_mm':300,'stop_cm':30},mark_queue=[{'side':'right','pos_mm':300}],
             wall_forced=False,cell=(0,0),hdg=1,target_yaw=90,traveled_cm=30,

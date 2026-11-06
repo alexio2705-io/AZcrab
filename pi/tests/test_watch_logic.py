@@ -254,11 +254,11 @@ class TestStopAndCreep(unittest.TestCase):
     def test_creep_box_centered_no_move(self):
         self.assertEqual(wl.creep_to_mark((0.45, 0.55), 999.0, 15.0), (0.0, "рамка"))
 
-    def test_creep_box_above_center_goes_forward(self):
+    def test_creep_box_fully_in_frame_off_center_stays(self):
+        # целиком в кадре, хоть и выше центра - читается и так, без подъезда
         mm, src = wl.creep_to_mark((0.2, 0.4), 0.0, 15.0)
         self.assertEqual(src, "рамка")
-        assert mm is not None
-        self.assertAlmostEqual(mm, 30.0 - 10.0 * (96.0 - 77.3) / (106.0 - 77.3))
+        self.assertEqual(mm, 0.0)
 
     def test_creep_box_cut_by_edge(self):
         mm, src = wl.creep_to_mark((0.0, 0.2), 0.0, 15.0)

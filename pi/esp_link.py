@@ -15,8 +15,6 @@ import ramps
 from motion_estimate import MotionSample, MotionDiscontinuity
 
 
-TILT_RELEASE_MAX_DEG = 20.0   # круче - это уже горка/обрыв, держим тормоз
-TILT_BRAKE_S = 0.25           # тормоз до полной остановки, потом отпускаем
 # ДОЛЖНО СОВПАДАТЬ с telem_t и TELEM_VER в robot_link.c.
 # ver seq yaw yaw_rate pitch roll ax ay az color cr cg cb cc left_cm right_cm
 # status flags z_cnt boot_id cmd_err crc16
@@ -428,17 +426,19 @@ def zero_odo():   _drive_cmd_now("Z")
 def brake():      _drive_cmd_now("B")
 
 
+def motors_on():  _drive_cmd_now("W")    # включить моторы перед заездом (0x88)
+
+
+def motors_off(): _drive_cmd_now("X")    # выключить после заезда (0x80): не пищат, не греются
+
+
 def settle_brake(pause_s=0.10):
-    """Тормоз после манёвра. На ровном полу - как раньше: "B", и ESP держит
-    0 dps ещё BRAKE_HOLD_US. На препятствии это удержание трясёт робота на
-    люфте редукторов (см. TILT_*), поэтому там тормоз только до остановки,
-    а потом моторы отпускаются - на небольшом перекосе робот и так стоит."""
+    """Тормоз после манёвра: "B", и ESP держит 0 dps ещё BRAKE_HOLD_US - и на
+    ровном полу, и на препятствии. Раньше на перекосе моторы отпускали (от
+    тряски на люфте редукторов), но отпущенный робот скатывался с
+    препятствия: заезд 24.10, после поворотов на нём уехал назад на 57мм."""
     brake()
     time.sleep(pause_s)
-    if ramps.is_tilted() and ramps.tilt_deg() < TILT_RELEASE_MAX_DEG:
-        time.sleep(max(0.0, TILT_BRAKE_S - pause_s))
-        stop()
-        print(f"    на препятствии (перекос {ramps.tilt_deg():.0f}°) - удержание колёс снято")
 
 
 def hold_while(fn, *args, period=1.0, **kwargs):

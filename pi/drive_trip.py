@@ -33,8 +33,13 @@ import turning
 # Пробовали 75 (при BRAKE_DECEL_CMS2=350) - робот стал заметно переезжать
 # центр клетки, а переезд портит и замер боковых стен в новой клетке. Точность
 # важнее: вернули проверенные 55/300, выигрыш от торможения "с места" остался.
-MOVE_MAX_CMS = 55.0
-MOVE_MAX_NONSTOP_CMS = 55.0
+# 24.10: 40 - заднее правое колесо не крутится быстрее ~30 см/с (предел в
+# самом моторе), на 69 правая сторона отставала и робота уводило вправо.
+# Настроят мотор в LK Motor Tool - можно вернуть 55-69.
+# 28.10: в моторе стоял Max Speed 400°/с (= 30 см/с), сняли - 55/55 в воздухе
+# дало L=R. Едем 60.
+MOVE_MAX_CMS = 60.0
+MOVE_MAX_NONSTOP_CMS = 60.0
 
 # За сколько до центра клетки принимается решение "поворачивать или ехать
 # дальше". Раньше нельзя: боковое окно замера в walls.py берёт точки со
@@ -51,6 +56,29 @@ _LIDAR_MASKS = tuple((m["center"], m["hw"]) for m in _WALLS_MASKS)
 class Trip:
     """Всё, что поездка _drive_cells помнит между тактами. Поля заводит
     start_trip(): там же комментарий к каждому."""
+
+
+def _pitch_zero():
+    """Ноль наклона поездки - наклон сейчас. Но если робот стоит перекошенным
+    (доводка задом заехала колёсами на препятствие), это не ноль: заезд
+    24.10, ноль взят при +7.6°, съезд на пол дал -8.5° - "горка вниз",
+    клетка не засчиталась, карта сдвинулась. Тогда - ровный пол со старта."""
+    pitch = esp_link.get_pitch()
+    if abs(pitch - state.pitch_level) > config.OBSTACLE_PITCH_DEG:
+        print(f"    стою с наклоном {pitch - state.pitch_level:+.1f}° "
+              f"(препятствие под колёсами) - ноль наклона со старта")
+        return state.pitch_level
+    return pitch
+
+
+def _start_offset_cm(target_yaw):
+    """Доводка после поворота, оставленная поездке (turning.align_at_wall,
+    move=False): робот не в центре клетки - цель ближе или дальше на столько
+    же, без отдельного подъезда. Только тем же курсом; берётся один раз."""
+    off, state.start_offset = state.start_offset, None
+    if off is None or abs(turning.angle_err(off[1], target_yaw)) > 5.0:
+        return 0.0
+    return off[0] / 10.0
 
 
 def _zero_odometry():
@@ -87,7 +115,7 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     # поворотов показывает на ровном полу до +9° от pitch0 стартовой клетки
     # и держит это секунды (заезд 17.10 15:31), а за одну поездку уходит не
     # больше чем на 5° - от pitch0 это была "горка" на ровном полу.
-    trip.pitch_start = esp_link.get_pitch()
+    trip.pitch_start = _pitch_zero()
 
     trip.last_l, trip.last_r = esp_link.get_odo()
     initial_motion = esp_link.motion_snapshot()
@@ -99,9 +127,13 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     trip.passages = PassageLedger()
     trip.perception_cap = float('inf')
     trip.head_off_f = 0.0
+    trip.yaw_i = 0.0                # интеграл курса, см/с (drive_motion.steering)
     trip.last_steer = 0.0
     trip.cell_cm = config.CELL_MM / 10.0
     trip.boundary_cm = trip.cell_cm                 # центр ближайшей клетки по одометрии
+    trip.boundary_cm += _start_offset_cm(trip.target_yaw)
+    state.watched_sides = set()
+    trip.watch_boundary = None
     trip.lead_cm = DECIDE_LEAD_MM / 10.0
     trip.fwd = 0.0
     trip.last_progress_cm = 0.0
