@@ -14,3 +14,6 @@ compile_commands.json
 
 # записи заездов пульта (dash_web.py) на Маке
 sim/runs/
+
+# логи заездов, скопированные с Pi
+logs/
