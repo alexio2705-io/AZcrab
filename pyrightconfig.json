@@ -1,6 +1,6 @@
 {
-  "include": ["pi", "*.py"],
-  "exclude": ["**/__pycache__", ".pio", "components"],
+  "include": ["pi"],
+  "exclude": ["**/__pycache__", "**/.pio", "firmware", "archive"],
   "typeCheckingMode": "basic",
   "reportMissingImports": "warning",
   "reportMissingModuleSource": "none",
