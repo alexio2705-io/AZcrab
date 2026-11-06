@@ -1,7 +1,7 @@
 ---
 paths:
-  - "src/**"
-  - "include/**"
+  - "firmware/src/**"
+  - "firmware/include/**"
   - "platformio.ini"
   - "CMakeLists.txt"
 ---
@@ -9,7 +9,7 @@ paths:
 
 Правила ниже — для нового и изменяемого кода; работающий старый код ради них не переписывать.
 
-- **Сборка:** `pio run`; хук собирает сам после правки `src/`. `compile_commands.json` — только `pio run -t compiledb`, `sdkconfig.*` — только `pio run -t menuconfig`.
+- **Сборка:** `pio run -d firmware`; хук собирает сам после правки `firmware/src/`. `compile_commands.json` — только `pio run -d firmware -t compiledb`, `sdkconfig.*` — только `pio run -d firmware -t menuconfig`.
 - **API ESP-IDF 5.5.** Не брать функции из 6.x и из Arduino-ядра (`delay`, `Serial`, `millis`). Сомневаешься в сигнатуре — открыть заголовок в `~/.platformio/packages/framework-espidf/components/`, а не вспоминать.
 - **Ошибки:** каждый `esp_err_t` проверять. `ESP_ERROR_CHECK` только при инициализации; в рабочем цикле `ESP_RETURN_ON_ERROR` или обработка с логом — робот не должен перезагружаться от одной ошибки шины.
 - **Задачи FreeRTOS:** периодический цикл с фиксированным шагом — `vTaskDelayUntil`, а не `vTaskDelay` (иначе дрейф периода); разовая пауза — `vTaskDelay` нормально. Стек задачи задавать осознанно, большие буферы не класть на стек.
@@ -17,4 +17,4 @@ paths:
 - **Общие данные между задачами** — мьютекс или очередь; бинарный семафор не использовать как замок (инверсия приоритетов).
 - **Память:** без `malloc` в цикле; буферы DMA не в PSRAM.
 - **Протокол ESP↔Pi** (`robot_link.h`, `pi/protocol.py`, `pi/esp_link.py`) — интерфейс: менять только обе стороны сразу и описать изменение в заголовке `robot_link.h`.
-- **Модуль:** `include/x.h` начинается с комментария, что делает модуль (из него строится `docs/CODEMAP.md`); всё внутреннее в `src/x.c` — `static`.
+- **Модуль:** `firmware/include/x.h` начинается с комментария, что делает модуль (из него строится `docs/CODEMAP.md`); всё внутреннее в `firmware/src/x.c` — `static`.

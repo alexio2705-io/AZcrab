@@ -1,6 +1,6 @@
 ---
 name: esp-flash
-description: Использовать, когда надо собрать, прошить или послушать ESP32-S3 робота MAZE2027 — «прошей», «залей прошивку на есп», «подключил есп, прошивай», «закрыл, прошивай», «открой монитор», «что пишет есп», правки в src/ или include/, тест моторов/кнопок/сервы/шин на ESP.
+description: Использовать, когда надо собрать, прошить или послушать ESP32-S3 робота MAZE2027 — «прошей», «залей прошивку на есп», «подключил есп, прошивай», «закрыл, прошивай», «открой монитор», «что пишет есп», правки в firmware/src/ или firmware/include/, тест моторов/кнопок/сервы/шин на ESP.
 ---
 
 # Прошивка ESP32-S3 (MAZE2027)
@@ -10,22 +10,22 @@ ESP-IDF через PlatformIO, окружение `4d_systems_esp32s3_gen4_r8n16
 
 ## Перед сборкой
 
-Тестовые переключатели в `src/main.c` перекрывают лабиринт. Для заезда должно быть:
+Тестовые переключатели в `firmware/src/main.c` перекрывают лабиринт. Для заезда должно быть:
 `BUTTON_TEST 0`, `DRIVE_TEST 0`, `RUN_MAZE 1`. Включать тест — только по просьбе
 пользователя, а после теста вернуть и сказать об этом (лучше отдельным коммитом).
-Режим теста шин — `TEST_TURN` в `src/drive_test.c` (1 — поворот на `TURN_TEST_DEG`, 0 — проезд `DRIVE_TEST_CM`).
+Режим теста шин — `TEST_TURN` в `firmware/src/drive_test.c` (1 — поворот на `TURN_TEST_DEG`, 0 — проезд `DRIVE_TEST_CM`).
 
-Менялся пакет телеметрии (`include/robot_link.h`, `src/robot_link.c`) → поднять
+Менялся пакет телеметрии (`firmware/include/robot_link.h`, `firmware/src/robot_link.c`) → поднять
 `TELEM_VER` и синхронно `TELEM_VER`/`FMT` в `pi/nav.py`, потом залить на Pi
 (pi_connect). Иначе Pi видит 0 Гц.
 
 ## Сборка и прошивка
 
 ```bash
-~/.platformio/penv/bin/pio run 2>&1 | grep -iE "error|warning" | grep -v "Flash memory size mismatch"
+~/.platformio/penv/bin/pio run -d firmware 2>&1 | grep -iE "error|warning" | grep -v "Flash memory size mismatch"
 ls /dev/cu.usbmodem*
 lsof /dev/cu.usbmodem* 2>/dev/null
-~/.platformio/penv/bin/pio run -t upload --upload-port /dev/cu.usbmodem101 2>&1 | tail -12
+~/.platformio/penv/bin/pio run -d firmware -t upload --upload-port /dev/cu.usbmodem101 2>&1 | tail -12
 ```
 
 - Предупреждение `Flash memory size mismatch` — норма, не чинить.
@@ -50,7 +50,7 @@ lsof /dev/cu.usbmodem* 2>/dev/null
 Дать одну команду из корня проекта:
 
 ```bash
-cd ~/Documents/PlatformIO/Projects/MAZE2027 && ~/.platformio/penv/bin/pio run -t upload && ~/.platformio/penv/bin/pio device monitor
+cd ~/Documents/PlatformIO/Projects/MAZE2027 && ~/.platformio/penv/bin/pio run -d firmware -t upload && ~/.platformio/penv/bin/pio device monitor
 ```
 
 ## Частые ошибки

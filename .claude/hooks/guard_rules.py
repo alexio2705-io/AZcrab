@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""PostToolUse: после правки pi/nav.py и src/main.c проверяет правила проекта, при нарушении сообщает Claude (exit 2).
+"""PostToolUse: после правки pi/nav.py и firmware/src/main.c проверяет правила проекта, при нарушении сообщает Claude (exit 2).
 
 pi/nav.py: нет аварийных выходов (FATAL, sys.exit, exit()).
-src/main.c: для заезда BUTTON_TEST 0, DRIVE_TEST 0, RUN_MAZE 1.
+firmware/src/main.c: для заезда BUTTON_TEST 0, DRIVE_TEST 0, RUN_MAZE 1.
 """
 import json
 import os
@@ -15,7 +15,7 @@ root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 rel = os.path.relpath(path, root) if path else ""
 
 NAV = os.path.join("pi", "nav.py")
-MAIN = os.path.join("src", "main.c")
+MAIN = os.path.join("firmware", "src", "main.c")
 
 EXIT_RE = re.compile(r"FATAL|\bsys\.exit\b|\bos\._exit\b|\bexit\s*\(|\bquit\s*\(")
 SWITCH_RE = re.compile(r"^\s*#\s*define\s+(BUTTON_TEST|DRIVE_TEST|RUN_MAZE)\s+(\S+)")
@@ -51,7 +51,7 @@ def check_main(p):
     if not bad:
         return None
     return (
-        "Тестовые переключатели в src/main.c не в режиме заезда. Включать тест можно только "
+        "Тестовые переключатели в firmware/src/main.c не в режиме заезда. Включать тест можно только "
         "по просьбе пользователя, после теста вернуть и сказать об этом:\n" + "\n".join(bad)
     )
 

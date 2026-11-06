@@ -15,8 +15,7 @@ OUT = "docs/CODEMAP.md"
 GROUPS = [  # (заголовок, шаблоны git ls-files в glob-режиме: * не проходит через /)
     ("Корень", ["*.py"]),
     ("pi/ — Raspberry Pi", ["pi/**/*.py"]),
-    ("camera_web/", ["camera_web/*.py"]),
-    ("src/ + include/ — ESP32-S3", ["include/*.h", "src/*.c", "src/*.cpp"]),
+    ("firmware/ — ESP32-S3", ["firmware/include/*.h", "firmware/src/*.c", "firmware/src/*.cpp"]),
 ]
 CODE_EXT = (".py", ".c", ".cpp", ".h")
 SKIP_DIRS = ("/tests/", "components/")
@@ -62,7 +61,7 @@ def c_entry(path):
     base = os.path.splitext(os.path.basename(path))[0]
     header = os.path.join(os.path.dirname(path), "..", "include", base + ".h")
     if os.path.exists(header):
-        return f"реализация `include/{base}.h`", []
+        return f"реализация `firmware/include/{base}.h`", []
     return ("точка входа прошивки (`app_main`)" if "app_main" in text else "—"), []
 
 

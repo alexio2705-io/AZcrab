@@ -4,20 +4,14 @@
 Где что менять по задачам — ручной указатель `docs/robot_code_map.md`.
 Тесты Pi — `pi/tests/` (unittest).
 
-## Корень (4)
-
-- `detect_app.py` — Веб-страница live-детекции жертв. · `FrameStore`, `detection_loop`, `mjpeg_generator`, `index` … ещё 3
-- `map_web.py` — Веб-страница карты лабиринта и найденных меток. · `index`, `state`, `detection_image`
-- `victim_detect.py` — Детектор жертв для RoboCup Rescue Maze. · `VictimDetector`
-- `victim_static_test.py` — Статический тест детектора жертв — робот стоит на месте, без езды. · `main`
-
-## pi/ — Raspberry Pi (79)
+## pi/ — Raspberry Pi (84)
 
 - `pi/actions.py` — Глаголы для заданий технического испытания. Задание - файл task_*.py, · `blink`, `blink_victim`, `blink_finish`, `stand` … ещё 15
 - `pi/battery_probe.py` — Напряжение батареи для меню экрана, пока nav.py не запущен. · `port_in_use`, `volts_from_bytes`, `read_volts`, `BatteryProbe`
 - `pi/boot.py` — Запуск железа и уборка - общие для обычного заезда (nav.py) и заданий · `Run`, `start`, `stop`, `run`
 - `pi/bringup.py` — Проверка Pi после включения: всё ли на месте перед заездом. Только читает. · `report`, `run`, `busy_processes`, `check_python` … ещё 14
 - `pi/bumper.py` — Бампер: концевики, что делать при ударе на ходу и после остановки. · `get_bumper`, `both_pressed`, `bumper_side`, `check_bumper_while_driving` … ещё 2
+- `pi/camera_web/app.py` — — · `StreamingOutput`, `start_camera`, `mjpeg_generator`, `index` … ещё 1
 - `pi/challenge.py` — Режим технического испытания - заготовка, чтобы на площадке не писать · `load_config`, `signal_timing`, `describe`, `print_config` … ещё 13
 - `pi/challenge_blocks.py` — Small, hardware-free challenge description. Hardware imports happen only in run(). · `Block`, `wait`, `blink`, `kits` … ещё 4
 - `pi/color.py` — Сырые каналы APDS9960 - живой вывод и калибровка порогов распознавания плиток. · `link_report`, `nav_verdict`, `calibrate`, `main`
@@ -28,6 +22,7 @@
 - `pi/dash_live.py` — Дашборд, живая карта, светодиоды и детектор подъёма. Перенесено из nav.py как есть. · `leds_lifted`, `leds_sleep`, `blink_start_return`, `start_map_web` … ещё 2
 - `pi/dash_web.py` — Пульт робота: живой дашборд заезда в браузере + запись и повтор заездов. · `hist_row`, `SysStats`, `Hub`, `feed_loop` … ещё 8
 - `pi/dataset_web.py` — Сбор датасета для дообучения YOLO с двух камер робота. · `load_settings`, `log`, `Camera`, `cam_settings_controls` … ещё 7
+- `pi/detect_app.py` — Веб-страница live-детекции жертв. · `FrameStore`, `detection_loop`, `mjpeg_generator`, `index` … ещё 3
 - `pi/drive_checks.py` — Шаги поездки: аварийные проверки (снят, пауза, связь, энкодеры, застревание) и одометрия. · `integrate_motion`, `check_abort`, `update_odometry`, `check_progress` … ещё 4
 - `pi/drive_front.py` — Шаги поездки: передняя стена, стены клеток впереди и решение у границы клетки. · `track_front_wall`, `wall_not_floor`, `collect_cell_walls`, `remaining_distance` … ещё 2
 - `pi/drive_motion.py` — Шаги поездки: скорость, центровка, руль, команда моторам, статус. · `speed_profile`, `wall_offset`, `steering`, `send_motor_command` … ещё 2
@@ -51,6 +46,7 @@
 - `pi/lift.py` — Признаки «робота сняли с поля» - замер и подбор порогов для LIFT_* в nav.py. · `link_report`, `Detector`, `selftest`, `main`
 - `pi/live.py` — Живой поток состояния nav.py для пульта (dash_web.py). · `LogTee`, `LivePublisher`, `read_lines`
 - `pi/manhattan.py` — Курс по стенам ("манхэттен"): стены поля идут только по двум направлениям, · `segments`, `wall_angle`
+- `pi/map_web.py` — Веб-страница карты лабиринта и найденных меток. · `index`, `state`, `detection_image`
 - `pi/marks.py` — Метки жертв, замеченные не стоя в центре клетки. · `watch_marks_while_driving`
 - `pi/maze_map.py` — Карта лабиринта: стены, рёбра, голосование, поиск пути. · `vote_wall`, `close_edge`, `open_edge`, `set_cell_walls` … ещё 6
 - `pi/motion_estimate.py` — Checked wheel/heading integration. Distances are cm; yaw is clockwise degrees. · `MotionDiscontinuity`, `MotionSample`, `ProjectedOdometry`, `rebase`
@@ -86,6 +82,8 @@
 - `pi/tile_rules.py` — Правила плиток: что робот делает на плитке каждого цвета. · `Rule`, `use_checkpoint`, `role`, `must_stop` … ещё 3
 - `pi/timing.py` — Учёт времени по категориям (декоратор @timing._timed) и отчёты по нему. · `time_report`, `tick_report`
 - `pi/turning.py` — Повороты: поворот на угол, доворот на курс, выравнивание у стены. · `angle_err`, `snap_target`, `turn`, `gyro_heading` … ещё 2
+- `pi/victim_detect.py` — Детектор жертв для RoboCup Rescue Maze. · `VictimDetector`
+- `pi/victim_static_test.py` — Статический тест детектора жертв — робот стоит на месте, без езды. · `main`
 - `pi/victim_watch.py` — Наблюдатель меток жертв на ходу - сторона nav.py. · `attach_shm`, `WatchBox`, `VictimWatcher`
 - `pi/victim_web.py` — Live-детекция меток на обеих камерах с веб-страницей. · `get_cfg`, `set_cfg`, `cog_verdict`, `crop_box` … ещё 13
 - `pi/victims.py` — Жертвы: осмотр сторон камерами, сообщение о жертве, выдача аптечки. · `dispense`, `kits_left`, `dispense_kit`, `scan_sides` … ещё 3
@@ -93,26 +91,22 @@
 - `pi/watch_logic.py` — Чистая логика наблюдателя меток жертв на ходу (victim_watch.py, nav.py). · `prefer_ncnn`, `victim_boxes`, `px_to_mm`, `mark_pos_mm` … ещё 19
 - `pi/watch_proc.py` — YOLO наблюдателя меток на ходу - отдельным процессом (см. victim_watch.py). · `save`, `main`
 
-## camera_web/ (1)
+## firmware/ — ESP32-S3 (17)
 
-- `camera_web/app.py` — — · `StreamingOutput`, `start_camera`, `mjpeg_generator`, `index` … ещё 1
-
-## src/ + include/ — ESP32-S3 (17)
-
-- `include/apds9960.h` — APDS9960 colour sensor, on connector J13 (COLORSENSOR on the schematic). · `apds9960_board_init`, `apds9960_read_id`, `apds9960_init`, `apds9960_is_data_ready` … ещё 2
-- `include/buttons.h` — The three momentary inputs on the board: a panel button and two clickers. · `buttons_init`, `button_pressed`, `button_raw_level`, `button_edge_count` … ещё 1
-- `include/drive_test.h` — Стендовый тест шин: по нажатию BTN_1 робот сам, без RPi, либо крутится на · `drive_test_run`
-- `include/gyro.h` — Adafruit BNO085 (BNO08x) 9-DoF IMU, SPI mode. · `gyro_init`, `gyro_wait_sample`, `gyro_sample_count`, `gyro_ready` … ещё 8
-- `include/link_test.h` — ESP<->RPi UART link test. · `link_test_run`
-- `include/motor.h` — LK-TECH / MF servo motor CAN driver (MF4015 V2 / MG4005 / compatible). · `motor_can_init`, `motor_can_log_status`, `motor_get_health`, `motor_wake` … ещё 24
-- `include/robot_link.h` — ESP <-> RPi link for the maze run. Same split as the previous robot: the ESP · `robot_link_run`
-- `include/servo.h` — Cube dispenser servo on GPIO10 (SERVO on the schematic; R30 pulls the line · `servo_init`, `servo_dispense_left`, `servo_dispense_right`, `servo_center` … ещё 1
-- `src/apds9960.c` — реализация `include/apds9960.h`
-- `src/buttons.c` — реализация `include/buttons.h`
-- `src/drive_test.c` — реализация `include/drive_test.h`
-- `src/gyro.cpp` — реализация `include/gyro.h`
-- `src/link_test.c` — реализация `include/link_test.h`
-- `src/main.c` — точка входа прошивки (`app_main`)
-- `src/motor.c` — реализация `include/motor.h`
-- `src/robot_link.c` — реализация `include/robot_link.h`
-- `src/servo.c` — реализация `include/servo.h`
+- `firmware/include/apds9960.h` — APDS9960 colour sensor, on connector J13 (COLORSENSOR on the schematic). · `apds9960_board_init`, `apds9960_read_id`, `apds9960_init`, `apds9960_is_data_ready` … ещё 2
+- `firmware/include/buttons.h` — The three momentary inputs on the board: a panel button and two clickers. · `buttons_init`, `button_pressed`, `button_raw_level`, `button_edge_count` … ещё 1
+- `firmware/include/drive_test.h` — Стендовый тест шин: по нажатию BTN_1 робот сам, без RPi, либо крутится на · `drive_test_run`
+- `firmware/include/gyro.h` — Adafruit BNO085 (BNO08x) 9-DoF IMU, SPI mode. · `gyro_init`, `gyro_wait_sample`, `gyro_sample_count`, `gyro_ready` … ещё 8
+- `firmware/include/link_test.h` — ESP<->RPi UART link test. · `link_test_run`
+- `firmware/include/motor.h` — LK-TECH / MF servo motor CAN driver (MF4015 V2 / MG4005 / compatible). · `motor_can_init`, `motor_can_log_status`, `motor_get_health`, `motor_wake` … ещё 24
+- `firmware/include/robot_link.h` — ESP <-> RPi link for the maze run. Same split as the previous robot: the ESP · `robot_link_run`
+- `firmware/include/servo.h` — Cube dispenser servo on GPIO10 (SERVO on the schematic; R30 pulls the line · `servo_init`, `servo_dispense_left`, `servo_dispense_right`, `servo_center` … ещё 1
+- `firmware/src/apds9960.c` — реализация `firmware/include/apds9960.h`
+- `firmware/src/buttons.c` — реализация `firmware/include/buttons.h`
+- `firmware/src/drive_test.c` — реализация `firmware/include/drive_test.h`
+- `firmware/src/gyro.cpp` — реализация `firmware/include/gyro.h`
+- `firmware/src/link_test.c` — реализация `firmware/include/link_test.h`
+- `firmware/src/main.c` — точка входа прошивки (`app_main`)
+- `firmware/src/motor.c` — реализация `firmware/include/motor.h`
+- `firmware/src/robot_link.c` — реализация `firmware/include/robot_link.h`
+- `firmware/src/servo.c` — реализация `firmware/include/servo.h`

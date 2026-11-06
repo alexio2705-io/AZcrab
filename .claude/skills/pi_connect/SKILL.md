@@ -33,7 +33,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 madness@<IP> 'hostname && uptime'
 
 Порядок, не пропускать:
 1. Сначала проверка локально — **REQUIRED SUB-SKILL:** maze-verify.
-2. Какие файлы: `pi/X` → `~/maze/X`; из корня на Pi нужны `victim_detect.py`, `map_web.py`; веб пульта — `pi/dash/*`; модели — `~/maze/models/` (см. yolo-retrain).
+2. Какие файлы: `pi/X` → `~/maze/X` (на Pi всё лежит плоско в `~/maze/`, в том числе `pi/victim_detect.py` и `pi/map_web.py`); веб пульта — `pi/dash/*`; модели — `~/maze/models/` (см. yolo-retrain).
 3. Скрипт делает сверку md5, `.bak`, копирование, `py_compile` в venv и откат, если не компилируется:
 
 ```bash

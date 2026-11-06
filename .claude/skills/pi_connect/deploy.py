@@ -3,7 +3,7 @@
 
     python3 .claude/skills/pi_connect/deploy.py HOST ФАЙЛ [ФАЙЛ ...] [--dry-run] [--force]
 
-ФАЙЛ - путь в репозитории: pi/nav.py, victim_detect.py, pi/dash/dash.js ...
+ФАЙЛ - путь в репозитории: pi/nav.py, pi/victim_detect.py, pi/dash/dash.js ...
 Куда ложится: pi/X -> ~/maze/X, X в корне -> ~/maze/X (вложенные папки
 сохраняются: pi/dash/dash.js -> ~/maze/dash/dash.js).
 
