@@ -7,6 +7,12 @@ import ramps
 
 
 OBSTACLE_TORQUE_MAX_S = 0.65
+# Толчок - только если нос задран не меньше KICK_PITCH_DEG дольше KICK_HOLD_S.
+# Заезд 10.11 10:52: на ровных плитках качка на шинах при трогании (+3,1° при
+# v=0) давала толчок, а с 3 А на задних - рывок и занос. Невысокие препятствия
+# робот переезжает и так.
+KICK_PITCH_DEG = 5.0
+KICK_HOLD_S = 0.15
 OBSTACLE_SLOW_FRAC = 0.6       # импульс, только если едем медленнее этой доли
 
 # Импульс был РОВНО ОДИН на событие: перевзвод (obstacle_armed) требовал
@@ -31,16 +37,13 @@ RAMP_MAP_HYST_DEG = 3.0        # кандидат сбрасывается ни�
 RAMP_CONFIRM_CM = 8.0
 RAMP_FLAT_CM = 2.0
 RAMP_EXIT_MIN_MM = 50.0
-# Горка - это целые плитки, то есть не короче ~30см по уклону (замер 1
-# плитки в симуляции - 31..34см). Крутая лестница (ступеньки 2см через
-# 4-5см) по наклону неотличима от горки ~22°, но внутри одной клетки её
-# наклонная часть не длиннее ~15см (верхняя ступень >=15см), и замер с
-# базой робота даёт до ~24см - по длине её и отсекаем: такой "подъём"
-# считается препятствием, цель клетки возвращается обычная.
-RAMP_MIN_LEN_CM = 26.0
-# Островок, на который ведут горки, не ниже одноплиточной горки ~25°
-# (12.7см); лежачий и лестница в 2-3 ступеньки поднимают на 0..6см.
-RAMP_MIN_RISE_CM = 8.0
+# Горка - устойчивый крутой наклон: длина и высота по колёсам не годятся
+# (заезды 09.11: спуск ~470мм колёса считали за 166..225мм, робот скользит).
+# Настоящие горки в тех заездах круче 22° и держатся от 0,33с (быстрый спуск),
+# ложные наклоны - до 12°. Время отсекает только всплеск на лежачем (~0,1с).
+# То, что не прошло, считается препятствием, цель клетки возвращается обычная.
+RAMP_MIN_SLOPE_DEG = 18.0
+RAMP_MIN_HOLD_S = 0.15
 # Детектор горки и счётчик всплесков смотрят на сглаженный pitch (~30мс
 # при 200Гц): на пологой горке 8-10° дрожь в пару градусов иначе рвёт
 # кандидата, а на ровном - изображает ступеньки. Сам всплеск на лежачем
@@ -80,8 +83,9 @@ def track_slope(trip):
             trip.ramp_state = 'cand'
             trip.ramp_sign = 1 if trip.pitch_f > 0 else -1
             trip.ramp_cand_cm = trip.traveled_cm
+            trip.ramp_hold_s = 0.0
             # Цель клетки до горки - вернуть её, если "горка" окажется
-            # короткой лестницей (RAMP_MIN_LEN_CM).
+            # лестницей (RAMP_MIN_SLOPE_DEG, RAMP_MIN_HOLD_S).
             trip.ramp_saved = (trip.boundary_cm, trip.stopping, trip.pending, trip.reason)
     elif trip.ramp_state == 'cand':
         if trip.p_abs < config.RAMP_MAP_DEG - RAMP_MAP_HYST_DEG or trip.pitch_f * trip.ramp_sign < 0:
@@ -101,12 +105,12 @@ def track_slope(trip):
             elif trip.traveled_cm - trip.ramp_flat_cm >= RAMP_FLAT_CM:
                 info = ramps._ramp_measure(trip.ramp_log, trip.ramp_sign)
                 trip.f_anchor = None      # всё, что лидар видел на склоне, - мусор
-                if not trip.expect_ramp and (info["len_cm"] < RAMP_MIN_LEN_CM
-                        or abs(info["rise_cm"]) < RAMP_MIN_RISE_CM):
+                if not trip.expect_ramp and (info["slope"] < RAMP_MIN_SLOPE_DEG
+                        or trip.ramp_hold_s < RAMP_MIN_HOLD_S):
                     # Лестница внутри клетки. Цель - прежняя; если уже
                     # проскочили её, остановка сразу, доводка по стене.
-                    print(f"    не горка: наклон {info['len_cm']*10:.0f}мм, "
-                          f"высота {info['rise_cm']*10:+.0f}мм - "
+                    print(f"    не горка: уклон {info['slope']:.1f}°, "
+                          f"круто {trip.ramp_hold_s:.2f}с - "
                           f"лестница/препятствие")
                     trip.boundary_cm, trip.stopping, trip.pending, trip.reason = trip.ramp_saved
                     trip.ramp_state = None
@@ -126,6 +130,8 @@ def track_slope(trip):
         else:
             trip.ramp_flat_cm = None
     trip.on_slope_now = trip.ramp_state in ('cand', 'on')
+    if trip.on_slope_now and trip.p_abs >= RAMP_MIN_SLOPE_DEG:
+        trip.ramp_hold_s += trip.loop_dt
     if trip.on_slope_now:
         # Подъём законно длится дольше CELL_TIMEOUT_S - пока одометрия
         # растёт, бюджет клетки не тратится (залипание ловит stall выше).
@@ -153,6 +159,11 @@ def update_assist(trip):
     # ниже заданного, см. OBSTACLE_SLOW_FRAC), и снимается сразу, как
     # робот разогнался выше потолка: значит, препятствие уже позади.
     trip.pitch_up = trip.pitch_delta
+    if trip.pitch_up < KICK_PITCH_DEG:
+        trip.kick_tilt_t0 = None
+    elif trip.kick_tilt_t0 is None:
+        trip.kick_tilt_t0 = trip.now_m
+    nose_held_up = trip.kick_tilt_t0 is not None and trip.now_m - trip.kick_tilt_t0 >= KICK_HOLD_S
 
     if trip.pitch_up < config.OBSTACLE_REARM_DEG:
         trip.assist_mode = None
@@ -172,7 +183,7 @@ def update_assist(trip):
                 trip.assist_gap_until = trip.now_m + OBSTACLE_KICK_GAP_S
                 trip.ramp_announced = False
 
-        if (trip.assist_mode is None and trip.pitch_up >= config.OBSTACLE_PITCH_DEG
+        if (trip.assist_mode is None and nose_held_up
                 and trip.v_meas < trip.fwd * OBSTACLE_SLOW_FRAC
                 and trip.now_m >= trip.assist_gap_until
                 and trip.assist_kicks < OBSTACLE_KICKS_MAX):

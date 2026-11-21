@@ -139,6 +139,79 @@ class CenteringTests(unittest.TestCase):
             return t.head_off_f
         self.assertAlmostEqual(run(.01,1),run(.005,2),places=10)
 
+    def test_slow_straight_drive_keeps_both_wheels_forward(self):
+        for wall_e in (0, 20):
+            with self.subTest(wall_e=wall_e):
+                t = SimpleNamespace(target_yaw=0, pitch_delta=0, wall_e=wall_e,
+                                    head_off_f=0, loop_dt=.01, last_steer=0,
+                                    ss=1, fwd=8, assist_mode=None, yaw_i=0.0)
+                with patch.object(sys.modules['esp_link'], 'get_yaw_and_rate',
+                                  return_value=(5, 0)):
+                    self.module.steering(t)
+                self.assertLessEqual(abs(t.steer), .6 * t.fwd)
+                self.assertEqual(t.yaw_i, 0)
+                self.assertGreater(t.fwd - abs(t.steer), 0)
+
+    def test_first_downhill_tick_caps_both_sides_even_with_previous_steer(self):
+        for known, phase, sign, pitch in [(True, None, 0, 0), (False, 'cand', -1, -7)]:
+            with self.subTest(known=known):
+                t = SimpleNamespace(t0=9, v_max=70, loop_dt=.005, pitch_delta=pitch,
+                                    known_descent=known, ramp_state=phase, ramp_sign=sign,
+                                    assist_mode=None, tilt_lim=70, pending=False, stopping=False,
+                                    mark_first=False, target_yaw=0, wall_e=0, head_off_f=0,
+                                    last_steer=28, yaw_i=0)
+                self.module.speed_profile(t)
+                self.module.steering(t)
+                self.assertGreater(t.fwd - abs(t.steer), 0)
+                self.assertLessEqual(t.fwd + abs(t.steer), self.module.RAMP_DESCENT_CMS)
+
+    def test_integral_does_not_wind_up_at_steering_limit(self):
+        t = SimpleNamespace(target_yaw=0, pitch_delta=0, wall_e=0,
+                            head_off_f=0, loop_dt=.01, last_steer=0,
+                            ss=1, fwd=40, assist_mode=None, yaw_i=0.0)
+        with patch.object(sys.modules['esp_link'], 'get_yaw_and_rate',
+                          return_value=(10, 0)):
+            for _ in range(100):
+                t.fwd = 40
+                self.module.steering(t)
+        self.assertEqual(t.yaw_i, 0)
+
+    def test_camera_speed_cap_changes_gradually_after_first_activation(self):
+        t = SimpleNamespace(t0=9.0, v_max=45.0, loop_dt=.05, pitch_delta=0.0,
+                            assist_mode=None, tilt_lim=45.0, pending=False,
+                            ramp_state=None, stopping=False, mark_first=False,
+                            perception_cap=9.0)
+        self.module.speed_profile(t)
+        self.assertEqual(t.fwd, 9.0)
+        t.perception_cap = 45.0
+        self.module.speed_profile(t)
+        self.assertAlmostEqual(t.fwd, 12.0)
+        t.perception_cap = 9.0
+        self.module.speed_profile(t)
+        self.assertAlmostEqual(t.fwd, 9.0)
+        t.perception_cap = float('inf')
+        self.module.speed_profile(t)
+        self.assertAlmostEqual(t.fwd, 12.0)
+
+    def test_flat_stop_does_not_accelerate_again_before_brake(self):
+        t = SimpleNamespace(t0=9.0, v_max=50.0, loop_dt=.01, pitch_delta=0.0,
+                            assist_mode=None, tilt_lim=50.0, pending=False,
+                            ramp_state=None, stopping=True, mark_first=False,
+                            fwd=50.0, perception_cap=float('inf'))
+        speeds = []
+        # Последовательные измерения остатка, см. Та же проверка прихода,
+        # что в aim_at_mark/check_arrived, выполняется до speed_profile.
+        for rem in [6, 5, 4, 3] + [i / 10 for i in range(20, 1, -1)]:
+            t.rem = rem
+            t.rem_eff = rem - t.fwd * config.STOP_LEAD_S
+            if t.rem_eff <= 0:
+                break
+            self.module.speed_profile(t)
+            speeds.append(t.fwd)
+        self.assertTrue(all(b <= a for a, b in zip(speeds, speeds[1:])), speeds)
+        self.assertLessEqual(t.rem_eff, 0)
+        self.assertLessEqual(t.fwd, config.MOVE_MIN_CMS)
+
 
 class WireTests(unittest.TestCase):
     def test_v4_layout_crc_and_unsigned_voltage(self):

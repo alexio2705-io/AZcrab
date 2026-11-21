@@ -4,7 +4,7 @@
 Где что менять по задачам — ручной указатель `docs/robot_code_map.md`.
 Тесты Pi — `pi/tests/` (unittest).
 
-## pi/ — Raspberry Pi (84)
+## pi/ — Raspberry Pi (85)
 
 - `pi/actions.py` — Глаголы для заданий технического испытания. Задание - файл task_*.py, · `blink`, `blink_victim`, `blink_finish`, `stand` … ещё 15
 - `pi/battery_probe.py` — Напряжение батареи для меню экрана, пока nav.py не запущен. · `port_in_use`, `volts_from_bytes`, `read_volts`, `BatteryProbe`
@@ -78,10 +78,11 @@
 - `pi/telem.py` — Телеметрия ESP в консоль - для отладки линка, кнопок и датчиков. · `flags_str`, `main`
 - `pi/teleop.py` — Ручной пульт моторов с телефона: джойстик на странице -> "M:л,п" на ESP. · `mix`, `Target`, `nav_running`, `Esp` … ещё 3
 - `pi/tile_calib.py` — Калибровка датчика цвета по плиткам на поле: с робота (экран, кнопки, · `Lamp`, `measure`, `on_key`, `calib_screen` … ещё 6
-- `pi/tile_classify.py` — Распознавание плитки по APDS9960 по ОБРАЗЦАМ, снятым на поле. · `features`, `distance`, `load`, `save` … ещё 2
+- `pi/tile_classify.py` — Распознавание плитки по APDS9960 по ОБРАЗЦАМ, снятым на поле. · `features`, `distance`, `load`, `save` … ещё 3
 - `pi/tile_rules.py` — Правила плиток: что робот делает на плитке каждого цвета. · `Rule`, `use_checkpoint`, `role`, `must_stop` … ещё 3
 - `pi/timing.py` — Учёт времени по категориям (декоратор @timing._timed) и отчёты по нему. · `time_report`, `tick_report`
-- `pi/turning.py` — Повороты: поворот на угол, доворот на курс, выравнивание у стены. · `angle_err`, `snap_target`, `turn`, `gyro_heading` … ещё 2
+- `pi/turn_unstick.py` — Выход из застревания на повороте на месте: момент, раскачка, одна сторона, откат. · `TurnProgress`, `Unstick`
+- `pi/turning.py` — Повороты: поворот на угол, доворот на курс, выравнивание у стены. · `angle_err`, `snap_target`, `turn`, `gyro_heading` … ещё 5
 - `pi/victim_detect.py` — Детектор жертв для RoboCup Rescue Maze. · `VictimDetector`
 - `pi/victim_static_test.py` — Статический тест детектора жертв — робот стоит на месте, без езды. · `main`
 - `pi/victim_watch.py` — Наблюдатель меток жертв на ходу - сторона nav.py. · `attach_shm`, `WatchBox`, `VictimWatcher`
@@ -98,7 +99,7 @@
 - `firmware/include/drive_test.h` — Стендовый тест шин: по нажатию BTN_1 робот сам, без RPi, либо крутится на · `drive_test_run`
 - `firmware/include/gyro.h` — Adafruit BNO085 (BNO08x) 9-DoF IMU, SPI mode. · `gyro_init`, `gyro_wait_sample`, `gyro_sample_count`, `gyro_ready` … ещё 8
 - `firmware/include/link_test.h` — ESP<->RPi UART link test. · `link_test_run`
-- `firmware/include/motor.h` — LK-TECH / MF servo motor CAN driver (MF4015 V2 / MG4005 / compatible). · `motor_can_init`, `motor_can_log_status`, `motor_get_health`, `motor_wake` … ещё 24
+- `firmware/include/motor.h` — LK-TECH MF4015 V2 servo motor CAN driver. · `motor_can_init`, `motor_can_log_status`, `motor_get_health`, `motor_wake` … ещё 24
 - `firmware/include/robot_link.h` — ESP <-> RPi link for the maze run. Same split as the previous robot: the ESP · `robot_link_run`
 - `firmware/include/servo.h` — Cube dispenser servo on GPIO10 (SERVO on the schematic; R30 pulls the line · `servo_init`, `servo_dispense_left`, `servo_dispense_right`, `servo_center` … ещё 1
 - `firmware/src/apds9960.c` — реализация `firmware/include/apds9960.h`

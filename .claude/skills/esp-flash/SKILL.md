@@ -50,7 +50,7 @@ lsof /dev/cu.usbmodem* 2>/dev/null
 Дать одну команду из корня проекта:
 
 ```bash
-cd ~/Documents/PlatformIO/Projects/MAZE2027 && ~/.platformio/penv/bin/pio run -d firmware -t upload && ~/.platformio/penv/bin/pio device monitor
+cd ~/maze2026/robot && ~/.platformio/penv/bin/pio run -d firmware -t upload && ~/.platformio/penv/bin/pio device monitor
 ```
 
 ## Частые ошибки

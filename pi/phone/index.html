@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAZE2027 запуск</title>
+<style>
+  :root { --bg: #15171a; --card: #1f2226; --fg: #d7dadf; --dim: #8a9099;
+          --go: #2e9d55; --stop: #c8413a; --acc: #f2a900; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+         font: 16px/1.4 -apple-system, system-ui, sans-serif; max-width: 560px; margin-inline: auto; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  .card { background: var(--card); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .state { font-size: 22px; font-weight: 600; }
+  .dim { color: var(--dim); font-size: 14px; }
+  .hint { color: var(--acc); font-weight: 600; font-size: 18px; margin-top: 8px; }
+  .err { color: #ff6b62; margin-top: 8px; }
+  button { width: 100%; border: 0; border-radius: 12px; padding: 22px; font-size: 22px;
+           font-weight: 700; color: #fff; }
+  button:disabled { opacity: .45; }
+  #go { background: var(--go); }
+  #stop { background: var(--stop); }
+  [hidden] { display: none !important; }     /* иначе display: grid у .sides сильнее hidden */
+  .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .side { background: var(--go); padding: 28px 8px; }
+  label { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+  input[type=checkbox] { width: 22px; height: 22px; }
+  input[type=number] { width: 100px; font-size: 16px; padding: 6px; border-radius: 6px;
+                       border: 1px solid #444; background: #111; color: var(--fg); }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px;
+        max-height: 50vh; overflow-y: auto; }
+  .links a { color: var(--acc); margin-right: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>MAZE2027 · запуск заезда</h1>
+
+<div class="card">
+  <div class="state" id="state">…</div>
+  <div class="dim" id="detail"></div>
+  <div class="grid" id="info"></div>
+  <div class="hint" id="hint"></div>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="card" id="opts">
+  <label>Клеток (пусто = 300) <input type="number" id="cells" min="1" max="1000" inputmode="numeric"></label>
+  <label><input type="checkbox" id="no_color"> без датчика цвета</label>
+  <label><input type="checkbox" id="no_vision"> без камер</label>
+  <label><input type="checkbox" id="red_checkpoint"> красная = чекпоинт (тренировка)</label>
+</div>
+
+<div class="card">
+  <button id="go">Запустить</button>
+  <div class="sides" id="sides" hidden>
+    <button class="side" data-side="left">СТАРТ<br>← левая</button>
+    <button class="side" data-side="right">СТАРТ<br>правая →</button>
+  </div>
+  <button id="stop" hidden>Стоп</button>
+</div>
+
+<div class="card links">
+  <a id="dash" href="#">Пульт :8888</a><a id="map" href="#">Карта :8001</a>
+</div>
+
+<div class="card"><div class="dim" id="logname">лог</div><pre id="log"></pre></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const OPTS = ['no_color', 'no_vision', 'red_checkpoint'];
+const PHASE = {waiting: 'ожидание', exploring: 'разведка', sleep: 'сон',
+               explored: 'разведка завершена', blinking: 'на старте, мигает', done: 'готово'};
+const host = location.hostname;
+$('dash').href = `http://${host}:8888/`;
+$('map').href = `http://${host}:8001/`;
+
+// Выбор флагов помнит этот телефон
+try {
+  const saved = JSON.parse(localStorage.getItem('maze_opts') || '{}');
+  OPTS.forEach(k => $(k).checked = !!saved[k]);
+  $('cells').value = saved.cells || '';
+} catch (e) {}
+function form() {
+  const f = {cells: $('cells').value};
+  OPTS.forEach(k => f[k] = $(k).checked);
+  try { localStorage.setItem('maze_opts', JSON.stringify(f)); } catch (e) {}
+  return f;
+}
+
+async function post(path, body) {
+  $('err').textContent = '';
+  try {
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify(body || {})});
+    const j = await r.json();
+    if (j.error) $('err').textContent = j.error;
+  } catch (e) { $('err').textContent = 'нет связи с роботом'; }
+  refresh();
+}
+$('go').onclick = () => post('/start', form());
+$('stop').onclick = () => post('/stop');
+document.querySelectorAll('.side').forEach(b => b.onclick = () => post('/go', {side: b.dataset.side}));
+
+function cell(k, v) { return `<span class="dim">${k}</span><span>${v}</span>`; }
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch('/status', {cache: 'no-store'})).json(); }
+  catch (e) { $('state').textContent = 'нет связи с роботом'; return; }
+  const n = s.nav;
+  $('go').hidden = !!n; $('stop').hidden = !n; $('opts').hidden = !!n;
+  // Лога нет (вывод в терминал SSH) - не знаем, ждёт ли он, кнопки показываем
+  $('sides').hidden = !(n && !n.stopping && (n.button || !n.log));
+  $('go').disabled = !!s.other;
+  $('hint').textContent = ''; $('info').innerHTML = '';
+  if (!n) {
+    $('state').textContent = 'Заезд не идёт';
+    let d = s.last ? `прошлый: код ${s.last.code}, ${s.last.log || ''}` : '';
+    if (s.other) d = `запущен ${s.other} — сначала останови его`;
+    $('detail').textContent = d;
+    return;
+  }
+  $('state').textContent = n.stopping ? 'Останавливаю…' : 'Заезд идёт';
+  $('detail').textContent = `с ${n.since} · pid ${n.pid}` + (n.own ? '' : ' · запущен не отсюда')
+                            + `\n${n.cmd.replace(/^\S*python\S*\s+(-u\s+)?/, '')}`;
+  if (n.button) $('hint').textContent = 'Ждёт старта: кнопка ниже или на роботе (GPIO27 — левая рука, GPIO25 — правая)';
+  const i = n.info;
+  if (i) $('info').innerHTML = cell('фаза', PHASE[i.phase] || i.phase) + cell('клеток', i.visited)
+    + cell('жертв', i.victims) + cell('позиция', i.robot ? `(${i.robot.cx},${i.robot.cy}) ${i.robot.dir}` : '—');
+  $('logname').textContent = n.log ? `лог ${n.log}` : 'лог: вывод идёт в терминал SSH';
+  const pre = $('log'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  pre.textContent = n.lines.join('\n');
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

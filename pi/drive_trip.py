@@ -38,8 +38,10 @@ import turning
 # Настроят мотор в LK Motor Tool - можно вернуть 55-69.
 # 28.10: в моторе стоял Max Speed 400°/с (= 30 см/с), сняли - 55/55 в воздухе
 # дало L=R. Едем 60.
-MOVE_MAX_CMS = 60.0
-MOVE_MAX_NONSTOP_CMS = 60.0
+# 09.11: на 60 робот перевернулся через нос на гребне горки 30°.
+# На уклоне отдельный предел ниже; по ровному полу едем до 50.
+MOVE_MAX_CMS = 50.0
+MOVE_MAX_NONSTOP_CMS = 50.0
 
 # За сколько до центра клетки принимается решение "поворачивать или ехать
 # дальше". Раньше нельзя: боковое окно замера в walls.py берёт точки со
@@ -56,6 +58,8 @@ _LIDAR_MASKS = tuple((m["center"], m["hw"]) for m in _WALLS_MASKS)
 class Trip:
     """Всё, что поездка _drive_cells помнит между тактами. Поля заводит
     start_trip(): там же комментарий к каждому."""
+    known_descent: bool
+    descending: bool
 
 
 def _pitch_zero():
@@ -106,6 +110,8 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     trip.expect_ramp = expect_ramp
     trip.cell = cell
     trip.hdg = hdg
+    edge = state.ramps.get((*cell, hdg)) if expect_ramp and cell is not None else None
+    trip.known_descent = edge is not None and edge[3] < 0
     trip.plan = plan
     _zero_odometry()
 
@@ -116,6 +122,7 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     # и держит это секунды (заезд 17.10 15:31), а за одну поездку уходит не
     # больше чем на 5° - от pitch0 это была "горка" на ровном полу.
     trip.pitch_start = _pitch_zero()
+    trip.color_pitch_start = esp_link.get_pitch()  # фактический наклон датчика до движения
 
     trip.last_l, trip.last_r = esp_link.get_odo()
     initial_motion = esp_link.motion_snapshot()
@@ -154,6 +161,7 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     trip.assist_progress_cm = 0.0
     trip.assist_progress_t = 0.0
     trip.assist_extra_s = 0.0
+    trip.kick_tilt_t0 = None        # с какого момента нос задран для толчка (KICK_PITCH_DEG)
     trip.ramp_announced = False
     trip.telem_seq = state.telem_seq
 
@@ -188,6 +196,7 @@ def start_trip(max_cells, expect_ramp, cell, hdg, plan):
     trip.reason = "done" if one_cell else "stop"
     trip.v_max = MOVE_MAX_CMS if one_cell else MOVE_MAX_NONSTOP_CMS
     trip.black_back_cm = 0.0     # сколько отъехать назад, если поймали чёрное
+    trip.black_seen_cm = None    # ход в момент обнаружения; после тормоза добавим докат
 
     # Скорость по одометрии (для ассиста): окно SPEED_WIN_S, см. v_meas.
     trip.odo_hist = deque()

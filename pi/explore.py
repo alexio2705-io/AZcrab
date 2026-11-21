@@ -293,29 +293,33 @@ def _wall_right_ahead(w):
 
 
 def _turn_toward(w, d):
-    """Повернуть на курс d стоя. Разворот на 180 - двумя поворотами по 90
-    со сканом между ними. Камеры смотрят только вбок, и разворот одним махом
-    оставлял переднюю стену тупика (единственную, какую робот ещё не видел)
-    непросканированной: до разворота она спереди, после - сзади. На середине
-    она оказывается сбоку. False - курс вышел не тот (не доворачивали, выдали
-    комплекты, пауза ESP): маршрут заново."""
+    """Повернуть на курс d. При 180° пройти оба угла (45° и 135°) без паузы.
+    False - курс вышел не тот (не доворачивали, выдали комплекты, пауза ESP):
+    маршрут заново."""
     delta = config.DIR_DELTA[(d - w.hdg) % 4]
     if delta == 0:
         return True
-    steps = (90, 90) if abs(delta) == 180 else (delta,)
-    for i, turn_deg in enumerate(steps):
-        if not _turn_once(w, turn_deg, last=(i == len(steps) - 1)):
-            return False
-    return True
+    return _turn_once(w, delta)
 
 
-def _turn_once(w, turn_deg, last):
-    """Один поворот на turn_deg (±90/180), доворот на метку, скан стен."""
+def _turn_once(w, turn_deg):
+    """Поворот на ±90/180°, доворот на метку после остановки, скан стен."""
     tgt = turning.snap_target(turn_deg)
     seen = []
-    ok = turning.turn_to(tgt, label=f"{turn_deg:+.0f}°", seen=seen, walls=state.maze.get(w.cell))
+    ok = turning.turn_to(tgt, label=f"{turn_deg:+.0f}°", seen=seen,
+                         walls=state.maze.get(w.cell), turn_sign=1 if turn_deg == 180 else None)
     if esp_link.get_esp_paused():
         return False
+    if ok == "mark":
+        h = marks._turn_marks(w.cx, w.cy, seen)
+        if h is not None:
+            # Метка обслужена; курс после выдачи мог измениться.
+            w.hdg = h
+            w.show()
+            return False
+        # Ложная рамка или метка без комплектов: закончить прежний поворот.
+        seen.clear()
+        ok = turning.turn_to(tgt, label="продолжить поворот")
     if not ok:
         # Не доворачивал - курс в карте с гироскопа, маршрут заново.
         w.hdg = turning.gyro_heading()
@@ -331,11 +335,8 @@ def _turn_once(w, turn_deg, last):
         if abs(turning.angle_err(esp_link.get_yaw(), tgt)) > config.TURN_TOL_DEG:
             turning.turn_to(tgt, label="обратно")
     # После поворота стены поменялись местами - встаём в центр клетки по
-    # тому, что видно. Мерить после поворота точнее, чем предсказывать до
-    # него. Посередине разворота на 180° - не надо: робот никуда не ехал, а
-    # через секунду ось опять сменится, и доводка была чистым простоем.
-    if last:
-        turning.align_at_wall(turning.snap_target(), move=False)
+    # тому, что видно. Мерить после поворота точнее, чем предсказывать до него.
+    turning.align_at_wall(turning.snap_target(), move=False)
     w.hdg = (w.hdg + turn_deg // 90) % 4
     w.show()
     # Камеры смотрят теперь на другие стены той же клетки - сканируем их,
@@ -389,12 +390,6 @@ def _drive(w, goal_test, home, arrive):
             maze_map.open_edge(w.cx, w.cy, w.hdg)   # проехали - значит, проход (горку пишет record_ramp)
         w.cx, w.cy = _arrived_cell(w.cx, w.cy, w.hdg, reason)
         w.total += n
-        if reason in ("stop", "done"):
-            for side in state.watched_sides:
-                # наблюдатель смотрел эту стену у центра - скан стоя не нужен
-                state.scanned_walls.add((w.cx, w.cy, watch_logic.wall_of(w.hdg, side)))
-            if state.watched_sides:
-                print(f"    стены {'/'.join(sorted(state.watched_sides))} просмотрены на подъезде")
         if arrive is not None:
             arrive(w, w.cell not in state.visited)
     return n, reason

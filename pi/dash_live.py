@@ -317,7 +317,7 @@ def _live_snapshot(n):
                  "level": ramps.level_of(lv["cy"])},
         "drive": state.drive_live,
         "front_floor": getattr(state, "front_floor_live", None),
-        "motors": {"ids": [1, 5, 2, 3], "voltage": st.get("motor_voltage", []),
+        "motors": {"ids": [4, 1, 2, 3], "voltage": st.get("motor_voltage", []),
                    "temp": st.get("motor_temp", []), "error": st.get("motor_error", [])},
         "imu": {"yaw": _r((st["yaw"] - state.YAW_ORIGIN) % 360.0, 2), "rate": _r(st["yaw_rate"]),
                 "pitch": _r(st["pitch"], 2), "roll": _r(st["roll"], 2), "az": _r(st["az"], 3)},

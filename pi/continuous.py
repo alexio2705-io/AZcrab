@@ -9,10 +9,10 @@ def stopping_speed(distance_cm, latency_s, decel_cms2, margin_cm=1.0):
     return max(0.0, math.sqrt((a * lag) ** 2 + 2 * a * d) - a * lag)
 
 
-def observation_speed(gap_s, visible_cm=12.4, samples=2):
+def observation_speed(gap_s, visible_cm=8.0, samples=3):
     """Sampling opportunity, not a guarantee that a neural net recognizes a mark.
-    visible_cm - сколько стены видит боковая камера (±62мм, см.
-    MARK_BRAKE_DECEL_CMS2). Было 8: вдоль стен потолок ~40см/с, ехал 25."""
+    visible_cm - путь, на котором метка ~45 мм целиком видна в боковой
+    камере (весь кадр охватывает ~125 мм стены)."""
     return visible_cm / (max(0.05, gap_s) * samples)
 
 

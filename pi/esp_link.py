@@ -172,7 +172,9 @@ def _telem_thread():
                 state.telem["motor_error"] = health_crc[8:12]
                 state.telem["yaw"] = float(yaw)
                 state.telem["yaw_rate"] = float(yaw_rate)
-                state.telem["pitch"] = float(pitch)
+                # У BNO085 плюс - нос вниз (заезд 09.11: лидар и порядок горок),
+                # в коде везде плюс - нос вверх.
+                state.telem["pitch"] = -float(pitch)
                 state.telem["roll"] = float(roll)
                 # Модуль считаем здесь, чтобы у всех читателей он был один и
                 # тот же; вертикаль хранится отдельно - именно она отличает

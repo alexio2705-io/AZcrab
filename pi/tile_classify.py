@@ -104,6 +104,36 @@ def _sample_features(s):
     return f
 
 
+def early_black(samples, r, g, b, c):
+    """Чёрный край до полного попадания датчика на плитку.
+
+    На стыке белой и чёрной C ещё выше чёрного образца, поэтому обычная
+    классификация может предпочесть тусклую зеркальную. У этих двух плиток
+    светлота близка, но доли каналов разные. Сначала требуем падения C
+    относительно самой тёмной белой, затем сравниваем только доли каналов.
+    """
+    white, black = samples.get("white"), samples.get("black")
+    if not white or not black or c < MIN_C:
+        return False
+    c_white = min(s["c"] for s in white)
+    c_black = max(s["c"] for s in black)
+    if c_white <= c_black or c >= math.sqrt(c_white * c_black):
+        return False
+    f = features(r, g, b, c)
+
+    def chroma_distance(s):
+        sf = _sample_features(s)
+        return math.sqrt(sum(((a - z) / FRAC_SCALE) ** 2
+                             for a, z in zip(f[:3], sf[:3])))
+
+    d_black = min(chroma_distance(s) for s in black)
+    if d_black > 2.0:  # неизвестная тёмная поверхность, не чёрная калибровка
+        return False
+    other = (s for color, group in samples.items()
+             if color not in ("white", "black") for s in group)
+    return all(d_black < chroma_distance(s) for s in other)
+
+
 def classify(samples, r, g, b, c):
     """-> (цвет | None, расстояние до ближайшего образца, второй по близости
     цвет, расстояние до него). None - датчик ничего не видит, образцов нет,

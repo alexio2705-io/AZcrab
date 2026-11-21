@@ -24,9 +24,14 @@ SIDE_CENTER_MM = config.SIDE_CENTER_MM
 # предсказуемый и заранее известный пик dv/dt - можно держать его безопасно
 # ниже MOTOR_ACCEL_DPS_S на ESP.
 RAMP_UP_S = 0.25
+# Ограничение камеры меняется после каждого кадра. Не передавать его
+# скачком в моторы: замедляемся быстро, разгоняемся обратно плавнее.
+VISION_CAP_DOWN_CMS2 = 180.0
+VISION_CAP_UP_CMS2 = 60.0
 OBSTACLE_STEER_A = 0.175
 TILT_CAP_CMS = 35.0            # ход, пока нос задран на препятствии/горке
 DESCENT_CAP_CMS = 28.0         # ход, пока нос опущен (съезд с препятствия)
+RAMP_DESCENT_CMS = 12.0        # потолок каждого борта на спуске и на известном подходе
 RAMP_TORQUE_A = 0.95
 RAMP_STEER_A = 0.275
 RAMP_WALL_KP_DEG = 0.08
@@ -52,15 +57,10 @@ STEER_SLEW_CMS_S = 3000.0
 # дёрганье мешает камерам. Так же расставлены приоритеты в микромаусе - там
 # гироскоп ведёт курс, а боковые стены только медленно подтягивают, и на
 # быстрых прогонах их вклад намеренно небольшой.
-# Было 0.05/3.5: на 55см/с это постоянная времени центровки ~2с, то есть
-# ~1.15м пути - почти 4 клетки, за клетку смещение почти не убиралось.
-# 0.12 даёт ~0.87с (~48см). Задержка контура ~0.3с (скан лидара 0.1с +
-# HEAD_OFF_SMOOTH 0.15с + гироконтур), запас по фазе около 70° - без
-# раскачки. Начнёт вилять - снижать WALL_KP_DEG, а не HEAD_OFF_SMOOTH.
-# 24.10: 0.24/10° по ощущению на поле - слишком резко (поправка часто
-# упиралась в 10°). 0.16 - между прежним и удвоенным: ~0.7с (~35см).
-WALL_KP_DEG = 0.16      # градусов поправки курса на мм смещения
-WALL_MAX_DEG = 6.0      # предел поправки - больше этого робот едет боком
+# 19.11: при 0.16/6° поправка по стене достигала 6°, а курс уходил до 11°
+# при исчезновении стены. Меньший угол сохраняет центровку без резких дуг.
+WALL_KP_DEG = 0.10      # градусов поправки курса на мм смещения
+WALL_MAX_DEG = 4.0      # предел поправки курса по стене
 # Было 12мм, и это неудачно совпадало с рабочей точкой: цель SIDE_CENTER_MM=140
 # при замеренном центре клетки в 128мм даёт постоянную ошибку ровно ~12мм, то
 # есть робот всё время сидел НА границе мёртвой зоны и коррекция щёлкала
@@ -103,20 +103,36 @@ def speed_profile(trip):
         tilt_target = trip.v_max
     tilt_step = config.BRAKE_DECEL_CMS2 * trip.loop_dt
     trip.tilt_lim = max(trip.tilt_lim - tilt_step, min(trip.tilt_lim + tilt_step, tilt_target))
+    # cand включается по сглаженному углу ещё до подтверждения горки по пути.
+    trip.descending = ((trip.ramp_state in ('cand', 'on') and trip.ramp_sign < 0)
+                       or (getattr(trip, 'known_descent', False) and trip.ramp_state != 'exit'))
+    if trip.descending:
+        trip.tilt_lim = min(trip.tilt_lim, RAMP_DESCENT_CMS)
     ramp_up = min(ramp_up, trip.tilt_lim)
     # Until a decision is made, retain enough room for a stop at that center.
     if trip.pending and trip.ramp_state != 'cand':
         ramp_up = min(ramp_up, stopping_speed(max(trip.rem, trip.lead_cm),
             config.STOP_LEAD_S + max(.02, trip.loop_dt), config.BRAKE_DECEL_CMS2))
-    ramp_up = min(ramp_up, getattr(trip, 'perception_cap', float('inf')))
+    vision_cap = getattr(trip, 'perception_cap', float('inf'))
+    vision_active = math.isfinite(vision_cap)
+    target_cap = vision_cap if vision_active else trip.v_max
+    previous = getattr(trip, 'vision_cap_smoothed', None)
+    if previous is None or (vision_active and not getattr(trip, 'vision_cap_active', False)):
+        previous = target_cap  # новая стена: замедлиться сразу ради камеры
+    cap = max(previous - VISION_CAP_DOWN_CMS2 * trip.loop_dt,
+              min(previous + VISION_CAP_UP_CMS2 * trip.loop_dt, target_cap))
+    trip.vision_cap_smoothed = cap
+    trip.vision_cap_active = vision_active
+    ramp_up = min(ramp_up, cap)
 
     trip.braking = False
     if (trip.stopping or trip.mark_first) and not stop_suspended(trip):
-        # Постоянное замедление: пока запас пути велик, sqrt даёт больше
-        # крейсерской и ничего не ограничивает - робот едет полным ходом.
-        # Тормозить начинает сам, ровно когда пути остаётся в обрез.
+        # Решаем v*задержка + v²/(2*a) = остаток сразу относительно v.
+        # sqrt от rem_eff использовал ПРЕДЫДУЩУЮ команду: после снижения
+        # скорости запас внезапно рос, и перед стопом получалось 5 -> 18см/с.
+        # Здесь задержка учитывается один раз, без такого повторного разгона.
         decel = config.MARK_BRAKE_DECEL_CMS2 if trip.mark_first else config.BRAKE_DECEL_CMS2
-        v_brake = math.sqrt(2.0 * decel * max(0.0, trip.rem_eff))
+        v_brake = stopping_speed(trip.rem, config.STOP_LEAD_S, decel, margin_cm=0.0)
         trip.braking = v_brake < ramp_up
         trip.fwd = min(ramp_up, v_brake)
         if trip.braking:
@@ -185,15 +201,22 @@ def steering(trip):
     # углов) - см. DRIVE_YAW_KD_RATE. Фильтр производной больше не нужен:
     # фильтровать было нечего, кроме шума собственного дифференцирования.
     yaw_e = turning.angle_err(trip.yaw, heading)
-    # Lower bandwidth prevents the delayed actuator chasing alternating
-    # saturated corrections. Do not add another lag with a low slew limiter.
-    # Интеграл копится только на ровном ходу своим ходом (не ассист моментом,
-    # не горка, не разгон с места) - иначе накопит ошибку, которой нет.
+    # При медленном прямом ходе большой руль разворачивал одно колесо назад:
+    # вместо удержания курса робот вилял даже без боковых стен. Оставляем
+    # обоим колёсам движение вперёд; на горке и при ассисте предел прежний.
+    forward = trip.fwd * max(0.35, 1.0 - abs(trip.axis_e) / 18.0)
+    steer_limit = (MAX_STEER_CMS if trip.assist_mode is not None or on_ramp else
+                   min(MAX_STEER_CMS, 0.6 * forward))
+    pd = yaw_e * config.DRIVE_YAW_KP + yaw_rate * config.DRIVE_YAW_KD_RATE
+    # Интеграл копится только на ровном ходу своим ходом и не растёт,
+    # если руль уже в пределе: иначе после смены знака ошибки он ещё долго
+    # толкает робота в прежнюю сторону.
     if trip.assist_mode is None and not on_ramp and trip.fwd >= config.MOVE_MIN_CMS:
-        trip.yaw_i = max(-config.DRIVE_YAW_I_MAX, min(config.DRIVE_YAW_I_MAX,
-                         trip.yaw_i + yaw_e * config.DRIVE_YAW_KI * trip.loop_dt))
-    trip.steer = -(yaw_e * config.DRIVE_YAW_KP + yaw_rate * config.DRIVE_YAW_KD_RATE + trip.yaw_i)
-    trip.steer = max(-MAX_STEER_CMS, min(MAX_STEER_CMS, trip.steer))
+        next_i = max(-config.DRIVE_YAW_I_MAX, min(config.DRIVE_YAW_I_MAX,
+                     trip.yaw_i + yaw_e * config.DRIVE_YAW_KI * trip.loop_dt))
+        if abs(pd + next_i) <= steer_limit or abs(pd + next_i) < abs(pd + trip.yaw_i):
+            trip.yaw_i = next_i
+    trip.steer = -max(-steer_limit, min(steer_limit, pd + trip.yaw_i))
     # Та же кривая, что и у fwd: без этого при fwd≈0 и заметной ошибке
     # курса (например, сразу после поворота) команда получалась вида
     # (+20,-20) - робот резко крутился на месте вместо старта с места.
@@ -201,11 +224,18 @@ def steering(trip):
     # Ограничение рывка: срезает только скачки команды, в норме не влияет.
     d_max = STEER_SLEW_CMS_S * trip.loop_dt
     trip.steer = max(trip.last_steer - d_max, min(trip.last_steer + d_max, trip.steer))
+    if getattr(trip, 'descending', False):
+        # Оба борта катятся вперёд. При большом руле уменьшаем обе команды
+        # пропорционально, чтобы сохранить кривизну и потолок внешнего борта.
+        trip.steer = max(-0.6 * forward, min(0.6 * forward, trip.steer))
+        scale = RAMP_DESCENT_CMS / max(RAMP_DESCENT_CMS, forward + abs(trip.steer))
+        forward *= scale
+        trip.steer *= scale
     trip.last_steer = trip.steer
 
     # Ход сбрасываем по отклонению от ОСИ клетки, а не от смещённой
     # цели - иначе робот тормозил бы просто потому, что центруется.
-    trip.fwd *= max(0.35, 1.0 - abs(trip.axis_e) / 18.0)
+    trip.fwd = forward
 
 
 def send_motor_command(trip):
@@ -245,7 +275,8 @@ def report_status(trip):
                        "t": trip.last_status_t}
         sys.stdout.write(f"\r    кл.{trip.cells + 1} ост.{trip.rem*10:4.0f}мм  "
                          f"yaw={trip.yaw:.1f}°(e={trip.axis_e:+.1f})  "
-                         f"we={trip.wall_e:+.0f}→{trip.head_off:+.1f}°  spd={trip.fwd:.0f}   ")
+                         f"we={trip.wall_e:+.0f}→{trip.head_off:+.1f}°  "
+                         f"spd={trip.fwd:.0f} st={trip.steer:+.1f}   ")
         sys.stdout.flush()
 
 

@@ -91,11 +91,17 @@ def check_arrived(trip):
                     config.MARK_BRAKE_DECEL_CMS2, config.STOP_LEAD_S)
                 trip.telem_seq = esp_link.wait_telem(trip.telem_seq)
                 return 'next_tick'
+            # Камера и выдача комплектов занимают секунды. Первый кадр лидара
+            # после возврата на курс может ещё не видеть переднюю стену;
+            # дождёмся нового, прежде чем решать, нужен ли короткий подъезд.
+            if trip.stopping:
+                lidar_walls.wait_scan(1, timeout=0.5)
             left_cm = _left_to_center_cm(trip)
             print(f"    продолжаю: пауза {pause_s:.1f}с, до центра {left_cm * 10:.0f}мм")
             if trip.stopping and left_cm * 10.0 < config.ALIGN_TOL_MM:
-                # Уже в центре или подъезд увёл за него - остаток доводкой.
-                if abs(left_cm) > 0.2:
+                # В пределах допуска стоим; если проехали центр дальше
+                # допуска, возвращаемся назад перед поворотом.
+                if left_cm * 10.0 <= -config.ALIGN_TOL_MM:
                     driving.creep_mm(left_cm * 10.0, trip.target_yaw)
                     if state.lifted.is_set():
                         trip.reason = "pose_lost"

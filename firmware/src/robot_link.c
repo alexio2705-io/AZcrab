@@ -148,7 +148,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  z_cnt;     // g_z_cnt
     uint16_t boot_id;   // g_boot_id
     uint16_t cmd_err;   // g_cmd_err
-    uint16_t motor_dv[4]; // IDs 1,5,2,3; 0 = unavailable
+    uint16_t motor_dv[4]; // IDs 4,1,2,3 (RL, FL, FR, RR); 0 = unavailable
     int8_t motor_temp[4]; // -128 = unavailable
     uint8_t motor_error[4];
     uint16_t crc;       // CRC-16/CCITT-FALSE по байтам [2 .. crc)

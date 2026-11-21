@@ -245,6 +245,19 @@ class NavigationTests(unittest.TestCase):
         self.module._drive(walk, lambda c: False, False, None)
         self.assertEqual(self.module.driving.drive_cells.call_args.args[0], 288)
 
+    def test_watched_frames_do_not_skip_arrival_camera_scan(self):
+        self.module.state.watched_sides = {"left", "right"}
+        self.module.state.scanned_walls = set()
+        self.module.state.visited = set()
+        self.module.maze_map._cell_at.return_value = (0, 0)
+        self.module.maze_map._next_cell.return_value = (0, 1)
+        self.module.driving.drive_cells.return_value = (1, "done")
+        walk = SimpleNamespace(cx=0, cy=0, hdg=0, cell=(0, 0), max_cells=300, total=0)
+        seen = []
+        self.module._drive(walk, lambda c: False, False,
+                           lambda w, new: seen.append(set(self.module.state.scanned_walls)))
+        self.assertEqual(seen, [set()])
+
     def test_empty_route_is_goal_not_index_error(self):
         self.module._wait_robot = Mock(return_value=False)
         self.module.maze_map.find_path_bfs.return_value = []

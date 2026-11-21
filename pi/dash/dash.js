@@ -414,6 +414,57 @@ function renderRadar() {
 const CELL = 56;
 const DX = [0, 1, 0, -1], DY = [1, 0, -1, 0];
 let mapGeo = null;
+const UPPER_FLOOR_FILL = '#3f3b30';
+
+// Плитки горок в координатах этажа: между клеткой у подножия и клеткой за гребнем.
+function rampTileKeys(m, vy) {
+  const keys = [];
+  for (const [ax, ay, d, bx, by] of m.ramps || []) {
+    const k = Math.abs(bx - ax) + Math.abs(vy(by) - vy(ay));
+    for (let i = 1; i < k; i++) keys.push((ax + DX[d] * i) + ',' + (vy(ay) + DY[d] * i));
+  }
+  return keys;
+}
+
+// Мост: на одном месте поля посещены разные этажи, горка под клеткой или под другой горкой.
+function hasBridge(m, lvl, vy, tiles) {
+  const onRamp = new Set(tiles), level = new Map();
+  if (onRamp.size < tiles.length) return true;
+  for (const [x, y] of m.visited || []) {
+    const key = x + ',' + vy(y);
+    if (onRamp.has(key) || (level.has(key) && level.get(key) !== lvl(y))) return true;
+    level.set(key, lvl(y));
+  }
+  return false;
+}
+
+// Одна сетка: неразведанная клетка не рисуется там, где уже есть клетка или горка другого этажа.
+function flatCells(cells, visited, blocked, tiles, vy) {
+  const taken = new Set(tiles);
+  const known = c => visited.has(c.x + ',' + c.y) || blocked.has(c.x + ',' + c.y);
+  for (const c of cells) if (known(c)) taken.add(c.x + ',' + vy(c.y));
+  return cells.filter(c => {
+    const place = c.x + ',' + vy(c.y);
+    if (known(c)) return true;
+    if (taken.has(place)) return false;
+    taken.add(place);
+    return true;
+  });
+}
+
+// Плитки горки между её концами и стрелка в сторону подъёма.
+function drawRampTiles(svg, [ax, ay], d, k, color) {
+  const ux = DX[d], uy = -DY[d];
+  for (let i = 1; i < k; i++)
+    svg.appendChild(svgEl('rect', {x: ax + ux * CELL * i - CELL / 2, y: ay + uy * CELL * i - CELL / 2, width: CELL, height: CELL,
+                                   fill: color, 'fill-opacity': .22, stroke: color, 'stroke-opacity': .45}));
+  const inset = k > 1 ? .62 : .3;      // у горки без плиток между клетками - короткая стрелка на границе
+  const x1 = ax + ux * CELL * inset, y1 = ay + uy * CELL * inset;
+  const x2 = ax + ux * CELL * (k - inset), y2 = ay + uy * CELL * (k - inset);
+  const bx = x2 - ux * 11, by = y2 - uy * 11;
+  svg.appendChild(svgEl('line', {x1, y1, x2: bx, y2: by, stroke: color, 'stroke-width': 3}));
+  svg.appendChild(svgEl('polygon', {points: `${x2},${y2} ${bx - uy * 7},${by + ux * 7} ${bx + uy * 7},${by - ux * 7}`, fill: color}));
+}
 
 function buildMap(m) {
   const svg = $('map');
@@ -425,9 +476,12 @@ function buildMap(m) {
   const lvl = y => Math.floor((y + LS / 2) / LS);
   const xs = known.map(c => c.x).concat([robot.cx]);
   const spanX = Math.max(...xs) - Math.min(...xs) + 2;
-  const vx = (x, y) => x + lvl(y) * spanX, vy = y => y - lvl(y) * LS;
+  const vy = y => y - lvl(y) * LS;
+  const tiles = rampTileKeys(m, vy);
+  const spread = hasBridge(m, lvl, vy, tiles);   // мост: этажи рисуются рядом, иначе - одна сетка
+  const vx = (x, y) => spread ? x + lvl(y) * spanX : x;
   const levels = [...new Set(known.map(c => lvl(c.y)).concat([lvl(robot.cy)]))].sort((a, b) => a - b);
-  const multi = levels.length > 1;
+  const multi = spread && levels.length > 1;
   const allX = known.map(c => vx(c.x, c.y)).concat([vx(robot.cx, robot.cy)]);
   const allY = known.map(c => vy(c.y)).concat([vy(robot.cy)]);
   const minX = Math.min(...allX), maxX = Math.max(...allX), minY = Math.min(...allY), maxY = Math.max(...allY);
@@ -453,12 +507,12 @@ function buildMap(m) {
     const t = svgEl('text', {x: sx(Math.min(...xz)), y: -10, fill: css('--mut'), 'font-size': 12, 'letter-spacing': 1, 'font-family': css('--mono')});
     t.textContent = 'ЭТАЖ ' + z; svg.appendChild(t);
   }
-  for (const c of cells) {
+  for (const c of spread ? cells : flatCells(cells, visited, blocked, tiles, vy)) {
     const key = c.x + ',' + c.y, x = sx(vx(c.x, c.y)), y = sy(vy(c.y));
     let fill = 'rgba(255,255,255,.025)';
     if (blocked.has(key)) fill = 'url(#hatch)';
     else if (blue.has(key)) fill = 'rgba(57,135,229,.32)';
-    else if (visited.has(key)) fill = '#2a2a28';
+    else if (visited.has(key)) fill = !spread && lvl(c.y) > levels[0] ? UPPER_FLOOR_FILL : '#2a2a28';
     svg.appendChild(svgEl('rect', {x, y, width: CELL, height: CELL, fill, stroke: 'rgba(255,255,255,.06)', 'stroke-width': 1}));
     if (cp.cx === c.x && cp.cy === c.y)
       svg.appendChild(svgEl('rect', {x: x + 5, y: y + 5, width: CELL - 10, height: CELL - 10, fill: 'none', stroke: ACC, 'stroke-width': 1.5, 'stroke-dasharray': '4 3', rx: 4}));
@@ -468,7 +522,11 @@ function buildMap(m) {
       else if (c.w[d] == null) svg.appendChild(svgEl('line', {x1: e[d][0], y1: e[d][1], x2: e[d][2], y2: e[d][3], stroke: 'rgba(255,255,255,.18)', 'stroke-width': 1, 'stroke-dasharray': '2 4'}));
     }
   }
-  for (const [ax, ay, , bx, by, n] of m.ramps || []) {
+  for (const [ax, ay, d, bx, by, n] of m.ramps || []) {
+    if (!spread) {
+      drawRampTiles(svg, center(ax, ay), d, Math.abs(bx - ax) + Math.abs(vy(by) - vy(ay)), ACC);
+      continue;
+    }
     const [x1, y1] = center(ax, ay), [x2, y2] = center(bx, by);
     svg.appendChild(svgEl('line', {x1, y1, x2, y2, stroke: ACC, 'stroke-width': 1.5, 'stroke-dasharray': '5 4'}));
     const t = svgEl('text', {x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle', 'font-size': 11, fill: ACC, 'font-family': css('--mono')});
@@ -543,7 +601,7 @@ function renderMap() {
 }
 
 function renderLegend() {
-  const items = [['#2a2a28', 'посещена'], ['rgba(57,135,229,.5)', 'синяя'], ['repeating-linear-gradient(45deg,rgba(229,83,75,.7) 0 3px,transparent 3px 6px)', 'чёрная / непроезжая'],
+  const items = [['#2a2a28', 'посещена'], [UPPER_FLOOR_FILL, 'этаж выше'], ['var(--acc);opacity:.35', 'горка'], ['rgba(57,135,229,.5)', 'синяя'],['repeating-linear-gradient(45deg,rgba(229,83,75,.7) 0 3px,transparent 3px 6px)', 'чёрная / непроезжая'],
                  ['transparent;border:1.5px dashed var(--acc)', 'чекпоинт']];
   $('mapLegend').innerHTML = items.map(([c, t]) => `<span><i style="background:${c}"></i>${t}</span>`).join('')
     + ['damaged', 'stable', 'unharmed'].map(k => `<span><i style="background:var(${VCOLOR[k]});border-radius:50%"></i>${GLYPH[k]} ${VNAME[k].toLowerCase()}</span>`).join('');
@@ -554,7 +612,7 @@ const SENS = [
   ['Лидар', [['front', 'Спереди'], ['back', 'Сзади'], ['left', 'Слева'], ['right', 'Справа']]],
   ['Гироскоп', [['yaw', 'Курс'], ['pitch', 'Тангаж'], ['roll', 'Крен'], ['rate', 'Скор. поворота']]],
   ['Колёса', [['odoL', 'Путь L'], ['odoR', 'Путь R'], ['spd', 'Скорость'], ['steer', 'Руление']]],
-  ['Моторы · 4S', [['motorV', 'Напряжения 1/5/2/3'], ['motorT', 'Температуры'], ['motorE', 'Ошибки'], ['slip', 'Контроль движения']]],
+  ['Моторы · 4S', [['motorV', 'Напряжения 4/1/2/3'], ['motorT', 'Температуры'], ['motorE', 'Ошибки'], ['slip', 'Контроль движения']]],
   ['Плитка', [['tile', 'Цвет'], ['rgbc', 'R G B C'], ['bump', 'Бампер L/R'], ['kits', 'Комплекты']]],
   ['Связь с ESP', [['esp', 'Состояние'], ['age', 'Возраст пакета'], ['enc', 'Энкодеры'], ['fresh', 'Гиро / цвет']]],
   ['Курс по стенам', [['wall_e', 'Ошибка стен'], ['head_off', 'Поправка'], ['level', 'Этаж'], ['cp', 'Чекпоинт']]],

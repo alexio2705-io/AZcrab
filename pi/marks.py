@@ -436,17 +436,16 @@ def _corner_dup(cell, wall_dir, along, cls):
 
 
 def _best_turn_frames(cx, cy, seen):
-    """Шаг 1 доворота: из кадров, снятых на повороте, для каждой (камера,
-    стена) - рамка, снятая ближе всего к перпендикуляру к стене.
+    """Шаг 1 доворота: кадры у 45° каждой четверти поворота.
+
+    Стена перед четвертью становится боковой после неё; направление уже
+    проверено лидаром в turning.turn_to(), поэтому не угадываем его округлением
+    курса кадра ровно на 45°.
     -> {(side, wall_dir): (px, yf, xyxy, h, phi, cls)}"""
     best = {}
-    for side, yf, xyxy, conf, cls in seen:
+    for side, yf, xyxy, conf, cls, h, wall_dir in seen:
         rel = turning.angle_err(yf, state.YAW_ORIGIN)
-        h = int(round(rel / 90.0)) % 4
         phi = turning.angle_err(rel, 90.0 * h)
-        if not watch_logic.TURN_MARK_PHI_MIN <= abs(phi) <= watch_logic.TURN_MARK_PHI_MAX:
-            continue                      # диагональ (какая стена - неясно) или сетка
-        wall_dir = watch_logic.wall_of(h, side)
         if (cx, cy, wall_dir) in state.turn_mark_tried:
             continue
         px = max(xyxy[2] - xyxy[0], xyxy[3] - xyxy[1])
@@ -475,13 +474,9 @@ def _turn_mark_place(cx, cy, side, wall_dir, px, xyxy, h, phi, cls):
         print(f"    [W] на повороте: {side} {px:.0f}px у угла - уже прочитана "
               f"на соседней стене, пропускаю")
         return None
-    if (cx, cy, wall_dir) in state.scanned_walls:
-        # Эту стену клетки уже прочитали (на ходу или стоя). Заезд 24.10: та
-        # же Ψ на обратном пути - оценка места по кадру с поворота ушла на
-        # 15-20 см, дубль не узнался, и робот трижды подъезжал зря.
-        print(f"    [W] на повороте: {side} {px:.0f}px, стена {config._DIR_NAME[wall_dir]} "
-              f"уже прочитана, пропускаю")
-        return None
+    # Скан по центру клетки мог не видеть метку у угла. Даже если стена уже
+    # была просмотрена, кадр с поворота проверяем; прочитанные метки ниже
+    # отсекаются по положению и классу через MarkRegistry.
     known = state.maze.get((cx, cy))
     if known is None or known[wall_dir] is not True:
         # Стены с этой стороны клетки нет: камера смотрит в проём на
@@ -494,15 +489,19 @@ def _turn_mark_place(cx, cy, side, wall_dir, px, xyxy, h, phi, cls):
     return pos, key, along
 
 
-def _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along):
-    """Шаг 3 доворота: робот уже довернулся на курс кадра - прочитать метку.
-    Не прочиталась под углом - встать по сетке, подровняться вдоль стены,
+def _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along, frame_yaw):
+    """Шаг 3: сначала прочитать сразу после остановки. Если кадр не подошёл,
+    вернуться к курсу обнаружения; затем подровняться вдоль стены,
     прочитать оттуда и вернуться в центр клетки.
     -> (метка или None, неполное чтение или None, key, along)"""
     what = f"чтение метки ({side})"
     _reset_unread(det)
     result = _read_wall(det, (cx, cy), wall_dir, what, expect=True)
-    unread = None
+    unread = getattr(det, "last_unread", None)
+    if result is None and abs(turning.angle_err(esp_link.get_yaw(), frame_yaw)) > 3.0:
+        turning.turn_to(frame_yaw, label="к метке")
+        result = _read_wall(det, (cx, cy), wall_dir, what, expect=True)
+        unread = getattr(det, "last_unread", None) or unread
     if result is not None:
         phi_now = turning.angle_err(turning.angle_err(esp_link.get_yaw(), state.YAW_ORIGIN), 90.0 * h)
         pos2 = watch_logic.turned_mark_pos(
@@ -513,7 +512,6 @@ def _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along):
         # Под углом не прочиталась (метка у края кадра, кольца наискось):
         # встать по сетке, подъехать вдоль стены, чтобы метка оказалась
         # напротив камеры, прочитать оттуда - и обратно в центр клетки.
-        unread = getattr(det, "last_unread", None)
         g = turning.snap_target()
         print(f"    {what}: под углом не прочиталась - встаю по сетке и подравниваюсь")
         turning.turn_to(g, label="по сетке")
@@ -563,12 +561,11 @@ def _record_turn_mark(det, cx, cy, side, wall_dir, h, key, along, result, unread
 def _turn_marks(cx, cy, seen):
     """Доворот на метки, замеченные наблюдателем на повороте в клетке (cx, cy)
     (см. turn_to(seen=...)). По шагам:
-      1. _best_turn_frames  - для каждой стены рамка, снятая ближе всего к
-         перпендикуляру (watch_logic.TURN_MARK_PHI_MIN..MAX);
+      1. _best_turn_frames  - для каждой передней стены рамка у угла;
       2. _turn_mark_place   - где метка; пропуск, если за углом, уже прочитана,
          стены по карте нет или рядом уже читали;
-      3. довернуться на курс того кадра (под ним метка в центре кадра) и
-         _read_turn_mark   - прочитать стоя (read_wall);
+      3. прочитать в достигнутом положении; при неудаче вернуться к курсу
+         кадра и повторить;
       4. _record_turn_mark  - записать и выдать комплекты.
     Возвращает курс сетки после выдачи комплектов или None (курс не менялся;
     робот может стоять не по сетке - вызывающий доворачивает сам)."""
@@ -584,9 +581,9 @@ def _turn_marks(cx, cy, seen):
         pos, key, along = place
         state.turn_mark_tried.add((cx, cy, wall_dir))
         print(f"    [W] на повороте: {side} {px:.0f}px под {phi:+.0f}°, стена "
-              f"{config._DIR_NAME[wall_dir]} {along:.0f}мм - доворачиваю на {yf:.0f}°")
-        turning.turn_to(yf, label="к метке")
-        result, unread, key, along = _read_turn_mark(det, cx, cy, side, wall_dir, h, pos, key, along)
+              f"{config._DIR_NAME[wall_dir]} {along:.0f}мм - читаю здесь")
+        result, unread, key, along = _read_turn_mark(det, cx, cy, side, wall_dir,
+                                                      h, pos, key, along, yf)
         reported, hdg_after = _record_turn_mark(det, cx, cy, side, wall_dir, h, key, along,
                                                 result, unread)
         if reported:

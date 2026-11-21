@@ -168,8 +168,12 @@ def finish_trip(trip):
         # Сдаём назад на ту клетку, с которой заехали. Доводку по стене здесь
         # не делаем: она встала бы по передней стене, то есть потащила бы
         # робота обратно к чёрному.
-        if trip.black_back_cm > 0.2:
-            creep_mm(-trip.black_back_cm * 10.0, trip.target_yaw)
+        # Расстояние при обнаружении уже устарело: за время торможения робот
+        # успевает проехать ещё несколько сантиметров.
+        back_cm = trip.black_back_cm + max(0.0, trip.traveled_cm - trip.black_seen_cm)
+        if back_cm > 0.2:
+            creep_mm(-back_cm * 10.0, trip.target_yaw,
+                     timeout_s=2.0 + 1.5 * back_cm / ALIGN_SPEED_CMS)
     elif trip.reason == "bumper_entered":
         # Клетка засчитана, впереди стена или препятствие: только отпустить
         # концевики. Доводку не делаем - по стене за препятствием она снова

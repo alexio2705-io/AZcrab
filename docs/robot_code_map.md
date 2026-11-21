@@ -25,6 +25,7 @@
 | Порог «стена есть» | `walls.py` | `WALL_THRESH`, `SIDE_THRESH`, `BACK_THRESH` |
 | Как лидар меряет стены | `walls.py` (окна, маски) → `lidar_walls.py` | описание цепочки — в начале `lidar_walls.py` |
 | Поворот / доворот на курс | `turning.py` | `turn_to`, `turn`, `align_at_wall` (доводка у стены) |
+| Застрял на повороте (профиль, порог) | `turn_unstick.py` | ступени `Unstick.STAGES`: момент, раскачка, одной стороной, откат; токи и время вверху модуля |
 | Езду по клеткам | `driving.py` | `run_tick` — список шагов такта по порядку |
 | Отъезды после остановки (горка, препятствие, чёрная) | `driving.py` | `finish_trip` |
 | Короткий подъезд/отъезд на N мм | `driving.py` | `creep_mm`, `creep_soft` |

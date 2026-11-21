@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-// LK-TECH / MF servo motor CAN driver (MF4015 V2 / MG4005 / compatible).
+// LK-TECH MF4015 V2 servo motor CAN driver.
 // Bus: CAN, 1 Mbps, standard frame, 8 data bytes. CAN_TX=GPIO8, CAN_RX=GPIO18.
 // Identifier: 0x140 + id (id = 1..32).
 //
@@ -11,18 +11,18 @@
 
 // 4-wheel differential drive, 2 wheels per side (NOT omni - a previous
 // version of this file assumed a mecanum/omni platform; that was wrong for
-// this robot). Left = ids 1 and 5, right = ids 2 and 3; id 3 spins backwards
-// as mounted, so it's sign-flipped everywhere below. Same ids and same
-// pairing as the encoder read-back at the bottom of this file.
+// this robot). MF4015 V2 IDs checked on the robot: front left=1, front
+// right=2, rear right=3, rear left=4. Both MF4015 V2 right wheels use the
+// same direction sign; the old extra inversion of id 3 was for MF4010 V2.
 //
 // The whole right pair is mirror-mounted relative to the left one, so its
 // positive direction is the robot's backwards - see MOTOR_RIGHT_SIGN in
 // motor.c, which is applied to the right side's speed commands AND to its
 // encoder read-back, so "forward" counts up on both sides.
-#define MOTOR_LEFT_1  1
-#define MOTOR_LEFT_2  5
-#define MOTOR_RIGHT_1 2
-#define MOTOR_RIGHT_2 3   // sign-flipped again on top of the side sign
+#define MOTOR_LEFT_1  4   // rear left
+#define MOTOR_LEFT_2  1   // front left
+#define MOTOR_RIGHT_1 2   // front right
+#define MOTOR_RIGHT_2 3   // rear right
 
 void motor_can_init(void);
 
@@ -54,7 +54,8 @@ void motor_set_accel(uint8_t id, int32_t dps_per_s);
 // ---------------------------------------------------------------------------
 // Differential-drive kinematics.
 //
-// Wheel diameter is 86 mm (measured). TRACK_CM in motor.c is only used by
+// Wheel diameter is provisionally 86 mm from the previous wheel assembly;
+// measure the MF4015 V2 assembly's effective rolling diameter. TRACK_CM is used by
 // robot_drive()'s omega mixing and is still a guess - it does not matter for
 // the maze run, where every turn is closed on the gyro and the RPi sends each
 // side's speed directly.
@@ -127,7 +128,7 @@ float robot_right_dist_mm(void);
 #define ENC_LEFT_ID_1  MOTOR_LEFT_1
 #define ENC_LEFT_ID_2  MOTOR_LEFT_2
 #define ENC_RIGHT_ID_1 MOTOR_RIGHT_1
-#define ENC_RIGHT_ID_2 MOTOR_RIGHT_2   // sign-flipped in motor_right_enc_deg()
+#define ENC_RIGHT_ID_2 MOTOR_RIGHT_2
 
 // One-shot bench diagnostic: asks each id in [first_id, last_id] for its
 // position, one id at a time (10 requests over ~200ms, then move on), and
@@ -140,5 +141,5 @@ void motor_enc_start(void);              // starts RX+poll tasks; call once afte
 float motor_get_angle_deg(uint8_t id);   // multi-loop angle, deg; NAN if that id never answered
 float motor_get_speed_dps(uint8_t id);   // wheel deg/s in the motor's own sign, from 0x92 replies; NAN if offline
 void motor_zero_encoders(void);          // marks current position as the new zero for all 4 ids
-float motor_left_enc_deg(void);          // avg(id1, id5) since last zero, deg; NAN if both offline
-float motor_right_enc_deg(void);         // avg(id2, -id3) since last zero, deg; NAN if both offline
+float motor_left_enc_deg(void);          // avg(id4, id1) since last zero, deg; NAN if both offline
+float motor_right_enc_deg(void);         // avg(-id2, -id3) since last zero, deg; NAN if both offline

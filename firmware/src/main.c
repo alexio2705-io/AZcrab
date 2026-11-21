@@ -77,7 +77,7 @@ void app_main(void)
     motor_can_init();
     motor_enc_start();
     vTaskDelay(pdMS_TO_TICKS(200));
-    motor_probe(1, 5);
+    motor_probe(1, 4);
     drive_test_run(); // never returns
 #endif
 
@@ -94,7 +94,7 @@ void app_main(void)
     motor_can_init();
     motor_enc_start();
     vTaskDelay(pdMS_TO_TICKS(200)); // let the RX task settle before probing
-    motor_probe(1, 5);              // ids 1,2,3,5 as given, +4 as a spare check
+    motor_probe(1, 4);              // all four MF4015 V2 wheel IDs
 
     robot_link_run(); // never returns
 #else

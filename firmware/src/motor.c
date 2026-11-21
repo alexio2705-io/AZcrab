@@ -164,7 +164,7 @@ void set_motor_speed(uint8_t id, float dps)
     int32_t raw = (int32_t)lroundf(dps * 100.0f); // 0.01 dps/LSB
     uint8_t data[8] = {
         0xA2,
-        0x00, // max torque cap: 0 = use motor's configured stall current
+        0x00, // reserved; 0xA2 torque limit is Max Torque Current in LK Motor Tool
         0x00,
         0x00,
         (uint8_t)(raw & 0xFF),
@@ -175,10 +175,12 @@ void set_motor_speed(uint8_t id, float dps)
     send_frame(MOTOR_BASE_ID + id, data);
 }
 
-// MF4010 V2 / legacy V2.35: 0xA1 +/-2048 = +/-16.5 A IQ (MG differs).
-// Retain roughly the previous physical ceiling, now in correct MF units.
-// IQ is not the battery current. Recalibrate on the actual motor firmware.
-#define MOTOR_TORQUE_CMD_MAX_A 1.5f
+// MF V2 / legacy V2.35: 0xA1 +/-2048 = +/-16.5 A IQ (MG differs).
+// IQ is not the battery current. Recalibrate for the installed MF4015 V2.
+// 10.11: 3.0 A was chosen for the previous MF4010 V2 on a ramp; MF4015 V2
+// torque and current limits still need a new measured drive test.
+// 0xA1 мимо Max Torque Current драйвера - предел только этот.
+#define MOTOR_TORQUE_CMD_MAX_A 3.0f
 
 void set_motor_torque_amps(uint8_t id, float amps)
 {
@@ -196,7 +198,7 @@ void set_motor_torque_amps(uint8_t id, float amps)
     send_frame(MOTOR_BASE_ID + id, data);
 }
 
-#define WHEEL_DIAM_MM 86.0f   // measured
+#define WHEEL_DIAM_MM 86.0f   // previous wheel measurement; remeasure MF4015 V2 assembly
 #define WHEEL_DIAM_CM (WHEEL_DIAM_MM * 0.1f)
 #define TRACK_CM      12.5f   // contact track; skid-turn effective track needs calibration
 #define WHEEL_CIRC_CM (WHEEL_DIAM_CM * (float)M_PI)
@@ -218,7 +220,7 @@ void robot_set_side_speed_dps(float left_dps, float right_dps)
     set_motor_speed(MOTOR_LEFT_1,  left_dps);
     set_motor_speed(MOTOR_LEFT_2,  left_dps);
     set_motor_speed(MOTOR_RIGHT_1,  right_dps * MOTOR_RIGHT_SIGN);
-    set_motor_speed(MOTOR_RIGHT_2, -right_dps * MOTOR_RIGHT_SIGN);  // id3 flipped again
+    set_motor_speed(MOTOR_RIGHT_2,  right_dps * MOTOR_RIGHT_SIGN);
 }
 
 void robot_set_side_speed_cms(float left_cms, float right_cms)
@@ -243,8 +245,16 @@ void robot_set_side_speed_cms(float left_cms, float right_cms)
 // раскручивается, а робот, перевалив препятствие, не улетает.
 #define ASSIST_TAPER_FRAC 0.4f
 
+// Задние колёса - id 4 и 3 (проверено расположение новых MF4015 V2).
+// На подъёме вес уходит на них, а при равном токе они стояли, пока передние
+// проворачивались. Множитель -
+// под ток горки RAMP_TORQUE_A=0.95 на Pi: задним ~3.0 A (MOTOR_TORQUE_CMD_MAX_A).
+// Это настройка от MF4010 V2; перед соревнованием перемерить на MF4015 V2.
+#define REAR_TORQUE_GAIN (3.0f / 0.95f)
+
 static void assist_one(uint8_t id, float amps, float cap_dps)
 {
+    if (id == MOTOR_LEFT_1 || id == MOTOR_RIGHT_2) amps *= REAR_TORQUE_GAIN;
     float dir = (amps >= 0.0f) ? 1.0f : -1.0f;
     float v = motor_get_speed_dps(id);
     if (isnan(v)) {
@@ -272,7 +282,7 @@ void robot_set_side_torque_amps(float left_amps, float right_amps, float cap_cms
     assist_one(MOTOR_LEFT_1,  left_amps,                     cap_dps);
     assist_one(MOTOR_LEFT_2,  left_amps,                     cap_dps);
     assist_one(MOTOR_RIGHT_1, right_amps * MOTOR_RIGHT_SIGN, cap_dps);
-    assist_one(MOTOR_RIGHT_2, -right_amps * MOTOR_RIGHT_SIGN, cap_dps);
+    assist_one(MOTOR_RIGHT_2, right_amps * MOTOR_RIGHT_SIGN, cap_dps);
 }
 
 void robot_drive(float speed_cms, float omega_dps)
@@ -545,7 +555,7 @@ float motor_right_enc_deg(void)
     // Same signs as the speed path in robot_set_side_speed_dps(), so forward
     // motion reads positive here just like it does on the left.
     return enc_pair_deg(ENC_RIGHT_ID_1, MOTOR_RIGHT_SIGN,
-                        ENC_RIGHT_ID_2, -MOTOR_RIGHT_SIGN);
+                        ENC_RIGHT_ID_2, MOTOR_RIGHT_SIGN);
 }
 
 static float enc_deg_to_mm(float deg)

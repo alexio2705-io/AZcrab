@@ -62,6 +62,8 @@ PITCH_COLOR_GUARD_DEG = 3.0
 COLOR_RECOVER_S = 0.35
 
 BLUE_STOP_S = config.BLUE_WAIT_S
+# APDS9960 стоит на переднем бампере, на 90 мм впереди центра робота.
+COLOR_SENSOR_AHEAD_CM = 9.0
 
 # ── Чекпоинт: красная плитка ─────────────────────────────────
 # Красный проверяется ПЕРЕД чёрным, и это не косметика: красная плитка
@@ -96,13 +98,13 @@ def black_threshold():
     return min(BLACK_ABS_MAX_C, state.c_white * BLACK_FRACTION)
 
 
-def tile_color():
+def tile_color(pitch_reference=None):
     """Цвет плитки под роботом по сырым каналам APDS9960."""
-    state.tile_last = _tile_color()
+    state.tile_last = _tile_color(pitch_reference)
     return state.tile_last
 
 
-def _tile_color():
+def _tile_color(pitch_reference=None):
     if not state.USE_COLOR_SENSOR:
         return config.TILE_UNKNOWN
     with state.lock:
@@ -110,7 +112,10 @@ def _tile_color():
     if not color_fresh or not esp_link.telem_fresh():
         return config.TILE_UNKNOWN
     now = time.monotonic()
-    if abs(esp_link.get_pitch() - state.pitch_level) > PITCH_COLOR_GUARD_DEG:
+    # На ходу берём наклон в начале поездки: после поворота гироскоп может
+    # показывать +3° даже на ровном полу, и постоянный guard скрывает чёрную.
+    level = state.pitch_level if pitch_reference is None else pitch_reference
+    if abs(esp_link.get_pitch() - level) > PITCH_COLOR_GUARD_DEG:
         state.color_ignore_until = now + COLOR_RECOVER_S
         return config.TILE_UNKNOWN
     if now < state.color_ignore_until:
@@ -120,6 +125,8 @@ def _tile_color():
         return config.TILE_UNKNOWN
     if state.tile_samples:
         # "air" (робот на весу) и "не знаю" - одинаково не плитка.
+        if tile_classify.early_black(state.tile_samples, r, g, b, c):
+            return config.TILE_BLACK
         v = tile_classify.classify(state.tile_samples, r, g, b, c)[0]
         return v if v in (config.TILE_WHITE, config.TILE_BLACK, config.TILE_BLUE, config.TILE_RED, config.TILE_SILVER) \
             else config.TILE_UNKNOWN
@@ -238,9 +245,10 @@ def check_floor_while_driving(trip):
     # обновляется ~10Гц, и одно лишнее подтверждение стоит ещё ~5см хода
     # вглубь чёрного. Запас по порогу большой (C=100 против порога ~210),
     # так что ложные срабатывания маловероятны.
-    tile = tile_color()
+    tile = tile_color(getattr(trip, "color_pitch_start", None))
     if tile_rules.role(tile) == tile_rules.WALL:
         trip.reason = "black"
+        trip.black_seen_cm = trip.traveled_cm
         state.last_wall_tile = tile
         # Назад - в центр клетки перед чёрной. Без остановок чёрная бывает
         # и над клеткой, которую план уже засчитал пройденной.
@@ -250,8 +258,11 @@ def check_floor_while_driving(trip):
               f"откат {trip.black_back_cm*10:.0f}мм")
         return "stop"
     if trip.plan is not None and tile != config.TILE_UNKNOWN:
-        # Над какой клеткой датчик: N - уже за её границей (+15мм).
-        k_under = trip.cells + 1 if trip.traveled_cm >= trip.boundary_cm - trip.cell_cm / 2.0 + 1.5 else trip.cells
+        # Над какой клеткой датчик: сравниваем координату самого датчика,
+        # а не центра робота. Иначе синяя в начале следующей клетки
+        # приписывается предыдущей, чей центр уже далеко позади.
+        k_under = (trip.cells + 1 if trip.traveled_cm + COLOR_SENSOR_AHEAD_CM >=
+                   trip.boundary_cm - trip.cell_cm / 2.0 else trip.cells)
         trip.tiles.setdefault(k_under, set()).add(tile)
         tile_rules.remember(trip.plan.cell(k_under), tile)
         if tile_rules.role(tile) == tile_rules.STOP and k_under >= 1:

@@ -22,7 +22,7 @@ class EnvelopeTests(unittest.TestCase):
 
     def test_two_frames_fit_in_visibility_window(self):
         for gap in (.08,.17,.4):
-            self.assertLessEqual(observation_speed(gap)*2*gap,12.40001)  # окно камеры ±62мм
+            self.assertLessEqual(observation_speed(gap)*3*gap,8.00001)
 
     def test_decision_does_not_commit_arrival(self):
         ledger = PassageLedger()
@@ -93,6 +93,7 @@ class VisionTests(unittest.TestCase):
         watcher._armed_t={'left':10.}
         watcher._arm_id=1
         watcher._processed_t={'left':None}
+        watcher._processed_at={'left':None}
         watcher._frame_gaps={'left':deque(maxlen=8)}
         watcher._pending={'left':(1,10.1,1,10.1)}
         watcher.infer=Stats()
@@ -106,6 +107,23 @@ class VisionTests(unittest.TestCase):
             self.assertAlmostEqual(watcher.coverage_gap({'left'}),.2)
         watcher._failed.add('left')
         self.assertEqual(watcher.coverage_gap({'left'}),math.inf)
+
+    @unittest.skipUnless(importlib.util.find_spec('numpy'), 'нужен numpy')
+    def test_frame_processing_latency_does_not_pulse_speed_cap(self):
+        import victim_watch
+        watcher=victim_watch.VictimWatcher.__new__(victim_watch.VictimWatcher)
+        watcher._lock=threading.Lock()
+        watcher.cams={'left':None}
+        watcher.dead=False
+        watcher._failed=set()
+        watcher._armed_t={'left':10.0}
+        watcher._processed_t={'left':10.0}
+        watcher._processed_at={'left':10.08}
+        watcher._frame_gaps={'left':deque([.1],maxlen=8)}
+        with patch.object(victim_watch.time,'monotonic',return_value=10.18):
+            self.assertAlmostEqual(watcher.coverage_gap({'left'}),.1)
+        with patch.object(victim_watch.time,'monotonic',return_value=10.31):
+            self.assertAlmostEqual(watcher.coverage_gap({'left'}),.23)
 
     def module(self):
         state=SimpleNamespace(lifted=threading.Event(),watched_sides=set())
@@ -197,6 +215,28 @@ class ControllerIntegrationTests(unittest.TestCase):
         self.assertEqual(t.cells,0)
         self.assertEqual(module.check_arrived(t),'stop')
         self.assertEqual(marks._mark_stop.call_count,2)
+        self.assertEqual(t.cells,1)
+
+    def test_mark_at_center_turns_without_extra_creep(self):
+        state=SimpleNamespace(scan_cnt=10,lifted=threading.Event())
+        lidar=Mock()
+        lidar.get_walls.return_value={'front':None}
+        def fresh_scan(*args, **kwargs):
+            lidar.get_walls.return_value={'front':152.0}
+            return True
+        lidar.wait_scan.side_effect=fresh_scan
+        driving=Mock()
+        module=load('drive_stop',{'state':state,'esp_link':Mock(),'driving':driving,
+                                  'marks':Mock(),'drive_checks':Mock(),'lidar_walls':lidar})
+        t=SimpleNamespace(stopping=True,mark_first=True,rem_eff=0,ramp_state=None,
+            vmark={'side':'left','pos_mm':270,'stop_cm':27},mark_queue=[],
+            wall_forced=False,cell=(0,0),hdg=1,target_yaw=90,traveled_cm=26.1,
+            odometry=SimpleNamespace(last=None),t_cell=1,last_progress_t=1,assist_gap_until=1,
+            assist_t0=1,assist_total_t0=1,assist_progress_t=1,odo_hist=deque(),
+            side_hold=Mock(),boundary_cm=30,telem_seq=1,cells=0)
+        self.assertEqual(module.check_arrived(t),'stop')
+        lidar.wait_scan.assert_called_once()
+        driving.creep_mm.assert_not_called()
         self.assertEqual(t.cells,1)
 
     def test_plan_commits_only_after_crossing_center(self):

@@ -7,7 +7,7 @@ from collections import deque
 
 import watch_logic
 from victim_detect import CONF_FAST, MIN_BOX_PX
-from walls import BACK_THRESH, WALL_THRESH
+from walls import BACK_THRESH, SIDE_THRESH, WALL_THRESH
 
 import config
 import state
@@ -16,6 +16,7 @@ import driving
 import esp_link
 import lidar_walls
 import ramps
+import turn_unstick
 
 
 BACK_CENTER_MM = 135.0
@@ -64,11 +65,12 @@ TURN_TIMEOUT_S = 6.0        # на сам поворот; время манёв�
 TURN_TILT_TOL_DEG = 3.0
 TURN_TILT_DONE_RATE_DPS = 45.0
 # Застревание на повороте (колесо зацепилось за угол стены, корпус упёрся):
-# цель ещё не достигнута, а корпус почти не вращается дольше TURN_STUCK_S.
-# Порог скорости ниже TURN_DONE_RATE_DPS: у самой цели робот законно
+# цель ещё не достигнута, а за TURN_STUCK_S угол к цели почти не уменьшился.
+# Мгновенный gyro rate на косом профиле скачет даже без продвижения:
+# он не должен каждый раз сбрасывать обнаружение застревания.
+# Порог средней скорости ниже TURN_DONE_RATE_DPS: у самой цели робот законно
 # доползает медленно на TURN_MIN_CMS, это не застревание. Ступени по
-# нарастающей (идея из MZCAT): 1) дожать колёса сильнее, 2) отъехать
-# назад, 3) вернуться вперёд на то же расстояние (клетка не уплывает).
+# нарастающей - в turn_unstick.py (момент, раскачка, одной стороной, откат).
 TURN_STUCK_RATE_DPS = 8.0
 TURN_STUCK_S = 0.5
 # Застревание - только дальше этого от цели. Ближе робот законно доползает
@@ -77,9 +79,13 @@ TURN_STUCK_S = 0.5
 # уходил в откат - отсюда тряска на поворотах. У цели работает прежняя
 # страховка TURN_MIN_CMS.
 TURN_STUCK_MIN_DEG = 10.0
-TURN_STUCK_BOOST_CMS = 20.0  # нижний предел команды колесу на ступени 1
-TURN_STUCK_BACK_MM = 40.0
 ALIGN_TRIES = 2
+CORNER_ARM_FROM_DEG = 0.0   # прогреть камеру уже у соседней стены клетки
+CORNER_SIDE_FRAME_FROM_DEG = 25.0
+CORNER_FRAME_FROM_DEG = 45.0
+CORNER_FRAME_TO_DEG = 75.0
+CORNER_LIDAR_MAX_AGE_S = 0.15
+CORNER_WALL_HOLD_S = 0.20  # один пропущенный оборот лидара не перезапускает камеру
 
 
 def angle_err(cur, tgt):
@@ -111,8 +117,54 @@ def gyro_heading():
     return int(round(angle_err(esp_link.get_yaw(), state.YAW_ORIGIN) / 90.0)) % 4
 
 
+def corner_watch_side(progress_deg, turn_deg, front_wall, side_wall, lidar_fresh,
+                      side_ranges, last_wall_t, now):
+    """Камера, проходящая мимо передней стены на 45° четверти поворота.
+
+    Камера заранее набирает кадры у реальной боковой стены. До 45° метка
+    относится к ней, после 45° — к передней. Короткий провал
+    бокового замера при вращении не перезапускает выдержку и arm_id, но
+    рамка годится только при свежем близком замере в момент самого кадра.
+    """
+    if not front_wall or abs(turn_deg) < 60.0 or abs(turn_deg) > 120.0:
+        return None, False, None
+    sign = 1 if turn_deg > 0 else -1
+    side = "left" if sign > 0 else "right"
+    if not CORNER_ARM_FROM_DEG <= progress_deg <= CORNER_FRAME_TO_DEG:
+        return None, False, None
+    near = lidar_fresh and lidar_walls.wall_present(side_ranges.get(side), SIDE_THRESH)
+    if near:
+        last_wall_t = now
+    armed = last_wall_t is not None and 0.0 <= now - last_wall_t <= CORNER_WALL_HOLD_S
+    on_wall = ((side_wall and CORNER_SIDE_FRAME_FROM_DEG <= progress_deg < CORNER_FRAME_FROM_DEG)
+               or progress_deg >= CORNER_FRAME_FROM_DEG)
+    return (side if armed else None,
+            near and on_wall,
+            last_wall_t)
+
+
+def corner_quarter(progress_deg, turn_deg, start_h):
+    """Локальный угол, передняя стена и новый курс для 45°/135° поворота."""
+    stage = int(progress_deg // 90.0)
+    quarters = 2 if abs(turn_deg) > 120.0 else 1
+    if stage < 0 or stage >= quarters:
+        return None
+    sign = 1 if turn_deg > 0 else -1
+    return (progress_deg - 90.0 * stage,
+            (start_h + sign * stage) % 4,
+            (start_h + sign * (stage + 1)) % 4)
+
+
+def corner_frame_wall(quarter, sign):
+    """Стена и курс сетки для кадра до/после биссектрисы угла."""
+    local, before_h, after_h = quarter
+    if local < CORNER_FRAME_FROM_DEG:
+        return (before_h - sign) % 4, before_h
+    return before_h, after_h
+
+
 @timing._timed("поворот")
-def turn_to(target, label=None, seen=None, walls=None):
+def turn_to(target, label=None, seen=None, walls=None, turn_sign=None):
     """Поворот на АБСОЛЮТНЫЙ курс target (град), без привязки к сетке 90°.
 
     Нужен отдельно от turn(): у объезда препятствия (bumper_side) курс после
@@ -125,39 +177,59 @@ def turn_to(target, label=None, seen=None, walls=None):
     телеметрия) или вышел TURN_TIMEOUT_S. Тогда курс в карте "как просили"
     считать нельзя - вызывающий берёт его с гироскопа (gyro_heading()).
 
-    seen - список: на повороте включён наблюдатель меток, и сюда пишутся
-    уверенные рамки (сторона, курс в момент кадра, рамка) - см.
-    _turn_marks(). Стоя в центре клетки камера видит ~125 мм из 280 мм
-    стены, а на повороте её проносит вдоль всей стены. walls - стены клетки
-    по карте (_maze): камера включена, только пока напротив неё стена, по
-    которой карта говорит True; нет стены или не знаем - YOLO не крутим.
+    seen - кадры обеих стен угла, снятые около 45°. При первой подходящей
+    рамке поворот тормозится и возвращается "mark" для немедленного чтения.
+    При 180° без промежуточной остановки кадры приходят у 45° и 135°.
+    Наблюдатель включается лишь при близкой стене по свежему лидару и
+    передней стене соответствующей четверти по карте. Для кадра до 45°
+    дополнительно нужна боковая стена по карте. Чтение - после поворота.
+    turn_sign=1 принудительно выбирает поворот по часовой на 180°, в том
+    числе когда кратчайшая дуга из-за ошибки курса была бы против часовой.
     """
     settled = 0
-    watch = seen is not None and state.watcher is not None and not state.watcher.dead
+    start_yaw = esp_link.get_yaw()
+    turn_deg = -angle_err(start_yaw, target)
+    if turn_sign == 1:
+        turn_deg = (target - start_yaw + 360.0) % 360.0
+    start_h = int(round(angle_err(start_yaw, state.YAW_ORIGIN) / 90.0)) % 4
+    corner_side = "left" if turn_deg > 0 else "right"
+    watch = (seen is not None and state.watcher is not None and not state.watcher.dead
+             and corner_side in state.watcher.cams
+             and walls is not None and 60.0 <= abs(turn_deg) <= 240.0)
     yaw_hist = watch_logic.OdoHistory(keep_s=2.0)
-    yaw_unw = last_yaw = esp_link.get_yaw()      # без перескока 360 -> 0
+    yaw_unw = last_yaw = start_yaw      # без перескока 360 -> 0
+    side_hist = watch_logic.SideHold(hold_s=0.0, t0=time.monotonic())
+    sign = 1 if turn_deg > 0 else -1
+    last_wall_t = None
+    last_stage = None
+    armed_before = False
+    arm_starts = 0
+    first_fid = state.watcher.live_info()[corner_side]["fid"] if watch else 0
 
-    def _watch_sides():
-        if not walls:
-            return set()
-        h = int(round(angle_err(esp_link.get_yaw(), state.YAW_ORIGIN) / 90.0)) % 4
-        return {s for s in ("left", "right") if walls[watch_logic.wall_of(h, s)] is True}
-
-    def _watch_poll():
+    def _update_yaw():
         nonlocal yaw_unw, last_yaw
         y = esp_link.get_yaw()
         yaw_unw += angle_err(y, last_yaw)
         last_yaw = y
+
+    def _watch_poll():
         yaw_hist.add(time.monotonic(), yaw_unw)
         for b in state.watcher.poll():
             x1, y1, x2, y2 = b.xyxy
             # по высоте не меньше 1/8 кадра - как требует чтение стоя: рамку,
             # обрезанную краем до полоски, стоя не прочитать
-            if (b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
+            if (side_hist.frame_ok(b.side, b.t_frame)
+                    and b.conf >= CONF_FAST and max(x2 - x1, y2 - y1) >= MIN_BOX_PX
                     and y2 - y1 >= watch_logic.FRAME_PX * 0.125):
                 frame_yaw = yaw_hist.at_checked(b.t_frame)
                 if frame_yaw is not None:
-                    seen.append((b.side, frame_yaw % 360.0, b.xyxy, b.conf, b.cls))
+                    progress = sign * (frame_yaw - start_yaw)
+                    quarter = corner_quarter(progress, turn_deg, start_h)
+                    if (b.side == corner_side and quarter is not None
+                            and CORNER_SIDE_FRAME_FROM_DEG <= quarter[0] <= CORNER_FRAME_TO_DEG):
+                        wall_dir, corner_h = corner_frame_wall(quarter, sign)
+                        seen.append((b.side, frame_yaw % 360.0, b.xyxy, b.conf, b.cls,
+                                     corner_h, wall_dir))
     tag = label if label is not None else f"{target:.1f}°"
 
     print(f"    поворот {tag}  цель={target:.1f}°  yaw={esp_link.get_yaw():.1f}°")
@@ -172,9 +244,9 @@ def turn_to(target, label=None, seen=None, walls=None):
     t0 = time.monotonic()
     deadline = t0 + TURN_TIMEOUT_S
     t_ramp = t0            # начало разгона; после манёвра выхода - заново
-    stuck_since = None
-    stuck_stage = 0        # сколько ступеней выхода из застревания уже было
-    boost = False
+    turn_progress = turn_unstick.TurnProgress(TURN_STUCK_S, TURN_STUCK_RATE_DPS)
+    mark_seen = False
+    unstick = turn_unstick.Unstick()
     telem_seq = state.telem_seq
     while time.monotonic() < deadline:
         if esp_link.interrupted():
@@ -182,17 +254,40 @@ def turn_to(target, label=None, seen=None, walls=None):
             # последняя команда вращения работала бы до failsafe ESP.
             if not esp_link.get_esp_paused() and not state.lifted.is_set():
                 esp_link.brake()
+            if watch:
+                state.watcher.arm(set())
             return False
         now = time.monotonic()
         elapsed = now - t_ramp
         rate = esp_link.get_yaw_rate()
+        _update_yaw()
         if watch:
-            state.watcher.arm(_watch_sides())
+            _, scan_t, ranges, _ = lidar_walls.get_wall_snapshot()
+            fresh = scan_t is not None and 0.0 <= now - scan_t <= CORNER_LIDAR_MAX_AGE_S
+            progress = sign * (yaw_unw - start_yaw)
+            quarter = corner_quarter(progress, turn_deg, start_h)
+            stage = int(progress // 90.0) if quarter is not None else None
+            if stage != last_stage:
+                last_wall_t = None
+                last_stage = stage
+            front_wall = quarter is not None and walls[quarter[1]] is True
+            side_wall = quarter is not None and walls[(quarter[1] - sign) % 4] is True
+            side, frame_allowed, last_wall_t = corner_watch_side(
+                quarter[0] if quarter else -1.0, 90.0 * sign,
+                front_wall, side_wall, fresh, ranges, last_wall_t, now)
+            side_hist.update(now, {corner_side: side is not None and frame_allowed})
+            if side is not None and not armed_before:
+                arm_starts += 1
+            armed_before = side is not None
+            state.watcher.arm({side} if side is not None else set())
             _watch_poll()
+            if seen:
+                mark_seen = True
+                break
         # Остаток угла В СТОРОНУ ЦЕЛИ (>0 - крутиться по часовой), и он же с
         # поправкой на запаздывание: к моменту исполнения команды робот уже
         # довернётся на rate * TURN_LEAD_S.
-        rem = -angle_err(esp_link.get_yaw(), target)
+        rem = (turn_deg - (yaw_unw - start_yaw)) if turn_sign == 1 else -angle_err(last_yaw, target)
         rem_eff = rem - rate * TURN_LEAD_S
 
         tilted = ramps.is_tilted()
@@ -206,43 +301,22 @@ def turn_to(target, label=None, seen=None, walls=None):
             settled = 0
 
         # ── Выход из застревания ─────────────────────────────
-        # Манёвр (откат/возврат) блокирующий: на его время сдвигаем дедлайн и
-        # начинаем разгон заново, иначе профиль сразу дал бы полку скорости.
-        maneuver = None
-        if boost and (abs(rate) > TURN_DONE_RATE_DPS
-                      or abs(rem) <= TURN_STUCK_MIN_DEG):
-            boost = False   # закрутился или подошёл к цели - дальше профиль
-        if abs(rem) > TURN_STUCK_MIN_DEG and abs(rate) < TURN_STUCK_RATE_DPS \
-                and elapsed > t_up:
-            if stuck_since is None:
-                stuck_since = now
-            elif now - stuck_since >= TURN_STUCK_S and stuck_stage < 3:
-                stuck_stage += 1
-                stuck_since = None
-                if stuck_stage == 1:
-                    boost = True
-                    print(f"    застрял на повороте (осталось {rem:+.1f}°): дожимаю")
-                elif stuck_stage == 2:
-                    maneuver = ("застрял", -TURN_STUCK_BACK_MM)
-                else:
-                    maneuver = ("застрял", +TURN_STUCK_BACK_MM)
+        # Ступень блокирующая: на её время сдвигаем дедлайн. Разгон заново -
+        # только если не закрутился (иначе профиль затормозил бы вращение).
+        if abs(rem) > TURN_STUCK_MIN_DEG and elapsed > t_up:
+            if turn_progress.stalled(now, rem) and not unstick.exhausted():
+                t_m = time.monotonic()
+                freed = unstick.next_stage(rem)
+                deadline += time.monotonic() - t_m
+                if not freed:
+                    t_ramp = time.monotonic()
+                turn_progress.reset()
+                settled = 0
+                hist.clear()
+                telem_seq = state.telem_seq
+                continue
         else:
-            stuck_since = None
-        if maneuver is not None:
-            why, mm = maneuver
-            print(f"    {why} на повороте (осталось {rem:+.1f}°): "
-                  f"{'назад' if mm < 0 else 'вперёд'} {abs(mm):.0f}мм")
-            esp_link.brake()
-            t_m = time.monotonic()
-            driving.creep_mm(mm, esp_link.get_yaw())
-            dt_m = time.monotonic() - t_m
-            deadline += dt_m
-            t_ramp = time.monotonic()
-            stuck_since = None
-            settled = 0
-            hist.clear()
-            telem_seq = state.telem_seq
-            continue
+            turn_progress.reset()
 
         # ── Профиль угловой скорости ──────────────────────────
         ss = min(1.0, elapsed / t_up)
@@ -259,13 +333,13 @@ def turn_to(target, label=None, seen=None, walls=None):
         if (abs(rem) > tol and abs(spd) < TURN_MIN_CMS
                 and abs(rate) < done_rate):
             spd = math.copysign(TURN_MIN_CMS, rem)
-        # Ступень 1: пока корпус стоит - не меньше TURN_STUCK_BOOST_CMS. Как
-        # только закрутился, профиль снова ведёт сам (иначе перелёт у цели).
-        if (boost and abs(rem) > TURN_STUCK_MIN_DEG
-                and abs(rate) < TURN_DONE_RATE_DPS
-                and abs(spd) < TURN_STUCK_BOOST_CMS):
-            spd = math.copysign(TURN_STUCK_BOOST_CMS, rem)
-        esp_link.motors(spd * config.TURN_SIGN, -spd * config.TURN_SIGN)
+        # На профиле краткого срыва с места мало: держим момент, пока
+        # скорость ниже профиля и до цели больше тормозного пути.
+        toward_rate = max(0.0, math.copysign(1.0, rem) * rate)
+        brake_deg = max(TURN_STUCK_MIN_DEG, tol + toward_rate * TURN_LEAD_S
+                        + toward_rate ** 2 / (2.0 * TURN_DECEL_DPS2))
+        if not unstick.hold_turn(spd, w_ref, rate, rem, brake_deg):
+            esp_link.motors(spd * config.TURN_SIGN, -spd * config.TURN_SIGN)
 
         # ── Подстройка подачи ────────────────────────────────
         # Берём команду ~TURN_LEAD_S назад и сегодняшнюю скорость; только на
@@ -275,7 +349,8 @@ def turn_to(target, label=None, seen=None, walls=None):
         while len(hist) > 1 and now - hist[1][0] >= TURN_LEAD_S:
             hist.popleft()
         spd_then = hist[0][1]
-        if (not tilted and abs(rate) > 60.0 and abs(spd_then) > TURN_MIN_CMS * 2
+        if (not unstick.holding and not tilted
+                and abs(rate) > 60.0 and abs(spd_then) > TURN_MIN_CMS * 2
                 and (rate > 0) == (spd_then > 0)):
             k = abs(spd_then) / abs(rate)
             k = max(TURN_FF_MIN, min(TURN_FF_MAX, k))
@@ -286,15 +361,26 @@ def turn_to(target, label=None, seen=None, walls=None):
         telem_seq = esp_link.wait_telem(telem_seq, TURN_DT)
 
     esp_link.settle_brake(0.10)
+    done = settled >= TURN_SETTLE
+    # При таймауте/метке цель ещё не достигнута. Возврат вдоль случайного
+    # курса после отката может снова посадить колёса на тот же профиль.
+    if done:
+        unstick.return_after_turn()
     if watch:
+        _update_yaw()
         _watch_poll()               # кадры, что ещё в обработке
         state.watcher.arm(set())
-    done = settled >= TURN_SETTLE
+        if mark_seen:
+            state.watcher.wait_idle()  # статическое чтение берёт эту же камеру
+        frames = state.watcher.live_info()[corner_side]["fid"] - first_fid
+        print(f"    [W] угол {corner_side}: кадров={frames}, "
+              f"включений={arm_starts}, рамок={len(seen or ())}")
     print(f"    итог yaw={esp_link.get_yaw():.1f}°  ошибка={angle_err(esp_link.get_yaw(), target):+.1f}°  "
           f"за {time.monotonic() - t0:.2f}с  TURN_FF={state.turn_ff:.3f}"
-          + (f"  застреваний={stuck_stage}" if stuck_stage else "")
-          + ("" if done else "  НЕ ДОВЕРНУЛ (таймаут)"))
-    return done
+          + (f"  ступеней выхода={unstick.stage}" if unstick.stage else "")
+          + ("  МЕТКА — поворот прерван" if mark_seen else
+             "" if done else "  НЕ ДОВЕРНУЛ (таймаут)"))
+    return "mark" if mark_seen else done
 
 
 # После поворота (move=False): смещение меньше этого - учесть в поездке, больше

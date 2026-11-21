@@ -71,7 +71,7 @@
 //                               CRC, не разобралась, NaN/inf, длиннее 63)
 //    [56-63]  motor_dv uint16[4] bus voltage, 0.1 V/LSB, 0 = stale
 //    [64-67]  motor_temp int8[4] Celsius, -128 = stale
-//    [68-71]  motor_error uint8[4] raw status faults; order IDs 1,5,2,3
+//    [68-71]  motor_error uint8[4] raw status faults; order IDs 4,1,2,3
 //    [72-73]  crc      uint16   CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF)
 //                               по байтам [2..71]; на RPi -
 //                               binascii.crc_hqx(pkt[2:72], 0xFFFF). Была XOR
@@ -122,7 +122,7 @@
 // (nav.py, color.py) refuse a packet whose version is not this one and say so
 // instead of quietly printing nonsense.
 // v4: append 4*u16 decivolts, 4*i8 temperatures, 4*u8 faults before CRC.
-// Motor order 1,5,2,3; packet length 74. Update Raspberry Pi at the same time.
+// Motor order 4,1,2,3; packet length 74. Update Raspberry Pi at the same time.
 #define TELEM_VER 4
 
 void robot_link_run(void);

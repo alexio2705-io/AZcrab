@@ -86,6 +86,7 @@ class VictimWatcher:
         self._ts_warned = False
         self._failed = set()
         self._processed_t = {s: None for s in self.cams}
+        self._processed_at: dict[str, float | None] = {s: None for s in self.cams}
         self._frame_gaps = {s: deque(maxlen=8) for s in self.cams}
         self._frames_n = {s: 0 for s in self.cams}
         self._armed_s = {s: 0.0 for s in self.cams}
@@ -147,6 +148,7 @@ class VictimWatcher:
                 if on:
                     self._armed_t[s] = now
                     self._processed_t[s] = None
+                    self._processed_at[s] = None
                     self._frame_gaps[s].clear()
                 else:
                     t = self._armed_t[s]
@@ -157,14 +159,17 @@ class VictimWatcher:
         return any_now
 
     def coverage_gap(self, sides):
-        """Worst completed-frame gap/age, including results with no detections."""
+        """Worst frame interval or time since a completed result."""
         now = time.monotonic()
         with self._lock:
             if self.dead or any(s in self._failed or s not in self.cams for s in sides):
                 return float('inf')
             gaps = [.1]
             for s in sides:
-                last = self._processed_t[s]
+                # t_frame старше ответа на время инференса. Если мерить
+                # возраст от него, потолок скорости падает перед КАЖДЫМ
+                # ответом и снова растёт после него, даже при ровной частоте.
+                last = self._processed_at[s]
                 since = last if last is not None else self._armed_t[s]
                 gaps.append(max(.1, now - since) if since is not None else .1)
                 gaps.extend(self._frame_gaps[s])
@@ -328,6 +333,7 @@ class VictimWatcher:
                 if previous is not None and t_frame > previous:
                     self._frame_gaps[side].append(t_frame - previous)
                 self._processed_t[side] = t_frame
+                self._processed_at[side] = time.monotonic()
             self.infer.add(float(msg.get("ms", 0.0)))
             boxes = [WatchBox(side, str(b["cls"]), float(b["conf"]),
                               tuple(b["xyxy"]), t_frame, msg.get("img"))

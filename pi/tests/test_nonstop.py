@@ -67,6 +67,26 @@ class TileTests(unittest.TestCase):
             'tile_rules': self.rules, 'dash_live': Mock(), 'timing': TIMING})
         self.floor.tile_color = Mock(return_value=config.TILE_BLUE)
 
+    def test_black_is_read_at_trip_start_pitch_after_turn(self):
+        self.state.USE_COLOR_SENSOR = True
+        self.state.lock = threading.Lock()
+        self.state.telem = {'color_fresh': True}
+        self.state.pitch_level = 0.0
+        self.state.color_ignore_until = 0.0
+        self.state.tile_samples = {
+            'white': [{'r': 113, 'g': 158, 'b': 165, 'c': 433}],
+            'black': [{'r': 10, 'g': 13, 'b': 14, 'c': 38}],
+        }
+        link = self.floor.esp_link
+        link.telem_fresh.return_value = True
+        link.get_rgbc.return_value = (10, 13, 14, 38)
+        link.get_pitch.return_value = 3.2
+        self.assertEqual(self.floor._tile_color(), config.TILE_UNKNOWN)
+        self.state.color_ignore_until = 0.0
+        self.assertEqual(self.floor._tile_color(3.2), config.TILE_BLACK)
+        link.get_pitch.return_value = 6.5
+        self.assertEqual(self.floor._tile_color(3.2), config.TILE_UNKNOWN)
+
     def test_late_blue_detection_counts_cell_once_and_stops_even_after_center(self):
         for traveled in (24, 31):
             with self.subTest(traveled=traveled):
@@ -89,6 +109,17 @@ class TileTests(unittest.TestCase):
         self.state.tile_map[(1, 0)] = config.TILE_BLUE
         self.rules.on_arrive((1, 0), config.TILE_UNKNOWN)
         react.assert_called_once_with((1, 0))
+
+    def test_blue_at_front_sensor_does_not_stop_in_previous_cell(self):
+        # Заезд 19:34: робот прошёл ~43 см, датчик на носу уже над
+        # второй клеткой, а центр первой давно позади.
+        trip = SimpleNamespace(plan=SimpleNamespace(cell=lambda k: (k, 0)), cells=1,
+            traveled_cm=43.2, boundary_cm=60, cell_cm=30, tiles={}, stopping=False,
+            pending=True, cp_done=set())
+        self.floor.check_floor_while_driving(trip)
+        self.assertEqual(self.state.tile_map.get((2, 0)), config.TILE_BLUE)
+        self.assertEqual((trip.boundary_cm, trip.cells), (60, 1))
+        self.assertAlmostEqual(trip.boundary_cm - trip.traveled_cm, 16.8)
 
     def test_blue_preempts_an_existing_farther_stop(self):
         from continuous import PassageLedger
